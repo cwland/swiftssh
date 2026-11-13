@@ -19,7 +19,6 @@ playground.xcworkspace
 # Swift Package Manager
 .build/
 .swiftpm/
-Packages/
 Package.resolved.bak
 
 # Secrets / local config
