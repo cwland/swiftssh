@@ -1,0 +1,9 @@
+# Termius Reimagined
+
+A native macOS SSH client and terminal emulator inspired by the design and workflow of Termius.
+
+- **Platform:** macOS 14+ (Swift, SwiftUI, AppKit bridging)
+- **Core:** shared `CoreSSH` Swift package (SSH/SFTP engine, data models, iCloud sync) for a future iOS/iPadOS companion
+- **Key libraries:** SwiftTerm, Citadel (swift-nio-ssh), SwiftData + CloudKit, iCloud Keychain
+
+See the full [project specification](docs/SPEC.md).
