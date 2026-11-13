@@ -28,11 +28,23 @@ public struct HTTPSyncTransport: SyncTransport {
         self.session = session
     }
 
-    /// Joins `baseURL` and `path` without doubling the slash when `baseURL` ends in one.
-    func url(_ path: String) -> URL {
+    /// Builds the request for `path` (e.g. "/v1/vault") under `baseURL`, without doubling the
+    /// slash when `baseURL` ends in one. Every request carries the key and the 30s timeout.
+    func makeRequest(method: String, path: String, query: [(String, String)] = [], body: Data? = nil) -> URLRequest {
         var base = baseURL.absoluteString
         while base.hasSuffix("/") { base.removeLast() }
-        return URL(string: base + path)!
+        var string = base + path
+        if !query.isEmpty { string += "?" + query.map { "\($0.0)=\($0.1)" }.joined(separator: "&") }
+        var request = URLRequest(url: URL(string: string)!)
+        request.httpMethod = method
+        request.timeoutInterval = Self.requestTimeout
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let body {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
+        return request
     }
 
     public func getVault() async throws -> VaultMetadata? {
@@ -57,7 +69,7 @@ public struct HTTPSyncTransport: SyncTransport {
     }
 
     public func fetch(since: Int64, limit: Int) async throws -> RecordsPage {
-        let (status, data) = try await send("GET", "/v1/records?since=\(since)&limit=\(limit)")
+        let (status, data) = try await send("GET", "/v1/records", query: [("since", "\(since)"), ("limit", "\(limit)")])
         try check(status, data)
         return try CoreJSON.decoder.decode(RecordsPage.self, from: data)
     }
@@ -68,24 +80,12 @@ public struct HTTPSyncTransport: SyncTransport {
         return try CoreJSON.decoder.decode(UpsertResponse.self, from: data).records
     }
 
-    private func send(_ method: String, _ path: String) async throws -> (Int, Data) {
-        try await perform(request(method, path))
+    private func send(_ method: String, _ path: String, query: [(String, String)] = []) async throws -> (Int, Data) {
+        try await perform(makeRequest(method: method, path: path, query: query))
     }
 
     private func send<Body: Encodable>(_ method: String, _ path: String, body: Body) async throws -> (Int, Data) {
-        var request = request(method, path)
-        request.httpBody = try CoreJSON.encoder.encode(body)
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        return try await perform(request)
-    }
-
-    private func request(_ method: String, _ path: String) -> URLRequest {
-        var request = URLRequest(url: url(path))
-        request.httpMethod = method
-        request.timeoutInterval = Self.requestTimeout
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        return request
+        try await perform(makeRequest(method: method, path: path, body: try CoreJSON.encoder.encode(body)))
     }
 
     private func perform(_ request: URLRequest) async throws -> (Int, Data) {

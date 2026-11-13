@@ -10,27 +10,6 @@ import XCTVapor
 final class EndToEndTests: XCTestCase {
     private let iterations = 1000
 
-    /// Runs `body` against a really listening server (port 0, in-memory DB) and its base URL.
-    private func withRunningServer(_ body: (Application, URL) async throws -> Void) async throws {
-        let app = try await Application.make(.testing)
-        do {
-            try await configure(app, apiKeys: ["k1"], database: .sqlite(.memory))
-            // `server.start` rather than `startup()`: the latter parses the test runner's command line.
-            try await app.server.start(address: .hostname("127.0.0.1", port: 0))
-            guard let port = app.http.server.shared.localAddress?.port else {
-                XCTFail("server has no bound port")
-                throw Abort(.internalServerError)
-            }
-            try await body(app, URL(string: "http://127.0.0.1:\(port)")!)
-        } catch {
-            await app.server.shutdown()
-            try? await app.asyncShutdown()
-            throw error
-        }
-        await app.server.shutdown()
-        try await app.asyncShutdown()
-    }
-
     private func engine(_ url: URL, key: String = "k1", device: String) -> (SyncEngine, InMemoryStore) {
         let store = InMemoryStore(deviceID: device)
         let engine = SyncEngine(transport: HTTPSyncTransport(baseURL: url, apiKey: key), store: store,
@@ -72,12 +51,19 @@ final class EndToEndTests: XCTestCase {
             XCTAssertEqual(recordRows.count, 1)
             XCTAssertEqual(vaultRows.count, 1)
 
+            // Positive controls: the sensitive columns hold data, and the helper does find a needle.
+            func column(_ row: SQLiteRow, _ name: String) -> Data {
+                row.column(name).map(Self.bytes(of:)) ?? Data()
+            }
+            XCTAssertFalse(column(recordRows[0], "ciphertext").isEmpty)
+            XCTAssertFalse(column(vaultRows[0], "wrapped_key").isEmpty)
+            XCTAssertTrue(Self.contains(Data("host=192.168.50.200;".utf8), "192.168.50.200"))
+
             let needles = ["192.168.50.200", "Secret-Label-XYZ", "hunter2-secret"]
             for row in recordRows + vaultRows {
-                for column in row.columns.map(\.data) {
-                    let bytes = Self.bytes(of: column)
+                for data in row.columns.map(\.data) {
                     for needle in needles {
-                        XCTAssertNil(bytes.range(of: Data(needle.utf8)), "found \(needle) in stored row")
+                        XCTAssertFalse(Self.contains(Self.bytes(of: data), needle), "found \(needle) in stored row")
                     }
                 }
             }
@@ -94,6 +80,10 @@ final class EndToEndTests: XCTestCase {
                 XCTAssertEqual(error as? SyncTransportError, .unauthorized)
             }
         }
+    }
+
+    private static func contains(_ haystack: Data, _ needle: String) -> Bool {
+        haystack.range(of: Data(needle.utf8)) != nil
     }
 
     private static func bytes(of data: SQLiteData) -> Data {
