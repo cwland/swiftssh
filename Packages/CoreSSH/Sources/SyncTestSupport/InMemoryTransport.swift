@@ -20,7 +20,7 @@ public enum InMemoryTransportError: Error, Equatable {
 ///   an exact `hasMore`, and `nextSince` = last returned seq (or `since` when empty).
 ///
 /// Test hooks: `failNextUpsert()` / `failUpsert(afterSuccessfulCalls:)`,
-/// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `onFetch(_:)`, `onNextUpsert(_:)`, `onNextRewrap(_:)`,
+/// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `mutateStoredRecord(_:_:)`, `onFetch(_:)`, `onNextUpsert(_:)`, `onNextRewrap(_:)`,
 /// call counters and `storedRecords` for inspection. Hooks run at the start of the call, before it
 /// does its work; the actor is reentrant, so other calls proceed while a hook is suspended.
 public actor InMemoryTransport: SyncTransport {
@@ -62,6 +62,14 @@ public actor InMemoryTransport: SyncTransport {
         guard var record = recordsByID[id], !record.ciphertext.isEmpty else { return }
         let last = record.ciphertext.index(before: record.ciphertext.endIndex)
         record.ciphertext[last] ^= 0xFF
+        recordsByID[id] = record
+    }
+
+    /// Changes the stored copy of `id` in place (keeping its `seq`), e.g. to flip `deleted` or bump
+    /// `updatedAt` the way a malicious server could.
+    public func mutateStoredRecord(_ id: UUID, _ change: @Sendable (inout EncryptedRecord) -> Void) {
+        guard var record = recordsByID[id] else { return }
+        change(&record)
         recordsByID[id] = record
     }
 

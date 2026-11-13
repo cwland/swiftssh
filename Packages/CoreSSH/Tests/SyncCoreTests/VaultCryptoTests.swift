@@ -6,7 +6,21 @@ import CoreModels
 final class VaultCryptoTests: XCTestCase {
     private let iterations = 1_000
 
+    private let stamp = Date(timeIntervalSince1970: 1_700_000_000.123)
+
     private func bytes(_ key: SymmetricKey) -> Data { key.withUnsafeBytes { Data($0) } }
+
+    private func seal(_ plain: Data, id: UUID, type: SyncRecordType = .host, updatedAt: Date? = nil,
+                      deleted: Bool = false, deviceID: String = "mac-a", key: SymmetricKey) throws -> Data {
+        try VaultCrypto.seal(plain, id: id, type: type, updatedAt: updatedAt ?? stamp, deleted: deleted,
+                             deviceID: deviceID, key: key)
+    }
+
+    private func open(_ sealed: Data, id: UUID, type: SyncRecordType = .host, updatedAt: Date? = nil,
+                      deleted: Bool = false, deviceID: String = "mac-a", key: SymmetricKey) throws -> Data {
+        try VaultCrypto.open(sealed, id: id, type: type, updatedAt: updatedAt ?? stamp, deleted: deleted,
+                             deviceID: deviceID, key: key)
+    }
 
     func testWrapUnwrapRoundTrip() throws {
         let salt = VaultCrypto.randomSalt()
@@ -46,18 +60,18 @@ final class VaultCryptoTests: XCTestCase {
         let key = VaultCrypto.newVaultKey()
         let id = UUID()
         let plain = Data("hello".utf8)
-        let sealed = try VaultCrypto.seal(plain, id: id, type: .host, key: key)
-        XCTAssertEqual(try VaultCrypto.open(sealed, id: id, type: .host, key: key), plain)
+        let sealed = try seal(plain, id: id, key: key)
+        XCTAssertEqual(try open(sealed, id: id, key: key), plain)
     }
 
     func testOpenFailsWhenIdOrTypeDiffers() throws {
         let key = VaultCrypto.newVaultKey()
         let id1 = UUID(), id2 = UUID()
-        let sealed = try VaultCrypto.seal(Data("x".utf8), id: id1, type: .host, key: key)
-        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id2, type: .host, key: key)) {
+        let sealed = try seal(Data("x".utf8), id: id1, key: key)
+        XCTAssertThrowsError(try open(sealed, id: id2, key: key)) {
             XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
         }
-        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id1, type: .snippet, key: key)) {
+        XCTAssertThrowsError(try open(sealed, id: id1, type: .snippet, key: key)) {
             XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
         }
     }
@@ -66,14 +80,14 @@ final class VaultCryptoTests: XCTestCase {
         let key = VaultCrypto.newVaultKey()
         let id = UUID()
         let p = Data("same".utf8)
-        let a = try VaultCrypto.seal(p, id: id, type: .host, key: key)
-        let b = try VaultCrypto.seal(p, id: id, type: .host, key: key)
+        let a = try seal(p, id: id, key: key)
+        let b = try seal(p, id: id, key: key)
         XCTAssertNotEqual(a, b)
     }
 
     func testCiphertextDoesNotContainPlaintext() throws {
         let key = VaultCrypto.newVaultKey()
-        let sealed = try VaultCrypto.seal(Data("192.168.50.200".utf8), id: UUID(), type: .host, key: key)
+        let sealed = try seal(Data("192.168.50.200".utf8), id: UUID(), key: key)
         XCTAssertNil(sealed.range(of: Data("192.168".utf8)))
     }
 
@@ -87,18 +101,44 @@ final class VaultCryptoTests: XCTestCase {
     func testOpenFailsWhenCiphertextIsModified() throws {
         let key = VaultCrypto.newVaultKey()
         let id = UUID()
-        var sealed = try VaultCrypto.seal(Data("secret".utf8), id: id, type: .host, key: key)
+        var sealed = try seal(Data("secret".utf8), id: id, key: key)
         sealed[sealed.startIndex + 15] ^= 0x01
-        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id, type: .host, key: key)) {
+        XCTAssertThrowsError(try open(sealed, id: id, key: key)) {
             XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
         }
     }
 
     func testOpenFailsWithWrongKey() throws {
         let id = UUID()
-        let sealed = try VaultCrypto.seal(Data("secret".utf8), id: id, type: .host, key: VaultCrypto.newVaultKey())
-        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id, type: .host, key: VaultCrypto.newVaultKey())) {
+        let sealed = try seal(Data("secret".utf8), id: id, key: VaultCrypto.newVaultKey())
+        XCTAssertThrowsError(try open(sealed, id: id, key: VaultCrypto.newVaultKey())) {
             XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
         }
+    }
+
+    func testOpenFailsWhenUpdatedAtDeletedOrDeviceIDDiffers() throws {
+        let key = VaultCrypto.newVaultKey()
+        let id = UUID()
+        let sealed = try seal(Data("x".utf8), id: id, key: key)
+        XCTAssertEqual(try open(sealed, id: id, key: key), Data("x".utf8))
+        let tampered: [() throws -> Data] = [
+            { try self.open(sealed, id: id, updatedAt: self.stamp.addingTimeInterval(0.001), key: key) },
+            { try self.open(sealed, id: id, deleted: true, key: key) },
+            { try self.open(sealed, id: id, deviceID: "mac-b", key: key) },
+        ]
+        for attempt in tampered {
+            XCTAssertThrowsError(try attempt()) {
+                XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
+            }
+        }
+    }
+
+    func testSubMillisecondDifferenceInUpdatedAtStillOpens() throws {
+        // The AAD uses whole milliseconds (floored), the precision the server stores.
+        let key = VaultCrypto.newVaultKey()
+        let id = UUID()
+        let base = Date(timeIntervalSince1970: 1_700_000_000.123)
+        let sealed = try seal(Data("x".utf8), id: id, updatedAt: base.addingTimeInterval(0.0004), key: key)
+        XCTAssertEqual(try open(sealed, id: id, updatedAt: base, key: key), Data("x".utf8))
     }
 }

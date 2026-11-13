@@ -450,6 +450,34 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(state.lastSeq, 0)
     }
 
+    func testServerAlteredRecordMetadataIsReportedAsTampered() async throws {
+        let alterations: [(String, @Sendable (inout EncryptedRecord) -> Void)] = [
+            ("deleted flipped", { $0.deleted.toggle() }),
+            ("updatedAt bumped", { $0.updatedAt = $0.updatedAt.addingTimeInterval(60) }),
+            ("deviceID changed", { $0.deviceID = "zz-server" }),
+        ]
+        for (name, alter) in alterations {
+            let transport = InMemoryTransport()
+            let a = device("mac-a", transport)
+            for label in ["nas", "pi"] { try await a.store.insert(host(label)) }
+            _ = try await a.engine.createVault(passphrase: passphrase)
+            _ = try await a.engine.sync()
+            let victim = await transport.storedRecords[0].id
+            await transport.mutateStoredRecord(victim, alter)
+
+            let b = device("mac-b", transport)
+            _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+            do {
+                _ = try await b.engine.sync()
+                XCTFail("expected .tamperedRecord when \(name)")
+            } catch {
+                XCTAssertEqual(error as? SyncError, .tamperedRecord(victim), name)
+            }
+            let count = await b.store.count
+            XCTAssertEqual(count, 0, name)
+        }
+    }
+
     func testChangePassphraseWithStaleRewrapThrowsVaultChanged() async throws {
         let transport = InMemoryTransport()
         let a = device("mac-a", transport)

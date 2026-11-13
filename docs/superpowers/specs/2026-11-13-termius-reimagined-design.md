@@ -120,7 +120,7 @@ Every field that says anything about Cory's hosts sits inside `ciphertext`. The 
 **Encryption.**
 - A **sync passphrase** chosen by Cory the first time sync is set up.
 - *Builder's call:* records are encrypted with a random 256-bit **vault key**, not with the passphrase directly. The vault key is wrapped (AES-256-GCM) by a key derived from the passphrase: PBKDF2-HMAC-SHA256(passphrase, salt, ≥600,000 iterations). Changing the passphrase later only re-wraps the vault key; no records are re-encrypted.
-- Each record's JSON is sealed with AES-256-GCM using the vault key and a fresh random nonce, with `id` and `type` as additional authenticated data, so a record can't be swapped under a different ID.
+- Each record's JSON is sealed with AES-256-GCM using the vault key and a fresh random nonce, with `id`, `type`, `updated_at` (whole milliseconds), `deleted` and `device_id` as additional authenticated data, so the server can't swap a record under a different ID or alter the metadata it stores in the clear (re-date, delete, resurrect or re-attribute a record) without the client noticing.
 - Vault metadata on the server: salt, iteration count and the wrapped vault key. A second Mac downloads it and asks for the passphrase. If unwrapping fails, the passphrase is wrong, and nothing syncs.
 - The vault key is stored in each Mac's Keychain, so the passphrase is asked for once per Mac.
 - Settings offers "Change sync passphrase", which re-wraps the vault key and updates the metadata.

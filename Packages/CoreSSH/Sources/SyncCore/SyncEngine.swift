@@ -200,8 +200,9 @@ public actor SyncEngine {
             let sealed = try batch.map { record in
                 EncryptedRecord(id: record.id, type: record.type, updatedAt: record.updatedAt,
                                 deleted: record.deleted, deviceID: record.deviceID,
-                                ciphertext: try VaultCrypto.seal(record.payload, id: record.id,
-                                                                 type: record.type, key: key))
+                                ciphertext: try VaultCrypto.seal(record.payload, id: record.id, type: record.type,
+                                                                 updatedAt: record.updatedAt, deleted: record.deleted,
+                                                                 deviceID: record.deviceID, key: key))
             }
             _ = try await transport.upsert(sealed)
             try await store.markClean(Dictionary(batch.map { ($0.id, $0.updatedAt) },
@@ -216,7 +217,9 @@ public actor SyncEngine {
             let plain = try page.records.map { record in
                 let payload: Data
                 do {
-                    payload = try VaultCrypto.open(record.ciphertext, id: record.id, type: record.type, key: key)
+                    payload = try VaultCrypto.open(record.ciphertext, id: record.id, type: record.type,
+                                                   updatedAt: record.updatedAt, deleted: record.deleted,
+                                                   deviceID: record.deviceID, key: key)
                 } catch VaultCryptoError.tamperedRecord {
                     throw SyncError.tamperedRecord(record.id)
                 }

@@ -15,7 +15,7 @@
 - Swift tools version 6.0. `CoreSSH` platforms: `.macOS(.v14), .iOS(.v17)`; must also build on Linux.
 - `CoreModels` and `SyncCore` must not import SwiftUI, SwiftData, Security or LocalAuthentication.
 - PBKDF2-HMAC-SHA256, production iterations **600,000** (`VaultCrypto.defaultIterations`); salt 16 random bytes. Tests may pass a lower count.
-- Records and the vault key are sealed with AES-256-GCM. Record AAD = `"\(id.uuidString)|\(type.rawValue)"` as UTF-8.
+- Records and the vault key are sealed with AES-256-GCM. Record AAD = `"\(id.uuidString)|\(type.rawValue)|\(updatedAtMs)|\(deleted ? 1 : 0)|\(deviceID)"` as UTF-8, where `updatedAtMs` is `Int64` whole milliseconds since 1970 (floored).
 - API auth: `Authorization: Bearer <key>`; keys from env `SYNC_API_KEYS` (comma-separated, whitespace trimmed, empties ignored). `GET /health` needs no auth.
 - Server listens on 8080; SQLite file from env `DATABASE_PATH` (default `/data/sync.sqlite`).
 - Merge rule: newer `updatedAt` wins per whole record; on an exact tie the larger `deviceID` string wins.

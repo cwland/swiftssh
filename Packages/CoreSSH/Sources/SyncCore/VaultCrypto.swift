@@ -45,20 +45,31 @@ public enum VaultCrypto {
         }
     }
 
-    public static func seal(_ plaintext: Data, id: UUID, type: SyncRecordType, key: SymmetricKey) throws -> Data {
-        try AES.GCM.seal(plaintext, using: key, authenticating: aad(id: id, type: type)).combined!
+    /// Seals a record's JSON. The AAD binds the ciphertext to the record's id, type and the
+    /// metadata the server stores in the clear (`updatedAt` in whole milliseconds, `deleted`,
+    /// `deviceID`), so the server can't swap, resurrect, delete or re-date a record unnoticed.
+    public static func seal(_ plaintext: Data, id: UUID, type: SyncRecordType, updatedAt: Date,
+                            deleted: Bool, deviceID: String, key: SymmetricKey) throws -> Data {
+        let aad = aad(id: id, type: type, updatedAt: updatedAt, deleted: deleted, deviceID: deviceID)
+        return try AES.GCM.seal(plaintext, using: key, authenticating: aad).combined!
     }
 
-    public static func open(_ ciphertext: Data, id: UUID, type: SyncRecordType, key: SymmetricKey) throws -> Data {
+    /// Opens a record sealed by `seal`; throws `.tamperedRecord` if the ciphertext or any of the
+    /// authenticated metadata differs.
+    public static func open(_ ciphertext: Data, id: UUID, type: SyncRecordType, updatedAt: Date,
+                            deleted: Bool, deviceID: String, key: SymmetricKey) throws -> Data {
+        let aad = aad(id: id, type: type, updatedAt: updatedAt, deleted: deleted, deviceID: deviceID)
         do {
             let box = try AES.GCM.SealedBox(combined: ciphertext)
-            return try AES.GCM.open(box, using: key, authenticating: aad(id: id, type: type))
+            return try AES.GCM.open(box, using: key, authenticating: aad)
         } catch is CryptoKitError {
             throw VaultCryptoError.tamperedRecord
         }
     }
 
-    private static func aad(id: UUID, type: SyncRecordType) -> Data {
-        Data("\(id.uuidString)|\(type.rawValue)".utf8)
+    /// `"<id>|<type>|<updatedAt ms, floored>|<1 if deleted else 0>|<deviceID>"` as UTF-8.
+    static func aad(id: UUID, type: SyncRecordType, updatedAt: Date, deleted: Bool, deviceID: String) -> Data {
+        let updatedAtMs = Int64((updatedAt.timeIntervalSince1970 * 1000).rounded(.down))
+        return Data("\(id.uuidString)|\(type.rawValue)|\(updatedAtMs)|\(deleted ? 1 : 0)|\(deviceID)".utf8)
     }
 }
