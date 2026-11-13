@@ -8,6 +8,24 @@ public enum VaultCryptoError: Error, Equatable {
     case tamperedRecord
 }
 
+/// The vault's random 256-bit key, as `SyncEngine` hands it out and takes it back (the app keeps
+/// it, e.g. in the Keychain). `@unchecked Sendable`: it only wraps an immutable `SymmetricKey`,
+/// which swift-crypto (unlike CryptoKit) doesn't declare `Sendable`.
+public struct VaultKey: @unchecked Sendable, Equatable {
+    public let symmetricKey: SymmetricKey
+
+    public init(_ symmetricKey: SymmetricKey) {
+        self.symmetricKey = symmetricKey
+    }
+
+    /// Equal when the raw key bytes are equal.
+    public static func == (lhs: VaultKey, rhs: VaultKey) -> Bool {
+        lhs.symmetricKey.withUnsafeBytes { l in
+            rhs.symmetricKey.withUnsafeBytes { r in l.elementsEqual(r) }
+        }
+    }
+}
+
 /// Client-side vault crypto. The sync server only ever sees output of `seal`/`wrap`.
 public enum VaultCrypto {
     public static let defaultIterations = 600_000

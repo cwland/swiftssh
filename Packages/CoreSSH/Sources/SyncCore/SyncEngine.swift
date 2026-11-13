@@ -2,12 +2,6 @@ import Foundation
 import Crypto
 import CoreModels
 
-#if !canImport(CryptoKit)
-// swift-crypto's own `SymmetricKey` (used off Apple platforms) is an immutable value type but
-// isn't declared `Sendable`; CryptoKit's is. Needed to hand keys across actor boundaries.
-extension SymmetricKey: @retroactive @unchecked Sendable {}
-#endif
-
 /// A decrypted record as the local store sees it: the model's JSON (`CoreJSON`) plus the
 /// metadata the merge rule needs.
 public struct PlainRecord: Equatable, Sendable {
@@ -120,7 +114,7 @@ public actor SyncEngine {
     private let store: any SyncLocalStore
     private let deviceID: String
     private let iterations: Int
-    private var vaultKey: SymmetricKey?
+    private var vaultKey: VaultKey?
     private var operationRunning = false
     private var waitingOperations: [CheckedContinuation<Void, Never>] = []
 
@@ -138,7 +132,7 @@ public actor SyncEngine {
 
     /// Creates a new vault on the server, unlocks the engine with its key and marks every local
     /// record dirty so the next `sync()` uploads everything. Throws `.vaultAlreadyExists`.
-    public func createVault(passphrase: String) async throws -> SymmetricKey {
+    public func createVault(passphrase: String) async throws -> VaultKey {
         await beginOperation()
         defer { endOperation() }
         let salt = VaultCrypto.randomSalt()
@@ -149,17 +143,18 @@ public actor SyncEngine {
         try await transport.putVault(metadata)
         try await store.setSyncState(SyncState(vaultID: metadata.vaultID, lastSeq: 0))
         try await store.markAllDirty()
-        vaultKey = key
-        return key
+        let vault = VaultKey(key)
+        vaultKey = vault
+        return vault
     }
 
     /// Joins the server's vault. A wrong passphrase throws `.wrongPassphrase` before anything
     /// is changed locally or remotely.
-    public func join(passphrase: String, mode: JoinMode) async throws -> SymmetricKey {
+    public func join(passphrase: String, mode: JoinMode) async throws -> VaultKey {
         await beginOperation()
         defer { endOperation() }
         guard let metadata = try await transport.getVault() else { throw SyncError.noVault }
-        let key = try Self.unwrap(metadata, passphrase: passphrase)
+        let key = VaultKey(try Self.unwrap(metadata, passphrase: passphrase))
         switch mode {
         case .replace: try await store.removeAll()
         case .merge: try await store.markAllDirty()
@@ -170,7 +165,7 @@ public actor SyncEngine {
     }
 
     /// Unlocks with a vault key the app kept (e.g. in the Keychain).
-    public func unlock(with key: SymmetricKey) {
+    public func unlock(with key: VaultKey) {
         vaultKey = key
     }
 
@@ -199,7 +194,7 @@ public actor SyncEngine {
     public func sync() async throws -> SyncReport {
         await beginOperation()
         defer { endOperation() }
-        guard let key = vaultKey else { throw SyncError.locked }
+        guard let key = vaultKey?.symmetricKey else { throw SyncError.locked }
         var state = await store.syncState
         guard let vault = try await transport.getVault(), vault.vaultID == state.vaultID else {
             throw SyncError.vaultChanged

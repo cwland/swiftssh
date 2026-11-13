@@ -66,13 +66,14 @@ final class SyncEngineTests: XCTestCase {
         let snippet = Snippet(name: "update", script: "apt update", updatedAt: Timestamps.nextUpdate(previous: nil))
         try await a.store.insert(nas)
         try await a.store.insert(snippet)
-        _ = try await a.engine.createVault(passphrase: passphrase)
+        let createdKey: VaultKey = try await a.engine.createVault(passphrase: passphrase)
         _ = try await a.engine.sync()
 
         let b = device("mac-b", transport)
         let exists = try await b.engine.vaultExists()
         XCTAssertTrue(exists)
-        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        let joinedKey: VaultKey = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        XCTAssertEqual(joinedKey, createdKey)
         let report = try await b.engine.sync()
 
         XCTAssertEqual(report.pulled, 2)

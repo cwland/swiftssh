@@ -141,4 +141,13 @@ final class VaultCryptoTests: XCTestCase {
         let sealed = try seal(Data("x".utf8), id: id, updatedAt: base.addingTimeInterval(0.0004), key: key)
         XCTAssertEqual(try open(sealed, id: id, updatedAt: base, key: key), Data("x".utf8))
     }
+
+    func testVaultKeyEqualityIsByKeyBytes() {
+        let raw = VaultCrypto.newVaultKey()
+        let a = VaultKey(raw)
+        let b = VaultKey(SymmetricKey(data: bytes(raw)))
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, VaultKey(VaultCrypto.newVaultKey()))
+        XCTAssertEqual(bytes(a.symmetricKey), bytes(raw))
+    }
 }
