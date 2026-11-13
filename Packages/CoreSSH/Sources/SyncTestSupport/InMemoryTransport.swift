@@ -19,8 +19,10 @@ public enum InMemoryTransportError: Error, Equatable {
 /// - `fetch` returns records with `seq > since` ascending, `limit` clamped to 1...500,
 ///   an exact `hasMore`, and `nextSince` = last returned seq (or `since` when empty).
 ///
-/// Test hooks: `failNextUpsert()`, `replaceVault(_:clearRecords:)`, call counters and
-/// `storedRecords` for inspection.
+/// Test hooks: `failNextUpsert()` / `failUpsert(afterSuccessfulCalls:)`,
+/// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `onFetch(_:)`, `onNextUpsert(_:)`, `onNextRewrap(_:)`,
+/// call counters and `storedRecords` for inspection. Hooks run at the start of the call, before it
+/// does its work; the actor is reentrant, so other calls proceed while a hook is suspended.
 public actor InMemoryTransport: SyncTransport {
     public static let maxBatch = 500
     public static let maxLimit = 500
@@ -28,7 +30,11 @@ public actor InMemoryTransport: SyncTransport {
     public private(set) var vault: VaultMetadata?
     private var recordsByID: [UUID: EncryptedRecord] = [:]
     private var lastSeq: Int64 = 0
-    private var failUpsertOnce = false
+    /// Number of further successful upserts before the injected failure; nil = none pending.
+    private var upsertsBeforeFailure: Int?
+    private var fetchHook: (@Sendable (_ since: Int64) async -> Void)?
+    private var rewrapHook: (@Sendable () async throws -> Void)?
+    private var upsertHook: (@Sendable () async -> Void)?
 
     public private(set) var upsertCallCount = 0
     public private(set) var fetchCallCount = 0
@@ -42,7 +48,37 @@ public actor InMemoryTransport: SyncTransport {
 
     /// Makes the next `upsert` call throw `InMemoryTransportError.injectedFailure` without storing anything.
     public func failNextUpsert() {
-        failUpsertOnce = true
+        failUpsert(afterSuccessfulCalls: 0)
+    }
+
+    /// Lets `count` more `upsert` calls succeed, then makes the next one throw
+    /// `InMemoryTransportError.injectedFailure` (once) without storing anything.
+    public func failUpsert(afterSuccessfulCalls count: Int) {
+        upsertsBeforeFailure = count
+    }
+
+    /// Flips a byte of the stored ciphertext of `id`, as a corrupted or malicious server would.
+    public func corruptCiphertext(of id: UUID) {
+        guard var record = recordsByID[id], !record.ciphertext.isEmpty else { return }
+        let last = record.ciphertext.index(before: record.ciphertext.endIndex)
+        record.ciphertext[last] ^= 0xFF
+        recordsByID[id] = record
+    }
+
+    /// Runs `body(since)` at the start of every `fetch` (pass nil to remove it).
+    public func onFetch(_ body: (@Sendable (_ since: Int64) async -> Void)?) {
+        fetchHook = body
+    }
+
+    /// Runs `body` once at the start of the next `upsert`, before anything is stored.
+    public func onNextUpsert(_ body: @escaping @Sendable () async -> Void) {
+        upsertHook = body
+    }
+
+    /// Runs `body` once at the start of the next `rewrap`, before the compare-and-swap; e.g. to
+    /// let another device rewrap first and make this one stale.
+    public func onNextRewrap(_ body: @escaping @Sendable () async throws -> Void) {
+        rewrapHook = body
     }
 
     /// Replaces the vault metadata as if the server had been wiped and re-created by someone else.
@@ -67,6 +103,10 @@ public actor InMemoryTransport: SyncTransport {
     }
 
     public func rewrap(_ request: RewrapRequest) async throws -> VaultMetadata {
+        if let hook = rewrapHook {
+            rewrapHook = nil
+            try await hook()
+        }
         guard var current = vault else { throw SyncError.noVault }
         guard current.wrappedKey == request.oldWrappedKey else { throw SyncError.vaultChanged }
         current.salt = request.salt
@@ -78,6 +118,7 @@ public actor InMemoryTransport: SyncTransport {
 
     public func fetch(since: Int64, limit: Int) async throws -> RecordsPage {
         fetchCallCount += 1
+        if let hook = fetchHook { await hook(since) }
         let limit = min(max(limit, 1), Self.maxLimit)
         let newer = storedRecords.filter { ($0.seq ?? 0) > since }
         let page = Array(newer.prefix(limit))
@@ -86,9 +127,16 @@ public actor InMemoryTransport: SyncTransport {
 
     public func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord] {
         upsertCallCount += 1
-        if failUpsertOnce {
-            failUpsertOnce = false
-            throw InMemoryTransportError.injectedFailure
+        if let hook = upsertHook {
+            upsertHook = nil
+            await hook()
+        }
+        if let remaining = upsertsBeforeFailure {
+            if remaining == 0 {
+                upsertsBeforeFailure = nil
+                throw InMemoryTransportError.injectedFailure
+            }
+            upsertsBeforeFailure = remaining - 1
         }
         guard records.count <= Self.maxBatch else { throw InMemoryTransportError.batchTooLarge }
         var order: [UUID] = []

@@ -357,4 +357,154 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(state.lastSeq, maxSeq)
         XCTAssertEqual(state.lastSeq, 1_200)
     }
+
+    func testConcurrentSyncCallsDoNotDoublePushOrRegressLastSeq() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        for label in ["nas", "pi", "router"] { try await a.store.insert(host(label)) }
+        _ = try await a.engine.createVault(passphrase: passphrase)
+
+        let held = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        await transport.onNextUpsert {
+            held.continuation.yield()
+            for await _ in release.stream { break }
+        }
+        let engine = a.engine
+        let firstTask = Task { try await engine.sync() }
+        var heldIterator = held.stream.makeAsyncIterator()
+        _ = await heldIterator.next() // first sync is mid-push
+        let secondTask = Task { try await engine.sync() }
+        try await Task.sleep(nanoseconds: 50_000_000) // let the second sync run if it could
+        release.continuation.yield()
+        let r1 = try await firstTask.value
+        let r2 = try await secondTask.value
+
+        XCTAssertEqual(r1.pushed + r2.pushed, 3)
+        let upserts = await transport.upsertCallCount
+        XCTAssertEqual(upserts, 1)
+        let seqs = await a.store.syncStateHistory.map(\.lastSeq)
+        XCTAssertEqual(seqs, seqs.sorted(), "lastSeq went backwards: \(seqs)")
+        let state = await a.store.syncState
+        XCTAssertEqual(state.lastSeq, 3)
+    }
+
+    func testJoinDuringSyncIsSerialized() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        for i in 0..<1_200 { try await a.store.insert(host("h\(i)")) }
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+
+        let b = device("mac-b", transport)
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        let held = AsyncStream<Void>.makeStream()
+        let release = AsyncStream<Void>.makeStream()
+        await transport.onFetch { since in
+            guard since == 500 else { return } // hold B's second page
+            await transport.onFetch(nil)
+            held.continuation.yield()
+            for await _ in release.stream { break }
+        }
+
+        let engine = b.engine
+        let passphrase = passphrase
+        let syncTask = Task { try await engine.sync() }
+        var heldIterator = held.stream.makeAsyncIterator()
+        _ = await heldIterator.next()
+        let joinTask = Task { try await engine.join(passphrase: passphrase, mode: .replace) }
+        try await Task.sleep(nanoseconds: 50_000_000) // let the join run if it could
+        release.continuation.yield()
+        _ = try await syncTask.value
+        _ = try await joinTask.value
+
+        // Seqs are 1...1_200, one per record: the store must hold exactly the records up to lastSeq.
+        let state = await b.store.syncState
+        let count = await b.store.count
+        XCTAssertEqual(count, Int(state.lastSeq))
+        _ = try await b.engine.sync()
+        let finalCount = await b.store.count
+        XCTAssertEqual(finalCount, 1_200)
+    }
+
+    func testTamperedPulledRecordStopsSyncWithoutAdvancing() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        for label in ["nas", "pi", "router"] { try await a.store.insert(host(label)) }
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+        let victim = await transport.storedRecords[1].id
+        await transport.corruptCiphertext(of: victim)
+
+        let b = device("mac-b", transport)
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        do {
+            _ = try await b.engine.sync()
+            XCTFail("expected .tamperedRecord")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .tamperedRecord(victim))
+        }
+        let count = await b.store.count
+        XCTAssertEqual(count, 0)
+        let state = await b.store.syncState
+        XCTAssertEqual(state.lastSeq, 0)
+    }
+
+    func testChangePassphraseWithStaleRewrapThrowsVaultChanged() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        let b = device("mac-b", transport)
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+
+        let bEngine = b.engine
+        let passphrase = passphrase
+        await transport.onNextRewrap {
+            try await bEngine.changePassphrase(old: passphrase, new: "b phrase")
+        }
+        do {
+            try await a.engine.changePassphrase(old: passphrase, new: "a phrase")
+            XCTFail("expected .vaultChanged")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .vaultChanged)
+        }
+
+        _ = try await device("mac-c", transport).engine.join(passphrase: "b phrase", mode: .merge)
+        do {
+            _ = try await device("mac-d", transport).engine.join(passphrase: "a phrase", mode: .merge)
+            XCTFail("expected .wrongPassphrase")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .wrongPassphrase)
+        }
+    }
+
+    func testPushFailureOnLaterBatchKeepsEarlierBatchesClean() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        for i in 0..<1_200 { try await a.store.insert(host("h\(i)")) }
+        _ = try await a.engine.createVault(passphrase: passphrase)
+
+        await transport.failUpsert(afterSuccessfulCalls: 1)
+        do {
+            _ = try await a.engine.sync()
+            XCTFail("expected the injected failure")
+        } catch {
+            XCTAssertEqual(error as? InMemoryTransportError, .injectedFailure)
+        }
+        let stored = await transport.storedRecords
+        XCTAssertEqual(stored.count, 500)
+        for record in stored {
+            let dirty = await a.store.isDirty(record.id)
+            XCTAssertFalse(dirty)
+        }
+        let dirtyCount = await a.store.dirtyCount
+        XCTAssertEqual(dirtyCount, 700)
+
+        let report = try await a.engine.sync()
+        XCTAssertEqual(report.pushed, 700)
+        let remaining = await a.store.dirtyCount
+        XCTAssertEqual(remaining, 0)
+        let total = await transport.storedRecords.count
+        XCTAssertEqual(total, 1_200)
+    }
 }

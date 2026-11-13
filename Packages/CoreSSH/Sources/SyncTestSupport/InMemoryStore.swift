@@ -24,6 +24,8 @@ public actor InMemoryStore: SyncLocalStore {
     public let deviceID: String
     private var entries: [UUID: Entry] = [:]
     private var state = SyncState(vaultID: nil, lastSeq: 0)
+    /// Every state passed to `setSyncState`, in order.
+    public private(set) var syncStateHistory: [SyncState] = []
     private var dirtyRecordsHook: (@Sendable () async throws -> Void)?
 
     public init(deviceID: String) {
@@ -118,5 +120,6 @@ public actor InMemoryStore: SyncLocalStore {
 
     public func setSyncState(_ newState: SyncState) async throws {
         state = newState
+        syncStateHistory.append(newState)
     }
 }

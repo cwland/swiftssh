@@ -83,6 +83,8 @@ public enum JoinMode: Sendable {
 
 public enum SyncError: Error, Equatable {
     case wrongPassphrase, noVault, vaultAlreadyExists, vaultChanged, locked
+    /// A pulled record failed authentication (corrupted or tampered with on the server).
+    case tamperedRecord(UUID)
 }
 
 public struct SyncReport: Equatable, Sendable {
@@ -99,6 +101,9 @@ public struct SyncReport: Equatable, Sendable {
 
 /// Creates or joins the end-to-end-encrypted vault and syncs the local store with the server.
 /// Only `EncryptedRecord`s sealed with the vault key ever leave the engine.
+///
+/// `sync`, `createVault`, `join` and `changePassphrase` are serialized: each waits (FIFO) for
+/// the previous one to finish, so the actor's reentrancy at `await`s can't interleave them.
 public actor SyncEngine {
     public static let batchSize = 500
 
@@ -107,6 +112,8 @@ public actor SyncEngine {
     private let deviceID: String
     private let iterations: Int
     private var vaultKey: SymmetricKey?
+    private var operationRunning = false
+    private var waitingOperations: [CheckedContinuation<Void, Never>] = []
 
     public init(transport: any SyncTransport, store: any SyncLocalStore, deviceID: String,
                 iterations: Int = VaultCrypto.defaultIterations) {
@@ -123,6 +130,8 @@ public actor SyncEngine {
     /// Creates a new vault on the server, unlocks the engine with its key and marks every local
     /// record dirty so the next `sync()` uploads everything. Throws `.vaultAlreadyExists`.
     public func createVault(passphrase: String) async throws -> SymmetricKey {
+        await beginOperation()
+        defer { endOperation() }
         let salt = VaultCrypto.randomSalt()
         let key = VaultCrypto.newVaultKey()
         let wrapping = try VaultCrypto.deriveKey(passphrase: passphrase, salt: salt, iterations: iterations)
@@ -138,6 +147,8 @@ public actor SyncEngine {
     /// Joins the server's vault. A wrong passphrase throws `.wrongPassphrase` before anything
     /// is changed locally or remotely.
     public func join(passphrase: String, mode: JoinMode) async throws -> SymmetricKey {
+        await beginOperation()
+        defer { endOperation() }
         guard let metadata = try await transport.getVault() else { throw SyncError.noVault }
         let key = try Self.unwrap(metadata, passphrase: passphrase)
         switch mode {
@@ -157,6 +168,8 @@ public actor SyncEngine {
     /// Re-wraps the vault key under `new` with a fresh salt. The vault key itself, and so every
     /// stored record, is unchanged.
     public func changePassphrase(old: String, new: String) async throws {
+        await beginOperation()
+        defer { endOperation() }
         guard let metadata = try await transport.getVault() else { throw SyncError.noVault }
         guard metadata.vaultID == (await store.syncState).vaultID else { throw SyncError.vaultChanged }
         let key = try Self.unwrap(metadata, passphrase: old)
@@ -171,6 +184,8 @@ public actor SyncEngine {
     /// Throws `.locked` without a key and `.vaultChanged` (before pushing) when the server's
     /// vault is gone or is a different vault.
     public func sync() async throws -> SyncReport {
+        await beginOperation()
+        defer { endOperation() }
         guard let key = vaultKey else { throw SyncError.locked }
         var state = await store.syncState
         guard let vault = try await transport.getVault(), vault.vaultID == state.vaultID else {
@@ -199,10 +214,14 @@ public actor SyncEngine {
         while hasMore {
             let page = try await transport.fetch(since: state.lastSeq, limit: Self.batchSize)
             let plain = try page.records.map { record in
-                PlainRecord(id: record.id, type: record.type, updatedAt: record.updatedAt,
-                            deleted: record.deleted, deviceID: record.deviceID,
-                            payload: try VaultCrypto.open(record.ciphertext, id: record.id,
-                                                          type: record.type, key: key))
+                let payload: Data
+                do {
+                    payload = try VaultCrypto.open(record.ciphertext, id: record.id, type: record.type, key: key)
+                } catch VaultCryptoError.tamperedRecord {
+                    throw SyncError.tamperedRecord(record.id)
+                }
+                return PlainRecord(id: record.id, type: record.type, updatedAt: record.updatedAt,
+                                   deleted: record.deleted, deviceID: record.deviceID, payload: payload)
             }
             try await store.apply(plain)
             state.lastSeq = page.nextSince
@@ -211,6 +230,24 @@ public actor SyncEngine {
             hasMore = page.hasMore
         }
         return report
+    }
+
+    /// Waits until no other operation is running, then marks one as running (FIFO).
+    private func beginOperation() async {
+        if operationRunning {
+            await withCheckedContinuation { waitingOperations.append($0) }
+        } else {
+            operationRunning = true
+        }
+    }
+
+    /// Hands the running slot to the next waiter, or frees it.
+    private func endOperation() {
+        if waitingOperations.isEmpty {
+            operationRunning = false
+        } else {
+            waitingOperations.removeFirst().resume()
+        }
     }
 
     private static func unwrap(_ metadata: VaultMetadata, passphrase: String) throws -> SymmetricKey {
