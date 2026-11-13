@@ -20,10 +20,9 @@ public enum InMemoryTransportError: Error, Equatable {
 ///   an exact `hasMore`, and `nextSince` = last returned seq, or `min(since, max seq)` when empty
 ///   (so a client ahead of a server restored from a backup sees `nextSince < since`).
 ///
-/// Test hooks: `failNextUpsert()` / `failUpsert(afterSuccessfulCalls:)`,
-/// `snapshot()` / `restore(_:)`,
-/// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `mutateStoredRecord(_:_:)`, `onFetch(_:)`, `onNextUpsert(_:)`, `onNextRewrap(_:)`,
-/// call counters and `storedRecords` for inspection. Hooks run at the start of the call, before it
+/// Test hooks: `failNextUpsert()` / `failUpsert(afterSuccessfulCalls:)`, `snapshot()` / `restore(_:)`,
+/// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `mutateStoredRecord(_:_:)`, `onFetch(_:)`,
+/// `onNextUpsert(_:)`, `onNextRewrap(_:)`, call counters and `storedRecords` for inspection. Hooks run at the start of the call, before it
 /// does its work; the actor is reentrant, so other calls proceed while a hook is suspended.
 public actor InMemoryTransport: SyncTransport {
     public static let maxBatch = 500
