@@ -149,6 +149,19 @@ final class RecordsTests: XCTestCase {
         }
     }
 
+    func testEmptyPageAfterRewindReportsMaxSeq() async throws {
+        try await withApp { app in
+            let none = try await fetch(app, "since=7")
+            XCTAssertEqual(none, RecordsPage(records: [], nextSince: 0, hasMore: false))
+            _ = try await upsert(app, [record(), record()])
+            // A client that saw seq 9 before the server was restored from a backup holding seq 1...2.
+            let rewound = try await fetch(app, "since=9")
+            XCTAssertEqual(rewound, RecordsPage(records: [], nextSince: 2, hasMore: false))
+            let caughtUp = try await fetch(app, "since=2")
+            XCTAssertEqual(caughtUp, RecordsPage(records: [], nextSince: 2, hasMore: false))
+        }
+    }
+
     func testPagingWithLimitSetsHasMoreAndNextSince() async throws {
         try await withApp { app in
             _ = try await upsert(app, (0..<5).map { _ in record() })

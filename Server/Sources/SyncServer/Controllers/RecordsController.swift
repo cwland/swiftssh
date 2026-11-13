@@ -35,7 +35,20 @@ struct RecordsController: RouteCollection {
             .limit(limit + 1)
             .all()
         let page = rows.prefix(limit).map(\.record)
-        return RecordsPage(records: page, nextSince: page.last?.seq ?? since, hasMore: rows.count > limit)
+        if let last = page.last {
+            return RecordsPage(records: page, nextSince: last.seq ?? since, hasMore: rows.count > limit)
+        }
+        // Nothing after `since`. If `since` is beyond the newest seq, the database was restored
+        // from an older backup; reporting the real max lets the client notice and resync.
+        return RecordsPage(records: [], nextSince: min(since, try await Self.maxSeq(on: req.db)), hasMore: false)
+    }
+
+    /// The highest assigned `seq`, or 0 with no records.
+    private static func maxSeq(on db: Database) async throws -> Int64 {
+        guard let sql = db as? SQLDatabase else { throw Abort(.internalServerError) }
+        struct MaxSeq: Decodable { var m: Int64 }
+        return try await sql.raw("SELECT COALESCE(MAX(seq), 0) AS m FROM records")
+            .first(decoding: MaxSeq.self)?.m ?? 0
     }
 
     func upsert(req: Request) async throws -> UpsertResponse {
@@ -76,11 +89,7 @@ struct RecordsController: RouteCollection {
     /// Applies `MergeRule` per record; each accepted write gets the next `seq`. Returns the stored
     /// copy of every submitted id, in first-submitted order.
     private static func merge(_ incoming: [EncryptedRecord], on db: Database) async throws -> [EncryptedRecord] {
-        guard let sql = db as? SQLDatabase else { throw Abort(.internalServerError) }
-        struct MaxSeq: Decodable { var m: Int64 }
-        let current = try await sql.raw("SELECT COALESCE(MAX(seq), 0) AS m FROM records")
-            .first(decoding: MaxSeq.self)?.m ?? 0
-        var nextSeq = current + 1
+        var nextSeq = try await maxSeq(on: db) + 1
 
         var rows: [UUID: RecordRow] = [:]
         var order: [UUID] = []

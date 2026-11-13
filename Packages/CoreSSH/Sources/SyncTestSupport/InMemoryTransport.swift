@@ -17,9 +17,11 @@ public enum InMemoryTransportError: Error, Equatable {
 /// - `upsert` applies `MergeRule` per record, gives only winners the next contiguous `seq`,
 ///   and returns the stored copy of every submitted id in first-submitted order.
 /// - `fetch` returns records with `seq > since` ascending, `limit` clamped to 1...500,
-///   an exact `hasMore`, and `nextSince` = last returned seq (or `since` when empty).
+///   an exact `hasMore`, and `nextSince` = last returned seq, or `min(since, max seq)` when empty
+///   (so a client ahead of a server restored from a backup sees `nextSince < since`).
 ///
 /// Test hooks: `failNextUpsert()` / `failUpsert(afterSuccessfulCalls:)`,
+/// `snapshot()` / `restore(_:)`,
 /// `replaceVault(_:clearRecords:)`, `corruptCiphertext(of:)`, `mutateStoredRecord(_:_:)`, `onFetch(_:)`, `onNextUpsert(_:)`, `onNextRewrap(_:)`,
 /// call counters and `storedRecords` for inspection. Hooks run at the start of the call, before it
 /// does its work; the actor is reentrant, so other calls proceed while a hook is suspended.
@@ -39,7 +41,27 @@ public actor InMemoryTransport: SyncTransport {
     public private(set) var upsertCallCount = 0
     public private(set) var fetchCallCount = 0
 
+    /// The whole server state (vault, records, seq counter), as a backup would hold it.
+    public struct Snapshot: Sendable {
+        fileprivate let vault: VaultMetadata?
+        fileprivate let recordsByID: [UUID: EncryptedRecord]
+        fileprivate let lastSeq: Int64
+    }
+
     public init() {}
+
+    /// Takes a backup of the server state.
+    public func snapshot() -> Snapshot {
+        Snapshot(vault: vault, recordsByID: recordsByID, lastSeq: lastSeq)
+    }
+
+    /// Restores a backup taken by `snapshot()`: everything written since is lost, and `seq`
+    /// numbering resumes from the backup's highest seq.
+    public func restore(_ snapshot: Snapshot) {
+        vault = snapshot.vault
+        recordsByID = snapshot.recordsByID
+        lastSeq = snapshot.lastSeq
+    }
 
     /// Every stored record, ordered by `seq`.
     public var storedRecords: [EncryptedRecord] {
@@ -130,7 +152,8 @@ public actor InMemoryTransport: SyncTransport {
         let limit = min(max(limit, 1), Self.maxLimit)
         let newer = storedRecords.filter { ($0.seq ?? 0) > since }
         let page = Array(newer.prefix(limit))
-        return RecordsPage(records: page, nextSince: page.last?.seq ?? since, hasMore: newer.count > limit)
+        return RecordsPage(records: page, nextSince: page.last?.seq ?? min(since, lastSeq),
+                           hasMore: newer.count > limit)
     }
 
     public func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord] {

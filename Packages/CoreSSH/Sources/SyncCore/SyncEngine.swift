@@ -183,6 +183,10 @@ public actor SyncEngine {
     /// Pushes dirty records, then pulls everything newer than `syncState.lastSeq`.
     /// Throws `.locked` without a key and `.vaultChanged` (before pushing) when the server's
     /// vault is gone or is a different vault.
+    ///
+    /// If the server reports a `nextSince` below `lastSeq` (same vault, restored from an older
+    /// backup), every local record is marked dirty, `lastSeq` is reset to 0 and push + pull run
+    /// once more, so the server gets back what it lost and this device sees everything.
     public func sync() async throws -> SyncReport {
         await beginOperation()
         defer { endOperation() }
@@ -193,6 +197,20 @@ public actor SyncEngine {
         }
 
         var report = SyncReport(pushed: 0, pulled: 0)
+        report.pushed += try await push(key: key)
+        if try await pull(key: key, state: &state, report: &report) {
+            try await store.markAllDirty()
+            state.lastSeq = 0
+            try await store.setSyncState(state)
+            report.pushed += try await push(key: key)
+            // From seq 0 a rewind can't be reported again; at most one resync per call.
+            _ = try await pull(key: key, state: &state, report: &report)
+        }
+        return report
+    }
+
+    /// Seals and uploads every dirty record in batches; returns how many were sent.
+    private func push(key: SymmetricKey) async throws -> Int {
         let dirty = try await store.dirtyRecords()
         var start = 0
         while start < dirty.count {
@@ -207,13 +225,19 @@ public actor SyncEngine {
             _ = try await transport.upsert(sealed)
             try await store.markClean(Dictionary(batch.map { ($0.id, $0.updatedAt) },
                                                  uniquingKeysWith: { _, last in last }))
-            report.pushed += batch.count
             start += Self.batchSize
         }
+        return dirty.count
+    }
 
+    /// Pulls pages after `state.lastSeq`, applying each and saving the new `lastSeq`.
+    /// Returns true, without changing `lastSeq`, when the server reports a `nextSince` below it.
+    private func pull(key: SymmetricKey, state: inout SyncState, report: inout SyncReport) async throws -> Bool {
         var hasMore = true
         while hasMore {
-            let page = try await transport.fetch(since: state.lastSeq, limit: Self.batchSize)
+            let since = state.lastSeq
+            let page = try await transport.fetch(since: since, limit: Self.batchSize)
+            if page.nextSince < since { return true }
             let plain = try page.records.map { record in
                 let payload: Data
                 do {
@@ -232,7 +256,7 @@ public actor SyncEngine {
             report.pulled += plain.count
             hasMore = page.hasMore
         }
-        return report
+        return false
     }
 
     /// Waits until no other operation is running, then marks one as running (FIFO).

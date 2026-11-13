@@ -478,6 +478,44 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
+    func testRestoredServerBackupTriggersFullResync() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        let b = device("mac-b", transport)
+        let nas = host("nas"), pi = host("pi"), router = host("router")
+        try await a.store.insert(nas)
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        _ = try await b.engine.sync()
+        let backup = await transport.snapshot() // holds only nas (seq 1)
+
+        try await a.store.insert(pi)
+        _ = try await a.engine.sync()        // pi: seq 2, A at lastSeq 2
+        try await b.store.insert(router)
+        _ = try await b.engine.sync()        // router: seq 3, B at lastSeq 3
+        await transport.restore(backup)      // same vaultID, pi and router lost
+
+        let reportA = try await a.engine.sync()
+        XCTAssertEqual(reportA.pushed, 2)    // nas + pi, re-sent after the rewind
+        _ = try await b.engine.sync()
+        _ = try await a.engine.sync()
+
+        let expected = Set([nas.id, pi.id, router.id])
+        let onServer = await transport.storedRecords.map(\.id)
+        XCTAssertEqual(Set(onServer), expected)
+        for (name, d) in [("A", a), ("B", b)] {
+            for model in [nas, pi, router] {
+                let local = try await d.store.model(Host.self, id: model.id)
+                XCTAssertEqual(local, model, "\(name) is missing \(model.label)")
+            }
+            let dirty = await d.store.dirtyCount
+            XCTAssertEqual(dirty, 0)
+            let state = await d.store.syncState
+            XCTAssertEqual(state.lastSeq, 3)
+        }
+    }
+
     func testChangePassphraseWithStaleRewrapThrowsVaultChanged() async throws {
         let transport = InMemoryTransport()
         let a = device("mac-a", transport)
