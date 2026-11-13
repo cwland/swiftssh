@@ -563,6 +563,58 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
+    func testOutOfRangeVaultIterationsAreRejectedBeforeDeriving() async throws {
+        for bad in [0, -1, 999, 10_000_001, Int.max] {
+            let transport = InMemoryTransport()
+            let a = device("mac-a", transport)
+            _ = try await a.engine.createVault(passphrase: passphrase)
+            let current = await transport.vault
+            var metadata = try XCTUnwrap(current)
+            metadata.iterations = bad
+            await transport.replaceVault(metadata, clearRecords: false)
+
+            do {
+                _ = try await device("mac-b", transport).engine.join(passphrase: passphrase, mode: .merge)
+                XCTFail("expected .invalidVaultMetadata for join with \(bad) iterations")
+            } catch {
+                XCTAssertEqual(error as? SyncError, .invalidVaultMetadata, "join, \(bad)")
+            }
+            do {
+                try await a.engine.changePassphrase(old: passphrase, new: "other")
+                XCTFail("expected .invalidVaultMetadata for changePassphrase with \(bad) iterations")
+            } catch {
+                XCTAssertEqual(error as? SyncError, .invalidVaultMetadata, "changePassphrase, \(bad)")
+            }
+        }
+    }
+
+    func testInconsistentPagesThrowInvalidServerResponse() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        try await a.store.insert(host("nas"))
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+        let stored = await transport.storedRecords
+
+        let bogusPages = [
+            ("records without advancing", RecordsPage(records: stored, nextSince: 0, hasMore: true)),
+            ("records going backwards", RecordsPage(records: stored, nextSince: 0, hasMore: false)),
+            ("hasMore without records", RecordsPage(records: [], nextSince: 0, hasMore: true)),
+        ]
+        for (name, page) in bogusPages {
+            let scripted = ScriptedFetchTransport(inner: transport, page: page)
+            let store = InMemoryStore(deviceID: "mac-b")
+            let engine = SyncEngine(transport: scripted, store: store, deviceID: "mac-b", iterations: iterations)
+            _ = try await engine.join(passphrase: passphrase, mode: .merge)
+            do {
+                _ = try await engine.sync()
+                XCTFail("expected .invalidServerResponse: \(name)")
+            } catch {
+                XCTAssertEqual(error as? SyncError, .invalidServerResponse, name)
+            }
+        }
+    }
+
     func testChangePassphraseWithStaleRewrapThrowsVaultChanged() async throws {
         let transport = InMemoryTransport()
         let a = device("mac-a", transport)
@@ -625,4 +677,30 @@ final class SyncEngineTests: XCTestCase {
 private actor SinceRecorder {
     private(set) var values: [Int64] = []
     func record(_ since: Int64) { values.append(since) }
+}
+
+/// Delegates to `inner` but answers every `fetch` with `page`; gives up after 10 fetches so a
+/// looping engine fails the test instead of hanging it.
+private final class ScriptedFetchTransport: SyncTransport {
+    struct TooManyFetches: Error {}
+
+    let inner: InMemoryTransport
+    let page: RecordsPage
+    private let fetches = SinceRecorder()
+
+    init(inner: InMemoryTransport, page: RecordsPage) {
+        self.inner = inner
+        self.page = page
+    }
+
+    func getVault() async throws -> VaultMetadata? { try await inner.getVault() }
+    func putVault(_ metadata: VaultMetadata) async throws { try await inner.putVault(metadata) }
+    func rewrap(_ request: RewrapRequest) async throws -> VaultMetadata { try await inner.rewrap(request) }
+    func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord] { try await inner.upsert(records) }
+
+    func fetch(since: Int64, limit: Int) async throws -> RecordsPage {
+        await fetches.record(since)
+        guard await fetches.values.count <= 10 else { throw TooManyFetches() }
+        return page
+    }
 }

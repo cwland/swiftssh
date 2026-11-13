@@ -85,6 +85,12 @@ public enum SyncError: Error, Equatable {
     case wrongPassphrase, noVault, vaultAlreadyExists, vaultChanged, locked
     /// A pulled record failed authentication (corrupted or tampered with on the server).
     case tamperedRecord(UUID)
+    /// The server's vault metadata is out of range (e.g. an iteration count outside
+    /// `SyncEngine.allowedIterations`); nothing is derived from it.
+    case invalidVaultMetadata
+    /// A page of records contradicts itself (e.g. records without `nextSince` advancing, or
+    /// `hasMore` with no records), so pulling would loop or skip records.
+    case invalidServerResponse
 }
 
 public struct SyncReport: Equatable, Sendable {
@@ -106,6 +112,9 @@ public struct SyncReport: Equatable, Sendable {
 /// the previous one to finish, so the actor's reentrancy at `await`s can't interleave them.
 public actor SyncEngine {
     public static let batchSize = 500
+    /// PBKDF2 iteration counts accepted from the server's vault metadata. A server could
+    /// otherwise make a joining device hang (huge count) or derive a weak key (tiny count).
+    public static let allowedIterations = 1_000 ... 10_000_000
 
     private let transport: any SyncTransport
     private let store: any SyncLocalStore
@@ -237,6 +246,9 @@ public actor SyncEngine {
         while hasMore {
             let since = state.lastSeq
             let page = try await transport.fetch(since: since, limit: Self.batchSize)
+            guard page.records.isEmpty ? !page.hasMore : page.nextSince > since else {
+                throw SyncError.invalidServerResponse
+            }
             if page.nextSince < since { return true }
             let plain = try page.records.map { record in
                 let payload: Data
@@ -278,6 +290,7 @@ public actor SyncEngine {
     }
 
     private static func unwrap(_ metadata: VaultMetadata, passphrase: String) throws -> SymmetricKey {
+        guard allowedIterations.contains(metadata.iterations) else { throw SyncError.invalidVaultMetadata }
         let wrapping = try VaultCrypto.deriveKey(passphrase: passphrase, salt: metadata.salt,
                                                  iterations: metadata.iterations)
         do {
