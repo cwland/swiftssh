@@ -7,3 +7,5 @@ A native macOS SSH client and terminal emulator inspired by the design and workf
 - **Key libraries:** SwiftTerm, Citadel (swift-nio-ssh), SwiftData + CloudKit, iCloud Keychain
 
 See the full [project specification](docs/SPEC.md).
+
+Self-hosting the sync server: see [Server/README.md](Server/README.md).

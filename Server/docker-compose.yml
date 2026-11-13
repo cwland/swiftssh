@@ -1,0 +1,16 @@
+services:
+  termius-sync:
+    build:
+      context: ..
+      dockerfile: Server/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      SYNC_API_KEYS: ${SYNC_API_KEYS:?set SYNC_API_KEYS (comma-separated)}
+      DATABASE_PATH: /data/sync.sqlite
+    volumes:
+      - sync-data:/data
+    restart: unless-stopped
+
+volumes:
+  sync-data:
