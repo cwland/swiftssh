@@ -76,4 +76,29 @@ final class VaultCryptoTests: XCTestCase {
         let sealed = try VaultCrypto.seal(Data("192.168.50.200".utf8), id: UUID(), type: .host, key: key)
         XCTAssertNil(sealed.range(of: Data("192.168".utf8)))
     }
+
+    func testComposedAndDecomposedPassphraseDeriveSameKey() throws {
+        let salt = VaultCrypto.randomSalt()
+        let a = try VaultCrypto.deriveKey(passphrase: "caf\u{E9}", salt: salt, iterations: iterations)
+        let b = try VaultCrypto.deriveKey(passphrase: "cafe\u{301}", salt: salt, iterations: iterations)
+        XCTAssertEqual(bytes(a), bytes(b))
+    }
+
+    func testOpenFailsWhenCiphertextIsModified() throws {
+        let key = VaultCrypto.newVaultKey()
+        let id = UUID()
+        var sealed = try VaultCrypto.seal(Data("secret".utf8), id: id, type: .host, key: key)
+        sealed[sealed.startIndex + 15] ^= 0x01
+        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id, type: .host, key: key)) {
+            XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
+        }
+    }
+
+    func testOpenFailsWithWrongKey() throws {
+        let id = UUID()
+        let sealed = try VaultCrypto.seal(Data("secret".utf8), id: id, type: .host, key: VaultCrypto.newVaultKey())
+        XCTAssertThrowsError(try VaultCrypto.open(sealed, id: id, type: .host, key: VaultCrypto.newVaultKey())) {
+            XCTAssertEqual($0 as? VaultCryptoError, .tamperedRecord)
+        }
+    }
 }

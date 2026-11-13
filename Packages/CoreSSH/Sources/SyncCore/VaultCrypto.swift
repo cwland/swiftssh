@@ -22,7 +22,7 @@ public enum VaultCrypto {
 
     public static func deriveKey(passphrase: String, salt: Data, iterations: Int) throws -> SymmetricKey {
         try KDF.Insecure.PBKDF2.deriveKey(
-            from: Data(passphrase.utf8),
+            from: Data(passphrase.precomposedStringWithCanonicalMapping.utf8),
             salt: salt,
             using: .sha256,
             outputByteCount: 32,
