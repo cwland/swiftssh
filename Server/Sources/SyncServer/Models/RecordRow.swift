@@ -48,8 +48,9 @@ final class RecordRow: Model, @unchecked Sendable {
             deviceID: deviceID, seq: seq, ciphertext: ciphertext)
     }
 
+    /// Whole milliseconds, rounded down like `Timestamps` and the client's record AAD.
     static func millis(_ date: Date) -> Int64 {
-        Int64((date.timeIntervalSince1970 * 1000).rounded())
+        Int64((date.timeIntervalSince1970 * 1000).rounded(.down))
     }
 
     /// Same conversion `JSONDecoder` uses for `.millisecondsSince1970`, so values round-trip exactly.

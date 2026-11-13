@@ -123,6 +123,19 @@ final class RecordsTests: XCTestCase {
         }
     }
 
+    func testSubMillisecondUpdatedAtIsFlooredToWholeMilliseconds() async throws {
+        // Clients floor too (Timestamps, the record AAD); rounding up would break both.
+        XCTAssertEqual(RecordRow.millis(Date(timeIntervalSince1970: 1_700_000_000.1239)), 1_700_000_000_123)
+        try await withApp { app in
+            var r = record()
+            r.updatedAt = Date(timeIntervalSince1970: 1_700_000_000.1239)
+            let stored = try await upsert(app, [r])
+            XCTAssertEqual(stored.first?.updatedAt, Date(timeIntervalSince1970: 1_700_000_000_123 / 1000))
+            let page = try await fetch(app, "since=0")
+            XCTAssertEqual(page.records.first?.updatedAt, Date(timeIntervalSince1970: 1_700_000_000_123 / 1000))
+        }
+    }
+
     func testFetchSinceReturnsOnlyLaterRecordsInOrder() async throws {
         try await withApp { app in
             let rs = (0..<4).map { _ in record() }
