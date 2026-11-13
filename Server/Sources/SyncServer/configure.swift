@@ -39,7 +39,7 @@ public func configure(_ app: Application, apiKeys: Set<String>, database: Databa
     app.middleware.use(JSONErrorMiddleware())
 
     app.databases.use(database, as: .sqlite)
-    // Migrations are registered here by later tasks.
+    app.migrations.add(CreateVault())
     try await app.autoMigrate()
 
     try routes(app, apiKeys: apiKeys)
