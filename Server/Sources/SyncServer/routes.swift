@@ -11,6 +11,7 @@ func routes(_ app: Application, apiKeys: Set<String>) throws {
     let v1 = app.grouped("v1").grouped(APIKeyMiddleware(keys: apiKeys))
 
     try v1.register(collection: VaultController())
+    try v1.register(collection: RecordsController())
 
     // Vapor only runs group middleware on matched routes. These lowest-priority catch-alls make
     // unknown /v1 paths hit the key check first (401 before 404, so routes aren't revealed).

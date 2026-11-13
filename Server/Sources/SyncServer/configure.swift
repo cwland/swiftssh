@@ -35,11 +35,14 @@ public func configure(_ app: Application, apiKeys: Set<String>, database: Databa
     ContentConfiguration.global.use(encoder: CoreJSON.encoder, for: .json)
     ContentConfiguration.global.use(decoder: CoreJSON.decoder, for: .json)
 
+    app.routes.defaultMaxBodySize = "10mb"
+
     app.middleware = .init()
     app.middleware.use(JSONErrorMiddleware())
 
     app.databases.use(database, as: .sqlite)
     app.migrations.add(CreateVault())
+    app.migrations.add(CreateRecords())
     try await app.autoMigrate()
 
     try routes(app, apiKeys: apiKeys)
