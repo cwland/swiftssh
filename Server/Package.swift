@@ -37,6 +37,8 @@ let package = Package(
                 "SyncServer",
                 .product(name: "XCTVapor", package: "vapor"),
                 .product(name: "CoreModels", package: "CoreSSH"),
+                .product(name: "SyncCore", package: "CoreSSH"),
+                .product(name: "SyncTestSupport", package: "CoreSSH"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
