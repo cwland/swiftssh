@@ -274,6 +274,53 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(after, 0)
     }
 
+    func testRecreateVaultAfterWipeReuploadsEverything() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        let b = device("mac-b", transport)
+        let hosts = [host("nas"), host("pi"), host("router")]
+        for h in hosts { try await a.store.insert(h) }
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        _ = try await b.engine.sync()
+        for d in [a, b] {
+            let dirty = await d.store.dirtyCount
+            XCTAssertEqual(dirty, 0)
+            let state = await d.store.syncState
+            XCTAssertEqual(state.lastSeq, 3)
+        }
+
+        await transport.replaceVault(nil) // server wiped and rebuilt empty
+        do {
+            _ = try await a.engine.sync()
+            XCTFail("expected .vaultChanged")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .vaultChanged)
+        }
+
+        _ = try await a.engine.createVault(passphrase: "new vault phrase")
+        let reportA = try await a.engine.sync()
+        XCTAssertEqual(reportA.pushed, 3)
+        let onServer = await transport.storedRecords.map(\.id)
+        XCTAssertEqual(Set(onServer), Set(hosts.map(\.id)))
+
+        let fetchedFrom = SinceRecorder()
+        await transport.onFetch { since in await fetchedFrom.record(since) }
+        _ = try await b.engine.join(passphrase: "new vault phrase", mode: .merge)
+        let reportB = try await b.engine.sync()
+        let firstSince = await fetchedFrom.values.first
+        XCTAssertEqual(firstSince, 0)
+        XCTAssertEqual(reportB.pulled, 3)
+        let newVaultID = await transport.vault?.vaultID
+        let stateB = await b.store.syncState
+        XCTAssertEqual(stateB, SyncState(vaultID: newVaultID, lastSeq: 3))
+        for h in hosts {
+            let onB = try await b.store.model(Host.self, id: h.id)
+            XCTAssertEqual(onB, h)
+        }
+    }
+
     func testSyncWhileLockedThrows() async throws {
         let transport = InMemoryTransport()
         let a = device("mac-a", transport)
@@ -573,4 +620,9 @@ final class SyncEngineTests: XCTestCase {
         let total = await transport.storedRecords.count
         XCTAssertEqual(total, 1_200)
     }
+}
+
+private actor SinceRecorder {
+    private(set) var values: [Int64] = []
+    func record(_ since: Int64) { values.append(since) }
 }
