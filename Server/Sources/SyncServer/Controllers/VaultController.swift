@@ -1,4 +1,5 @@
 import Fluent
+import FluentSQL
 import SyncCore
 import Vapor
 
@@ -36,14 +37,22 @@ struct VaultController: RouteCollection {
 
     func rewrap(req: Request) async throws -> VaultMetadata {
         let body = try req.content.decode(RewrapRequest.self)
-        guard let row = try await current(req.db) else { throw Abort(.notFound, reason: "No vault") }
-        guard row.wrappedKey == body.oldWrappedKey else {
+        guard let sql = req.db as? SQLDatabase else { throw Abort(.internalServerError) }
+        // Compare-and-swap in one statement: the old-key check is part of the write, so of
+        // concurrent rewraps sharing an old key at most one can match.
+        let updated = try await sql.update(VaultRow.schema)
+            .set("salt", to: SQLBind(body.salt))
+            .set("iterations", to: SQLBind(body.iterations))
+            .set("wrapped_key", to: SQLBind(body.wrappedKey))
+            .where("slot", .equal, SQLLiteral.numeric("1"))
+            .where("wrapped_key", .equal, SQLBind(body.oldWrappedKey))
+            .returning("id")
+            .all()
+        if updated.isEmpty {
+            if try await current(req.db) == nil { throw Abort(.notFound, reason: "No vault") }
             throw Abort(.conflict, reason: "Wrapped key does not match")
         }
-        row.salt = body.salt
-        row.iterations = body.iterations
-        row.wrappedKey = body.wrappedKey
-        try await row.update(on: req.db)
+        guard let row = try await current(req.db) else { throw Abort(.notFound, reason: "No vault") }
         return row.metadata
     }
 }
