@@ -55,4 +55,18 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(decoded.label, "Old")
         try roundTrip(h)
     }
+
+    func testOldKnownHostWithoutPublicKeyDecodes() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.123)
+        let k = KnownHost(hostPort: "h", keyType: "ssh-ed25519", fingerprintSHA256: "SHA256:x",
+                          publicKeyBase64: "AAAA", firstSeen: date, updatedAt: date)
+        let data = try CoreJSON.encoder.encode(k)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["publicKeyBase64"] as? String, "AAAA")
+        object.removeValue(forKey: "publicKeyBase64")
+        let decoded = try CoreJSON.decoder.decode(KnownHost.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.publicKeyBase64)
+        XCTAssertEqual(decoded.hostPort, "h")
+        try roundTrip(k)
+    }
 }

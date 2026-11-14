@@ -128,14 +128,18 @@ public struct KnownHost: SyncableModel {
     public var hostPort: String
     public var keyType: String
     public var fingerprintSHA256: String
+    /// Base64 of the public key wire blob; absent on records created before it was stored.
+    public var publicKeyBase64: String?
     public var firstSeen: Date
     public var updatedAt: Date
     public var deleted: Bool
 
     public init(id: UUID = UUID(), hostPort: String, keyType: String, fingerprintSHA256: String,
+                publicKeyBase64: String? = nil,
                 firstSeen: Date = Date(), updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.hostPort = hostPort; self.keyType = keyType
-        self.fingerprintSHA256 = fingerprintSHA256; self.firstSeen = firstSeen
+        self.fingerprintSHA256 = fingerprintSHA256; self.publicKeyBase64 = publicKeyBase64
+        self.firstSeen = firstSeen
         self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
