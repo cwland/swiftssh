@@ -9,6 +9,8 @@ import AppCore
 struct OnePasswordItemPicker: View {
     /// nil when `op` wasn't found.
     let client: (any OnePasswordCLI)?
+    /// Called with the listed items (kept in memory only), so references can show names.
+    var onItemsLoaded: ([OnePasswordItemSummary]) -> Void = { _ in }
     let choose: (String) -> Void
     let cancel: () -> Void
 
@@ -120,7 +122,9 @@ struct OnePasswordItemPicker: View {
     @ViewBuilder
     private func fieldList(_ item: OnePasswordItemSummary) -> some View {
         let all = Self.fields(of: item)
-        if all.isEmpty {
+        if all.isEmpty, item.category.uppercased() == "SSH_KEY" {
+            message("This is an SSH key. Use \u{201C}1Password SSH agent\u{201D} as the login instead.")
+        } else if all.isEmpty {
             message("This item has no fields to use.")
         } else {
             List(Self.ordered(all)) { field in
@@ -211,6 +215,7 @@ struct OnePasswordItemPicker: View {
         items = .loading
         do throws(OnePasswordError) {
             let loaded = try await client.listItems()
+            onItemsLoaded(loaded)
             items = .loaded(loaded.sorted {
                 $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending
             })
@@ -225,10 +230,12 @@ struct OnePasswordItemPicker: View {
         selectedItem = item
     }
 
-    /// The chosen item's standard fields, from its own summary (category and vault ID included).
+    /// The chosen item's standard fields for a password, from its own summary (category and vault ID
+    /// included). THE ONE place that calls `standardFields` with its new purpose parameter: if the core's
+    /// signature differs from `purpose: .password`, adjust only this call.
     private static func fields(of item: OnePasswordItemSummary) -> [OnePasswordField] {
         OnePasswordField.standardFields(itemID: item.id, vault: item.vault, vaultID: item.vaultID,
-                                        category: item.category)
+                                        category: item.category, purpose: .password)
     }
 
     // MARK: Helpers

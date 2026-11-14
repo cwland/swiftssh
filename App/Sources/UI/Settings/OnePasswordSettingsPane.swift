@@ -70,6 +70,9 @@ struct OnePasswordSettingsPane: View {
                 }
             } else if let path = setup.agentSocketPath {
                 StepDetail(path, monospaced: true)
+                if let failure = setup.agentFailure {
+                    StepDetail("The agent is not answering (is 1Password running with \u{201C}Use the SSH agent\u{201D} on?): \(failure)")
+                }
             } else {
                 StepDetail("In 1Password, open \(OnePasswordLinks.developerSettingsPath) and turn on \u{201C}Use the SSH agent\u{201D}.")
             }
@@ -77,10 +80,13 @@ struct OnePasswordSettingsPane: View {
             if setup.isAgentBlocked {
                 Button("Open Privacy Settings") { setup.openPrivacySettings() }
                 Button("Recheck") { setup.refresh() }
-            } else if setup.agentSocketPath == nil {
+            } else if setup.agentSocketPath == nil || setup.agentFailure != nil {
                 Button("Open 1Password") { setup.openOnePassword() }
                     .disabled(checked && !setup.isAppInstalled)
                     .help("Opens 1Password; then go to \(OnePasswordLinks.developerSettingsPath)")
+                if setup.agentFailure != nil {
+                    Button("Recheck") { setup.refresh() }
+                }
             }
         }
     }
@@ -328,6 +334,8 @@ private struct AdvancedOverrides: View {
     @State private var isExpanded = false
     @State private var socketText = ""
     @State private var cliText = ""
+    /// Why the socket override was not saved; shown under the field.
+    @State private var socketError: String?
     @FocusState private var focused: Field?
 
     private enum Field { case socket, cli }
@@ -337,6 +345,12 @@ private struct AdvancedOverrides: View {
             VStack(alignment: .leading, spacing: 10) {
                 overrideField(title: "SSH agent socket", text: $socketText, field: .socket,
                          placeholder: OnePasswordPaths.agentSocketCandidates.first ?? "")
+                if let socketError {
+                    Text(socketError)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 overrideField(title: "op path", text: $cliText, field: .cli,
                          placeholder: OnePasswordPaths.cliCandidates.first ?? "")
                 Text("Leave empty to look in the standard places. Saved on this Mac only.")
@@ -372,6 +386,12 @@ private struct AdvancedOverrides: View {
         switch field {
         case .socket:
             let value = Self.nonEmpty(socketText)
+            if let value, let message = OnePasswordPaths.validateSocketOverride(value) {
+                // Not saved: the previous override (or the standard places) stays in use.
+                socketError = message
+                return
+            }
+            socketError = nil
             guard value != setup.settings.agentSocketOverride else { return }
             setup.settings.agentSocketOverride = value
         case .cli:
