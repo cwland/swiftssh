@@ -3,7 +3,8 @@ import AppCore
 import CoreModels
 
 /// A host's OS badge: a colored rounded square with the logo for that OS (from the Badges
-/// folder, set in Settings → OS Icons or dropped in by hand) or, without one, a generic SF Symbol.
+/// folder, set in Settings → OS Icons or dropped in by hand) or, without one, the catalog's SF Symbol.
+/// An id the catalog doesn't know gets the grey generic badge.
 /// Color and white/original drawing come from the OS Icons settings. Reads through the observable
 /// `BadgeLogoStore.shared`, so every badge redraws as soon as a setting or logo changes.
 /// The app ships no distro logos.
@@ -37,20 +38,8 @@ struct BadgeView: View {
 }
 
 extension OSBadge {
+    /// Catalog name (the raw id for an OS this build doesn't know).
     var displayName: String {
-        switch self {
-        case .ubuntu: "Ubuntu"
-        case .debian: "Debian"
-        case .raspberryPiOS: "Raspberry Pi OS"
-        case .fedora: "Fedora"
-        case .rhel: "RHEL"
-        case .alpine: "Alpine"
-        case .arch: "Arch"
-        case .macOS: "macOS"
-        case .freeBSD: "FreeBSD"
-        case .linux: "Linux"
-        case .synology: "Synology"
-        case .homeAssistant: "Home Assistant"
-        }
+        BadgeStyle.displayName(for: self)
     }
 }

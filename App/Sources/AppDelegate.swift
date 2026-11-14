@@ -10,6 +10,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var environment: AppEnvironment?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // A color picked in the last moment is still waiting for its debounced write.
+        BadgeLogoStore.shared.flushPendingSave()
         guard let environment, case .ready(let vault) = environment.state else {
             return .terminateNow
         }

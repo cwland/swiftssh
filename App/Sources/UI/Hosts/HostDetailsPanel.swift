@@ -41,6 +41,7 @@ private struct HostDetailsContent: View {
     @FocusState private var tagsFieldFocused: Bool
     @State private var revealPassword = false
     @State private var showBadgePicker = false
+    @State private var showOSPicker = false
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -155,12 +156,9 @@ private struct HostDetailsContent: View {
                     BadgeView(badge: details.osBadge, size: 44)
                 }
                 .buttonStyle(.plain)
-                .help("Choose an OS badge")
+                .help("Choose the OS")
                 .popover(isPresented: $showBadgePicker, arrowEdge: .bottom) {
-                    BadgePickerList(selected: details.osBadge) { badge in
-                        details.osBadge = badge
-                        showBadgePicker = false
-                    }
+                    osPicker { showBadgePicker = false }
                 }
 
                 FieldColumn(title: "Address") {
@@ -169,6 +167,25 @@ private struct HostDetailsContent: View {
                 }
             }
         }
+    }
+
+    /// "Automatic (Ubuntu)", "Automatic" before the first detection, or the chosen OS.
+    private var osSummary: String {
+        guard details.isOSAutomatic else { return BadgeStyle.displayName(for: details.osBadge) }
+        guard let badge = details.osBadge else { return "Automatic" }
+        return "Automatic (\(BadgeStyle.displayName(for: badge)))"
+    }
+
+    private func osPicker(dismiss: @escaping () -> Void) -> some View {
+        OSPickerList(selected: details.osBadge, isAutomatic: details.isOSAutomatic,
+                     chooseAutomatic: {
+                         details.useAutomaticOS()
+                         dismiss()
+                     },
+                     choose: { badge in
+                         details.osBadge = badge
+                         dismiss()
+                     })
     }
 
     private var generalCard: some View {
@@ -185,6 +202,30 @@ private struct HostDetailsContent: View {
                     }
                 }
                 .labelsHidden()
+            }
+            FieldColumn(title: "OS") {
+                Button {
+                    showOSPicker = true
+                } label: {
+                    HStack(spacing: 8) {
+                        BadgeView(badge: details.osBadge, size: 20)
+                        Text(osSummary)
+                            .foregroundStyle(Color.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                    .font(.system(size: 13))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Automatic detects the OS when you connect; choosing one keeps it")
+                .popover(isPresented: $showOSPicker, arrowEdge: .bottom) {
+                    osPicker { showOSPicker = false }
+                }
             }
             FieldColumn(title: "Tags") {
                 TextField("Tags", text: $tagsText, prompt: Text("Comma-separated, e.g. prod, web"))
@@ -387,38 +428,102 @@ struct FieldColumn<Content: View>: View {
     }
 }
 
-/// Every `OSBadge`, for the badge button's popover.
-private struct BadgePickerList: View {
+/// The OS choice: "Automatic", then the catalog grouped by category, with a search field.
+private struct OSPickerList: View {
     let selected: OSBadge?
+    let isAutomatic: Bool
+    let chooseAutomatic: () -> Void
     let choose: (OSBadge) -> Void
+    @State private var query = ""
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(OSBadge.allCases, id: \.self) { badge in
-                    Button {
-                        choose(badge)
-                    } label: {
-                        HStack(spacing: 10) {
-                            BadgeView(badge: badge, size: 24)
-                            Text(badge.displayName)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color.primary)
-                            Spacer(minLength: 0)
-                            if badge == selected {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(Theme.accent)
-                            }
+        VStack(spacing: 0) {
+            TextField("Search", text: $query, prompt: Text("Search"))
+                .textFieldStyle(.roundedBorder)
+                .padding(8)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2, pinnedViews: [.sectionHeaders]) {
+                    if trimmedQuery.isEmpty {
+                        row(title: "Automatic", isSelected: isAutomatic, action: chooseAutomatic) {
+                            Image(systemName: "wand.and.stars")
+                                .frame(width: 24, height: 24)
+                                .foregroundStyle(.secondary)
                         }
-                        .padding(.horizontal, 8)
-                        .frame(height: 30)
-                        .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    ForEach(categories) { category in
+                        Section {
+                            ForEach(category.entries) { entry in
+                                row(title: entry.name, isSelected: !isAutomatic && entry.id == selected,
+                                    action: { choose(entry.id) }) {
+                                    BadgeView(badge: entry.id, size: 24)
+                                }
+                            }
+                        } header: {
+                            Text(category.title)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 8)
+                                .padding(.top, 8)
+                                .padding(.bottom, 2)
+                                .background(.background)
+                        }
+                    }
+                    if categories.isEmpty {
+                        Text("No match")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .padding(8)
+                    }
+                }
+                .padding(8)
+            }
+        }
+        .frame(width: 300, height: 440)
+    }
+
+    private var trimmedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private struct PickerSection: Identifiable {
+        let id: String
+        let title: String
+        let entries: [OSCatalog.Entry]
+    }
+
+    /// Categories with only the entries whose name, id or category matches the search.
+    private var categories: [PickerSection] {
+        let text = trimmedQuery
+        return OSCatalog.shared.categories.compactMap { category in
+            let matches = text.isEmpty ? category.entries : category.entries.filter {
+                $0.name.localizedStandardContains(text) || $0.id.rawValue.localizedStandardContains(text)
+                    || category.title.localizedStandardContains(text)
+            }
+            return matches.isEmpty ? nil : PickerSection(id: category.key, title: category.title, entries: matches)
+        }
+    }
+
+    private func row<Icon: View>(title: String, isSelected: Bool, action: @escaping () -> Void,
+                                 @ViewBuilder icon: () -> Icon) -> some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                icon()
+                Text(title)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .foregroundStyle(Theme.accent)
                 }
             }
-            .padding(8)
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .contentShape(Rectangle())
         }
-        .frame(width: 220, height: 380)
+        .buttonStyle(.plain)
     }
 }
