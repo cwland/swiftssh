@@ -38,30 +38,40 @@ struct OnePasswordPasswordField: View {
 
     @Environment(OnePasswordSetup.self) private var onePassword: OnePasswordSetup?
     @State private var showPicker = false
+    /// Set once "Pick from 1Password…" was tapped; until then (and without an `op://` value) no hint shows.
+    @State private var pickerRequested = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if SecretReference.isReference(text) {
-                OnePasswordReferenceChip(reference: text) { text = "" }
+                OnePasswordReferenceChip(reference: text, displayName: onePassword?.displayName(for: text)) { text = "" }
             } else {
                 RevealableSecureField(title: title, text: $text)
             }
             if onePassword != nil {
                 Button("Pick from 1Password\u{2026}") {
-                    onePassword?.refresh()
+                    // Only `op`'s status: listing agent keys here could trigger macOS's
+                    // "access data from other apps" prompt.
+                    onePassword?.refreshCLIStatus()
+                    pickerRequested = true
                     showPicker = true
                 }
                 .buttonStyle(.link)
                 .font(.system(size: 12))
                 .help("Use a password kept in 1Password. It is read from 1Password each time you connect.")
-                if let onePassword, onePassword.hasChecked, !onePassword.isCLIReady {
+                if let onePassword, pickerRequested || SecretReference.isReference(text),
+                   onePassword.hasCheckedCLI, !onePassword.isCLIReady {
                     OnePasswordSetupHint(detail: "Filling passwords needs the 1Password CLI.")
                 }
             }
         }
-        .onAppear { onePassword?.refreshIfNeeded() }
+        .onAppear {
+            // Opening Host Details checks nothing unless the field already holds a reference.
+            if SecretReference.isReference(text) { onePassword?.refreshCLIStatus() }
+        }
         .sheet(isPresented: $showPicker) {
-            OnePasswordItemPicker(client: onePassword?.makeClient()) { reference in
+            OnePasswordItemPicker(client: onePassword?.makeClient(),
+                                  onItemsLoaded: { onePassword?.remember(items: $0) }) { reference in
                 text = reference
                 showPicker = false
             } cancel: {
@@ -71,16 +81,18 @@ struct OnePasswordPasswordField: View {
     }
 }
 
-/// "1Password: Vault/Item/field" with a clear button. Shows the reference, never a secret.
+/// "1Password: Vault / Item / field" with a clear button. Shows names when `displayName` is known
+/// (the reference holds IDs), else the reference text; never a secret.
 struct OnePasswordReferenceChip: View {
     let reference: String
+    var displayName: String?
     let clear: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "key.horizontal.fill")
                 .foregroundStyle(Theme.accent)
-            Text("1Password: \(Self.displayPath(reference))")
+            Text("1Password: \(displayName ?? Self.displayPath(reference))")
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -148,7 +160,8 @@ struct OnePasswordAgentKeyPicker: View {
             if let onePassword, onePassword.hasChecked, !onePassword.isAgentReady {
                 OnePasswordSetupHint(detail: onePassword.isAgentBlocked
                                      ? "macOS is blocking access to 1Password\u{2019}s agent."
-                                     : "1Password\u{2019}s SSH agent wasn\u{2019}t found.")
+                                     : onePassword.agentFailure
+                                         ?? "1Password\u{2019}s SSH agent wasn\u{2019}t found.")
             }
         }
         .onAppear { onePassword?.refresh() }

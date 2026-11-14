@@ -43,10 +43,15 @@ final class OnePasswordSetup {
     private(set) var agentKeys: AgentKeys = .unknown
     /// False until the first `refresh()`; views don't claim "not set up" before that.
     private(set) var hasChecked = false
+    /// False until the first `refresh()` or `refreshCLIStatus()`; password fields wait for it.
+    private(set) var hasCheckedCLI = false
+    /// Items a picker listed this session (never stored), by item ID, to show names for references.
+    private(set) var knownItems: [String: OnePasswordItemSummary] = [:]
     /// Set when "Install with Homebrew" couldn't hand the command to Terminal.
     private(set) var installError: String?
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var versionTask: Task<Void, Never>?
     @ObservationIgnored private var testTask: Task<Void, Never>?
 
     init(settings: OnePasswordSettings) {
@@ -61,10 +66,18 @@ final class OnePasswordSetup {
         case .notFound: nil
         }
     }
-    /// Found and not blocked, by the file check or by the agent itself.
+    /// Found, not blocked, and listing its keys didn't fail (by the file check and by the agent itself).
     var isAgentReady: Bool {
         guard case .available = agentSocketStatus else { return false }
-        return agentKeys != .blocked
+        switch agentKeys {
+        case .blocked, .failed: return false
+        case .unknown, .loading, .loaded: return true
+        }
+    }
+    /// Why the agent answered nothing although its socket exists (not running, error), if it failed.
+    var agentFailure: String? {
+        if case .failed(let message) = agentKeys { return message }
+        return nil
     }
     var isAgentBlocked: Bool {
         if case .blocked = agentSocketStatus { return true }
@@ -102,21 +115,51 @@ final class OnePasswordSetup {
 
     // MARK: Checking
 
-    /// Re-checks the app, the socket, `op` (and its version), Homebrew and the agent's keys.
-    /// A CLI test result is kept unless `op` moved.
+    /// Re-checks only `op` (its path, and its version when it moved). Cheap: no `op` call, no agent
+    /// access; password fields use this, never the full `refresh()`.
+    func refreshCLIStatus() {
+        let cli = cli()
+        if cli != cliPath {
+            cliVersion = nil
+            versionTask?.cancel()
+            testTask?.cancel()
+            cliTest = .idle
+        }
+        cliPath = cli
+        hasCheckedCLI = true
+    }
+
+    /// Remembers the items a picker listed, so a reference can show "vault / item / field".
+    func remember(items: [OnePasswordItemSummary]) {
+        knownItems = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// "<vault name> / <item title> / <field>" for an `op://<vault>/<item ID>/<field>` reference whose
+    /// item a picker listed this session; nil otherwise (show the reference text).
+    func displayName(for reference: String) -> String? {
+        var path = reference.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.lowercased().hasPrefix("op://") else { return nil }
+        path.removeFirst(5)
+        if let query = path.firstIndex(of: "?") { path = String(path[..<query]) }
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false)
+            .map { String($0).removingPercentEncoding ?? String($0) }
+        guard parts.count == 3, let item = knownItems[parts[1]],
+              item.vault == parts[0] || item.vaultID == parts[0] else { return nil }
+        let title = item.title.isEmpty ? "Untitled item" : item.title
+        return "\(item.vault) / \(title) / \(parts[2])"
+    }
+
+    /// Re-checks the app, the socket, `op` (and its version), Homebrew and the agent's keys. This lists
+    /// the agent's keys, which can make macOS ask to access data from other apps: call it only from
+    /// Settings → 1Password and the agent key picker. A CLI test result is kept unless `op` moved.
     func refresh() {
         appURL = Self.findApp()
         homebrewPath = OnePasswordLinks.homebrewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         let status = currentAgentSocketStatus()
         agentSocketStatus = status
         let socket = agentSocketPath
-        let cli = cli()
-        if cli != cliPath {
-            cliVersion = nil
-            testTask?.cancel()
-            cliTest = .idle
-        }
-        cliPath = cli
+        refreshCLIStatus()
+        let cli = cliPath
         hasChecked = true
 
         if socket == nil {
@@ -127,13 +170,16 @@ final class OnePasswordSetup {
             agentKeys = .loading
         }
 
+        versionTask?.cancel()
+        versionTask = Task { [weak self] in
+            guard let cli else { return }
+            let version = await OnePasswordCLIVersion.read(executablePath: cli)
+            guard !Task.isCancelled, let self else { return }
+            if self.cliPath == cli { self.cliVersion = version }
+        }
+
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in
-            if let cli {
-                let version = await OnePasswordCLIVersion.read(executablePath: cli)
-                guard !Task.isCancelled, let self else { return }
-                if self.cliPath == cli { self.cliVersion = version }
-            }
             if let socket {
                 let result: AgentKeys
                 do {
@@ -147,11 +193,6 @@ final class OnePasswordSetup {
                 if self.agentSocketPath == socket { self.agentKeys = result }
             }
         }
-    }
-
-    /// Refreshes once, the first time an editor needs the status.
-    func refreshIfNeeded() {
-        if !hasChecked { refresh() }
     }
 
     /// "Test": runs `op`'s harmless integration check. Touch ID / the 1Password prompt may appear.
@@ -257,46 +298,133 @@ final class OnePasswordSetup {
     }
 }
 
-/// Reads `op --version` without a shell: arguments array, minimal environment, output capped,
-/// killed after 5 seconds. `--version` never talks to the 1Password app.
+/// Reads `op --version` without a shell: arguments array, minimal environment, output capped at 256
+/// bytes and read without blocking a thread, SIGKILL after 5 seconds. `--version` never talks to the
+/// 1Password app. (The core's process runner is internal to AppCore, so this stays a small copy.)
 enum OnePasswordCLIVersion {
     static func read(executablePath: String) async -> String? {
-        await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: run(executablePath: executablePath))
+        let run = Run()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+                run.start(executablePath: executablePath, continuation: continuation)
+            }
+        } onCancel: {
+            run.cancel()
+        }
+    }
+
+    private final class Run: @unchecked Sendable {
+        private let lock = NSLock()
+        private let process = Process()
+        private var output = Data()
+        private var exited = false
+        private var reachedEOF = false
+        private var succeeded = false
+        private var stopped = false
+        private var finished = false
+        private var continuation: CheckedContinuation<String?, Never>?
+
+        func start(executablePath: String, continuation: CheckedContinuation<String?, Never>) {
+            lock.lock()
+            self.continuation = continuation
+            let cancelled = stopped
+            lock.unlock()
+            if cancelled { finish(); return }
+
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = ["--version"]
+            process.environment = OnePasswordCLIVersion.environment(executablePath: executablePath)
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            pipe.fileHandleForReading.readabilityHandler = { [self] handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    markEOF()
+                } else {
+                    append(chunk)
+                }
+            }
+            process.terminationHandler = { [self] process in
+                markExited(status: process.terminationStatus)
+            }
+            do {
+                try process.run()
+            } catch {
+                pipe.fileHandleForReading.readabilityHandler = nil
+                lock.lock()
+                stopped = true
+                lock.unlock()
+                finish()
+                return
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) { [self] in
+                terminate()
             }
         }
-    }
 
-    private final class ProcessBox: @unchecked Sendable {
-        let process: Process
-        init(_ process: Process) { self.process = process }
-    }
+        func cancel() {
+            lock.lock()
+            stopped = true
+            let started = continuation != nil
+            lock.unlock()
+            if started { terminate() }
+        }
 
-    private static func run(executablePath: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = ["--version"]
-        process.environment = environment(executablePath: executablePath)
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        process.standardInput = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return nil
+        /// SIGKILL, then give up on the pipe after a second (a stray grandchild could hold it open).
+        private func terminate() {
+            lock.lock()
+            let done = finished
+            stopped = true
+            lock.unlock()
+            if done { return }
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) { [self] in
+                finish()
+            }
         }
-        let box = ProcessBox(process)
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
-            if box.process.isRunning { box.process.terminate() }
+
+        private func append(_ chunk: Data) {
+            lock.lock()
+            if output.count < 256 { output.append(chunk.prefix(256 - output.count)) }
+            lock.unlock()
         }
-        let data = (try? output.fileHandleForReading.readToEnd()) ?? Data()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let text = String(decoding: data.prefix(256), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? nil : text
+
+        private func markEOF() {
+            lock.lock()
+            reachedEOF = true
+            let ready = exited
+            lock.unlock()
+            if ready { finish() }
+        }
+
+        private func markExited(status: Int32) {
+            lock.lock()
+            exited = true
+            succeeded = status == 0
+            let ready = reachedEOF
+            lock.unlock()
+            if ready { finish() }
+        }
+
+        private func finish() {
+            lock.lock()
+            guard !finished else { lock.unlock(); return }
+            finished = true
+            let continuation = self.continuation
+            self.continuation = nil
+            let result: String? = {
+                guard succeeded, !stopped else { return nil }
+                let text = String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? nil : text
+            }()
+            lock.unlock()
+            process.terminationHandler = nil
+            (process.standardOutput as? Pipe)?.fileHandleForReading.readabilityHandler = nil
+            continuation?.resume(returning: result)
+        }
     }
 
     private static func environment(executablePath: String) -> [String: String] {
