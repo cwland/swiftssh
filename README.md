@@ -8,4 +8,17 @@ A native macOS SSH client and terminal emulator inspired by the design and workf
 
 See the full [project specification](docs/SPEC.md).
 
+## Building the Mac app
+
+The Xcode project is generated from `App/project.yml` with XcodeGen (it is not committed):
+
+```
+brew install xcodegen
+cd App && xcodegen generate
+xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -destination 'platform=macOS' test
+open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
+```
+
+See [App/README.md](App/README.md) for details.
+
 Self-hosting the sync server: see [Server/README.md](Server/README.md).

@@ -1,0 +1,74 @@
+name: TermiusReimagined
+
+options:
+  bundleIdPrefix: com.cwland
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+packages:
+  CoreSSH:
+    path: ../Packages/CoreSSH
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    SWIFT_VERSION: "6.0"
+    CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_STYLE: Manual
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: NO
+
+targets:
+  TermiusReimagined:
+    type: application
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_NAME: TermiusReimagined
+        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.TermiusReimagined
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "Termius Reimagined"
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    dependencies:
+      - package: CoreSSH
+        product: AppCore
+      - package: CoreSSH
+        product: CoreModels
+      - package: CoreSSH
+        product: SyncCore
+
+  TermiusReimaginedTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "14.0"
+    sources:
+      - path: Tests
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.TermiusReimaginedTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TermiusReimagined.app/Contents/MacOS/TermiusReimagined"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+    dependencies:
+      - target: TermiusReimagined
+
+schemes:
+  TermiusReimagined:
+    build:
+      targets:
+        TermiusReimagined: all
+        TermiusReimaginedTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - TermiusReimaginedTests
+    archive:
+      config: Release
