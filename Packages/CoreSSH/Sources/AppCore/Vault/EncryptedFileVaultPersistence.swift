@@ -47,30 +47,35 @@ public actor EncryptedFileVaultPersistence: VaultPersistence {
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let temp = dir.appendingPathComponent(".\(fileURL.lastPathComponent).\(UUID().uuidString).tmp")
         do {
-            try sealed.write(to: temp)
-            try replace(fileURL, with: temp)
+            try writeDurably(sealed, to: temp)
+            if rename(temp.path, fileURL.path) != 0 { throw Self.posixError() }
         } catch {
             try? fm.removeItem(at: temp)
             throw error
         }
     }
 
-    /// Atomically puts `temp` at `target`, replacing any existing file.
-    private func replace(_ target: URL, with temp: URL) throws {
-        let fm = FileManager.default
-        #if canImport(Darwin)
-        if fm.fileExists(atPath: target.path) {
-            _ = try fm.replaceItemAt(target, withItemAt: temp)
-        } else {
-            try fm.moveItem(at: temp, to: target)
+    /// Creates `url` (mode 0600, must not exist), writes all of `data` and fsyncs it.
+    private func writeDurably(_ data: Data, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        if fd < 0 { throw Self.posixError() }
+        defer { close(fd) }
+        try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            var offset = 0
+            while offset < buffer.count {
+                let n = write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                if n < 0 {
+                    if errno == EINTR { continue }
+                    throw Self.posixError()
+                }
+                offset += n
+            }
         }
-        #else
-        // swift-corelibs-foundation's `replaceItemAt` fails with "file doesn't exist" for an
-        // existing target on Linux; rename(2) replaces atomically.
-        if rename(temp.path, target.path) != 0 {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)])
-        }
-        #endif
+        if fsync(fd) != 0 { throw Self.posixError() }
+    }
+
+    private static func posixError() -> Error {
+        POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
 
     private func moveAside() throws -> URL {

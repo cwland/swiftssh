@@ -82,7 +82,7 @@ final class EncryptedFileVaultPersistenceTests: XCTestCase {
         }
     }
 
-    func testSaveIsAtomic() async throws {
+    func testSaveReplacesExistingFileAndLeavesNoTempFiles() async throws {
         let p = EncryptedFileVaultPersistence(fileURL: fileURL, key: newKey())
         try await p.save(try sampleContents(password: "one"))
         let second = try sampleContents(password: "two")
@@ -90,6 +90,56 @@ final class EncryptedFileVaultPersistenceTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["vault.bin"])
         let loaded = try await p.load()
         XCTAssertEqual(loaded, second)
+    }
+
+    func testSavedFileHasOwnerOnlyPermissions() async throws {
+        let p = EncryptedFileVaultPersistence(fileURL: fileURL, key: newKey())
+        try await p.save(try sampleContents())
+        try await p.save(try sampleContents(password: "again"))
+        let attrs = try FileManager.default.attributesOfItem(atPath: fileURL.path)
+        XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+    }
+
+    func testNonMissingReadErrorDoesNotMoveFileAside() async throws {
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+        let p = EncryptedFileVaultPersistence(fileURL: fileURL, key: newKey())
+        do {
+            _ = try await p.load()
+            XCTFail("expected throw")
+        } catch is VaultLoadError {
+            XCTFail("must not be VaultLoadError")
+        } catch {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["vault.bin"])
+    }
+
+    func testBadJSONInsideValidSealMovesAside() async throws {
+        let key = newKey()
+        let sealed = try AES.GCM.seal(Data("not json".utf8), using: key.symmetricKey,
+                                      authenticating: EncryptedFileVaultPersistence.aad).combined!
+        try sealed.write(to: fileURL)
+        try await assertMovedAside(EncryptedFileVaultPersistence(fileURL: fileURL, key: key), original: sealed)
+    }
+
+    func testWrongAADMovesAside() async throws {
+        let key = newKey()
+        let plain = try CoreJSON.encoder.encode(try sampleContents())
+        let sealed = try AES.GCM.seal(plain, using: key.symmetricKey,
+                                      authenticating: Data("other-aad".utf8)).combined!
+        try sealed.write(to: fileURL)
+        try await assertMovedAside(EncryptedFileVaultPersistence(fileURL: fileURL, key: key), original: sealed)
+    }
+
+    func testFailedSaveLeavesNoTempFile() async throws {
+        // A non-empty directory at the target makes rename(2) fail.
+        try FileManager.default.createDirectory(at: fileURL, withIntermediateDirectories: false)
+        try Data("x".utf8).write(to: fileURL.appendingPathComponent("child"))
+        let p = EncryptedFileVaultPersistence(fileURL: fileURL, key: newKey())
+        do {
+            try await p.save(try sampleContents())
+            XCTFail("expected throw")
+        } catch {}
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: dir.path), ["vault.bin"])
     }
 
     func testCreatesParentDirectory() async throws {
