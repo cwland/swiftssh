@@ -6,16 +6,26 @@ import Glibc
 import Foundation
 
 /// The private directory for system ssh's temporary files: the askpass helper, one-time secret files,
-/// temporary private keys, the generated `known_hosts` file and ssh's control sockets.
+/// temporary private keys and the generated `known_hosts` file. ssh's control sockets live in a separate,
+/// short `controlDirectory` (`/tmp/tr-<uid>`), because Unix socket paths are limited to 104 bytes on macOS
+/// and the app's run directory is far too deep for `<dir>/<40-character %C>`.
 ///
 /// The directory is 0700 and every file is created 0600 (the helper 0700) with `O_EXCL | O_NOFOLLOW`,
 /// so a file never exists with looser permissions and a planted link is never followed.
 public struct SSHRuntimeDirectory: Sendable {
     public let root: URL
+    /// Holds ssh's control sockets (`ControlPath=<controlDirectory>/%C`).
+    public let controlDirectory: URL
 
-    /// The app passes `~/Library/Application Support/TermiusReimagined/run`.
-    public init(root: URL) {
+    /// The app passes `~/Library/Application Support/TermiusReimagined/run`; tests inject `controlDirectory`.
+    public init(root: URL, controlDirectory: URL = SSHRuntimeDirectory.defaultControlDirectory) {
         self.root = root.standardizedFileURL
+        self.controlDirectory = controlDirectory
+    }
+
+    /// `/tmp/tr-<uid>`.
+    public static var defaultControlDirectory: URL {
+        URL(fileURLWithPath: "/tmp/tr-\(getuid())", isDirectory: true)
     }
 
     public var askpassURL: URL { root.appendingPathComponent("askpass") }
@@ -43,6 +53,26 @@ public struct SSHRuntimeDirectory: Sendable {
         }
         guard chmod(root.path, 0o700) == 0 else { throw SSHRuntimeError.failed("protect the runtime directory", errno) }
         try replace(askpassURL, contents: Data(Self.askpassScript.utf8), mode: 0o700)
+    }
+
+    /// Creates `controlDirectory` with mode 0700 when it is missing. An existing one must be a real
+    /// directory (not a link) owned by this user with mode exactly 0700; anything else throws
+    /// `.unsafeControlDirectory` and is left untouched (it may belong to someone else).
+    public func prepareControlDirectory() throws {
+        let path = controlDirectory.path
+        if mkdir(path, 0o700) == 0 {
+            // Ours, just created: undo any umask narrowing.
+            guard chmod(path, 0o700) == 0 else { throw SSHRuntimeError.failed("protect the control socket directory", errno) }
+        } else if errno != EEXIST {
+            throw SSHRuntimeError.failed("create the control socket directory", errno)
+        }
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR),
+              info.st_uid == getuid(),
+              (info.st_mode & 0o7777) == 0o700 else {
+            throw SSHRuntimeError.unsafeControlDirectory(path)
+        }
     }
 
     /// Removes everything inside the directory (called at app launch). Does nothing if it doesn't exist.
@@ -136,12 +166,16 @@ public struct SSHRuntimeDirectory: Sendable {
 public enum SSHRuntimeError: Error, Sendable, Equatable, LocalizedError {
     /// The path exists but is not a directory owned by this user (or is a link).
     case unsafeDirectory
+    /// The control socket directory exists but is not a 0700 directory (not a link) owned by this user.
+    case unsafeControlDirectory(String)
     case failed(String, Int32)
 
     public var errorDescription: String? {
         switch self {
         case .unsafeDirectory:
             "The runtime directory is not a private directory owned by this user."
+        case .unsafeControlDirectory(let path):
+            "Unsafe control socket directory \(path)"
         case .failed(let action, let code):
             "Could not \(action): \(String(cString: strerror(code)))"
         }

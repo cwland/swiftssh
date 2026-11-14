@@ -56,8 +56,14 @@ public enum SessionEndReason: Sendable, Equatable {
 }
 
 public enum SessionEvent: Sendable, Equatable {
-    /// The connection is authenticated and the PTY is open.
+    /// The terminal is live: from here on output is shown and input reaches the PTY. Citadel emits it once
+    /// authenticated with the PTY open. System ssh emits it when ssh runs; without a stored secret that is
+    /// before authentication, so ssh's own prompts appear as output.
     case connected
+    /// The remote shell is running and the session is authenticated: safe to send a startup script or run
+    /// commands. Emitted at most once, after `.connected` and never after `.closed`. May be missing when
+    /// the session ended before it could be observed.
+    case ready
     /// Terminal output (stdout and stderr), in order.
     case output([UInt8])
     /// The last event; the stream finishes after it.
@@ -99,9 +105,11 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
 
 /// An interactive SSH terminal: one PTY shell plus optional one-off commands on the same connection.
 public protocol TerminalSession: AnyObject, Sendable {
-    /// Single-consumer event stream: `.connected`, then `.output` in order, then exactly one `.closed`.
+    /// Single-consumer event stream: `.connected`, then `.ready` (at most once) and `.output` in order,
+    /// then exactly one `.closed`.
     var events: AsyncStream<SessionEvent> { get }
-    /// Connects, authenticates and opens the PTY. Returns once the PTY is open or `.closed` was emitted.
+    /// Connects, authenticates and opens the PTY. Returns once `.connected` (or `.closed`) was emitted;
+    /// when the engine authenticates without the user, after `.ready`.
     func start(cols: Int, rows: Int) async
     /// Writes bytes to the remote PTY, in call order.
     func send(_ bytes: [UInt8]) async

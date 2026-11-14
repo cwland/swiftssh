@@ -20,13 +20,14 @@ final class SystemSSHSessionTests: XCTestCase {
         // Short (Unix socket paths are limited) and with a space, like "Application Support" on macOS.
         scratch = URL(fileURLWithPath: "/tmp/tr s-\(UUID().uuidString.prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-        runtime = SSHRuntimeDirectory(root: scratch.appendingPathComponent("run", isDirectory: true))
+        runtime = SSHRuntimeDirectory(root: scratch.appendingPathComponent("run", isDirectory: true),
+                                      controlDirectory: scratch.appendingPathComponent("ctl", isDirectory: true))
     }
 
     override func tearDown() {
         // Stop any control master left behind (ControlPersist), then remove the scratch area.
-        if let root = runtime?.root, let entries = try? FileManager.default.contentsOfDirectory(atPath: root.path) {
-            for name in entries where name.hasPrefix("cm-") {
+        if let root = runtime?.controlDirectory, let entries = try? FileManager.default.contentsOfDirectory(atPath: root.path) {
+            for name in entries {
                 _ = try? TestSSHServer.run("/usr/bin/ssh", ["-o", "ControlPath=\"\(root.path)/\(name)\"", "-O", "exit", "x"])
             }
         }
@@ -80,11 +81,79 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(try permissions(runtime.root), 0o700)
     }
 
+    // MARK: Control socket directory
+
+    func testControlDirectoryIsCreatedPrivate() throws {
+        try runtime.prepareControlDirectory()
+        XCTAssertEqual(try permissions(runtime.controlDirectory), 0o700)
+        try runtime.prepareControlDirectory() // an existing safe directory is fine
+    }
+
+    func testDefaultControlDirectoryKeepsSocketPathsShort() {
+        let mac = SSHRuntimeDirectory(root: URL(fileURLWithPath:
+            "/Users/corylanders/Library/Application Support/TermiusReimagined/run"))
+        XCTAssertEqual(mac.controlDirectory.path, "/tmp/tr-\(getuid())")
+        let socket = mac.controlDirectory.appendingPathComponent(String(repeating: "f", count: 40)).path
+        XCTAssertLessThan(socket.utf8.count, 104, "macOS sun_path limit")
+        // ssh binds a temporary name (path + "." + 16 characters) before renaming it into place.
+        XCTAssertLessThan(socket.utf8.count + 17, 104)
+        let args = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: mac, keyFile: nil,
+                                                 hostKeyAlgorithms: "ssh-ed25519")
+        XCTAssertTrue(args.contains("ControlPath=\"/tmp/tr-\(getuid())/%C\""), "\(args)")
+    }
+
+    func testUnsafeControlDirectoriesAreRefused() throws {
+        let control = runtime.controlDirectory
+        let expected = SSHRuntimeError.unsafeControlDirectory(control.path)
+
+        // Wrong mode: refused and left alone.
+        try FileManager.default.createDirectory(at: control, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o755])
+        XCTAssertThrowsError(try runtime.prepareControlDirectory()) { XCTAssertEqual($0 as? SSHRuntimeError, expected) }
+        XCTAssertEqual(try permissions(control), 0o755, "never chmod an existing directory")
+
+        // Owned by someone else.
+        if geteuid() == 0, let other = getpwnam(TestSSHServer.username) {
+            chmod(control.path, 0o700)
+            chown(control.path, other.pointee.pw_uid, other.pointee.pw_gid)
+            XCTAssertThrowsError(try runtime.prepareControlDirectory()) { XCTAssertEqual($0 as? SSHRuntimeError, expected) }
+        }
+        try FileManager.default.removeItem(at: control)
+
+        // A symbolic link, even to a private directory of ours.
+        let target = scratch.appendingPathComponent("real", isDirectory: true)
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o700])
+        try FileManager.default.createSymbolicLink(at: control, withDestinationURL: target)
+        XCTAssertThrowsError(try runtime.prepareControlDirectory()) { XCTAssertEqual($0 as? SSHRuntimeError, expected) }
+
+        // A plain file.
+        try FileManager.default.removeItem(at: control)
+        _ = FileManager.default.createFile(atPath: control.path, contents: Data())
+        XCTAssertThrowsError(try runtime.prepareControlDirectory()) { XCTAssertEqual($0 as? SSHRuntimeError, expected) }
+    }
+
+    func testUnsafeControlDirectoryFailsTheConnection() async throws {
+        let control = runtime.controlDirectory
+        try FileManager.default.createDirectory(at: control, withIntermediateDirectories: false,
+                                                attributes: [.posixPermissions: 0o777])
+        let evaluator = TestEvaluator(decision: .trusted)
+        let session = makeSession(.password(server.password), evaluator: evaluator)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.closed(.failed(.connectionFailed("Unsafe control socket directory \(control.path)")))])
+        XCTAssertTrue(evaluator.candidates.isEmpty, "stopped before anything else")
+        XCTAssertEqual(secretFiles(), [])
+    }
+
     // MARK: Pure helpers
 
     func testSSHArgumentsAreExact() {
         let root = URL(fileURLWithPath: "/a b/run")
-        let args = SystemSSHSession.sshArguments(host: "example.com", port: 2200, username: "cory", runtimeRoot: root,
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let args = SystemSSHSession.sshArguments(host: "example.com", port: 2200, username: "cory", runtime: directory,
                                                  keyFile: root.appendingPathComponent("K.key"), hostKeyAlgorithms: "ssh-ed25519")
         XCTAssertEqual(args, [
             "-tt", "-p", "2200", "-l", "cory",
@@ -92,14 +161,15 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "StrictHostKeyChecking=yes",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\"/a b/run/cm-%C\"",
+            "-o", "ControlPath=\"/tmp/tr-501/%C\"",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=30",
+            "-o", "ConnectTimeout=15",
             "-o", "IdentitiesOnly=yes", "-i", "/a b/run/K.key",
             "-o", "HostKeyAlgorithms=ssh-ed25519",
             "--", "example.com",
         ])
-        let noKey = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtimeRoot: root, keyFile: nil,
+        let noKey = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: directory, keyFile: nil,
                                                   hostKeyAlgorithms: "rsa-sha2-512,rsa-sha2-256")
         XCTAssertFalse(noKey.contains("-i"))
         XCTAssertFalse(noKey.contains("IdentitiesOnly=yes"))
@@ -152,10 +222,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.password(server.password), evaluator: evaluator)
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
         await session.send(Array("echo hi-$((40+2))\n".utf8))
         try await recorder.waitForOutput(containing: "hi-42")
         XCTAssertFalse(recorder.outputText.contains(server.password))
@@ -169,7 +236,7 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertTrue(knownHosts.contains("[127.0.0.1]:\(server.port) ssh-ed25519 \(server.hostKeyBlob.base64EncodedString())"))
         await session.close()
         try await recorder.waitForFinish()
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)])
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)])
     }
 
     func testRSAKeyLoginWorks() async throws {
@@ -209,15 +276,20 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.none)
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected], "ssh's own prompt must be visible")
-        }
+        try await recorder.waitForEvents([.connected]) // early: ssh's own prompt must be visible
         try await recorder.waitForOutput(containing: "password:")
         // ssh's readpassphrase flushes pending terminal input (TCSAFLUSH) around the prompt, so type like a
         // person: after the prompt has settled, and the command once the shell is there.
         try await Task.sleep(for: .milliseconds(500))
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected], "not ready while ssh waits for the password")
+        do {
+            _ = try await session.runCommand("true")
+            XCTFail("runCommand before login must throw")
+        } catch let error as SessionError {
+            XCTAssertEqual(error, .connectionFailed("The session is not connected."))
+        }
         await session.send(Array("\(server.password)\n".utf8))
+        try await recorder.waitForEvents([.connected, .ready])
         try await recorder.waitForOutput(containing: "$ ")
         await session.send(Array("echo typed-$((2*21))\n".utf8))
         try await recorder.waitForOutput(containing: "typed-42")
@@ -276,10 +348,7 @@ final class SystemSSHSessionTests: XCTestCase {
                                        knownHostsLines: lines, runtime: runtime)
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
         let knownHosts = try String(contentsOf: runtime.root.appendingPathComponent("known_hosts"), encoding: .utf8)
         XCTAssertFalse(knownHosts.contains(otherBlob.base64EncodedString()), "the old key is gone")
         await session.close()
@@ -307,10 +376,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.password(server.password))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
         assertNoProcessExposes([server.password])
         await session.close()
         try await recorder.waitForFinish()
@@ -325,10 +391,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let keySession = makeSession(.privateKey(type: .rsa, pem: pem, passphrase: "pass phrase 7"))
         let keyRecorder = EventRecorder(keySession.events)
         await keySession.start(cols: 80, rows: 24)
-        do {
-            let events = try await keyRecorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await keyRecorder.waitForEvents([.connected, .ready])
         _ = try await keySession.runCommand("true")
         assertNoProcessExposes(["pass phrase 7", pemLine])
         await keySession.close()
@@ -342,10 +405,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.privateKey(type: .rsa, pem: generated.privateKey, passphrase: "unused-but-stored"))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
         let root = runtime.root
         try await waitUntil(timeout: 2) { Self.secretFiles(in: root).isEmpty }
         await session.close()
@@ -376,10 +436,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.password(server.password))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
 
         let probe = try await session.runCommand(OSDetector.probeCommand)
         XCTAssertTrue(probe.contains("Linux"), probe)
@@ -435,9 +492,9 @@ final class SystemSSHSessionTests: XCTestCase {
             await session.start(cols: 80, rows: 24)
             await session.send(Array(script.utf8))
             try await recorder.waitForFinish()
-            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.remoteClosed)], script)
+            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)], script)
             await session.close() // after the end: does nothing
-            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.remoteClosed)])
+            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)])
         }
     }
 
@@ -445,17 +502,15 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(.password(server.password))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await recorder.waitForEvents([.connected, .ready])
         let root = runtime.root
-        try await waitUntil(timeout: 5) { Self.controlSockets(in: root).count == 1 }
+        let control = runtime.controlDirectory
+        try await waitUntil(timeout: 5) { Self.controlSockets(in: control).count == 1 }
         await session.close()
         await session.close()
         try await recorder.waitForFinish()
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)])
-        try await waitUntil(timeout: 3) { Self.controlSockets(in: root).isEmpty }
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)])
+        try await waitUntil(timeout: 3) { Self.controlSockets(in: control).isEmpty }
         try await waitUntil(timeout: 5) { !Self.anySSHProcess(mentioning: root.path) }
     }
 
@@ -466,10 +521,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let second = makeSession(.password(server.password))
         let secondEvents = EventRecorder(second.events)
         await second.start(cols: 80, rows: 24)
-        do {
-            let events = try await secondEvents.settledEvents()
-            XCTAssertEqual(events, [.connected])
-        }
+        try await secondEvents.waitForEvents([.connected, .ready])
         await first.close()
         try await firstEvents.waitForFinish()
         try await Task.sleep(for: .milliseconds(500))
@@ -477,12 +529,12 @@ final class SystemSSHSessionTests: XCTestCase {
         try await secondEvents.waitForOutput(containing: "alive-9")
         let probe = try await second.runCommand("echo still-shared")
         XCTAssertEqual(probe, "still-shared\n")
-        XCTAssertEqual(secondEvents.nonOutputEvents, [.connected])
+        XCTAssertEqual(secondEvents.nonOutputEvents, [.connected, .ready])
         // The last session to close stops the control master.
         await second.close()
         try await secondEvents.waitForFinish()
-        let root = runtime.root
-        try await waitUntil(timeout: 3) { Self.controlSockets(in: root).isEmpty }
+        let control = runtime.controlDirectory
+        try await waitUntil(timeout: 3) { Self.controlSockets(in: control).isEmpty }
     }
 
     func testResizeChangesRemoteSize() async throws {
@@ -539,15 +591,12 @@ final class SystemSSHSessionTests: XCTestCase {
         let session = makeSession(credential)
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        do {
-            let events = try await recorder.settledEvents()
-            XCTAssertEqual(events, [.connected], recorder.outputText, file: file, line: line)
-        }
+        try await recorder.waitForEvents([.connected, .ready], file: file, line: line)
         await session.send(Array("echo key-$((6*7))\n".utf8))
         try await recorder.waitForOutput(containing: "key-42", file: file, line: line)
         await session.close()
         try await recorder.waitForFinish(file: file, line: line)
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)], file: file, line: line)
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)], file: file, line: line)
     }
 
     private func permissions(_ url: URL) throws -> Int {
@@ -565,7 +614,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
     private static func controlSockets(in root: URL) -> [String] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        return names.filter { $0.hasPrefix("cm-") }
+        return names.filter { !$0.hasPrefix(".") }
     }
 
     private func wire(_ type: String) -> Data {
@@ -603,15 +652,6 @@ final class SystemSSHSessionTests: XCTestCase {
         #else
         false
         #endif
-    }
-}
-
-extension EventRecorder {
-    /// The non-output events once at least one has been recorded: the recorder consumes the stream on its
-    /// own task, so it can lag slightly behind `start()` returning.
-    func settledEvents(file: StaticString = #filePath, line: UInt = #line) async throws -> [SessionEvent] {
-        try await waitUntil(timeout: 5, file: file, line: line) { !self.nonOutputEvents.isEmpty }
-        return nonOutputEvents
     }
 }
 

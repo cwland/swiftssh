@@ -385,7 +385,10 @@ public final class CitadelSession: TerminalSession {
                 }
                 defer { writerTask.cancel() }
 
+                // Authenticated with the PTY open: live and ready at once. `emit` drops both after `.closed`,
+                // and this closure runs once per session, so `.ready` comes at most once.
                 self.emit(.connected)
+                self.emit(.ready)
                 opening.resolve(.opened)
                 for try await chunk in inbound {
                     switch chunk {

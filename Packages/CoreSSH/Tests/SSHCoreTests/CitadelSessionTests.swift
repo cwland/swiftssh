@@ -25,7 +25,7 @@ final class CitadelSessionTests: XCTestCase {
         let recorder = EventRecorder(session.events)
 
         await session.start(cols: 80, rows: 24)
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected])
+        try await recorder.waitForEvents([.connected, .ready])
 
         await session.send(Array("echo hi-$((40+2))\n".utf8))
         try await recorder.waitForOutput(containing: "hi-42")
@@ -36,6 +36,25 @@ final class CitadelSessionTests: XCTestCase {
         XCTAssertEqual(candidates.first?.publicKeyBlob, server.hostKeyBlob)
         XCTAssertEqual(candidates.first?.hostPort, "[127.0.0.1]:\(server.port)")
         await session.close()
+    }
+
+    func testReadyFollowsConnectedOnceThePTYIsOpen() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        await session.send(Array("echo ready-$((3+4))\n".utf8))
+        try await recorder.waitForOutput(containing: "ready-7")
+        await session.close()
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)])
+
+        // A failed login is never ready.
+        let failing = CitadelSession(plan: plan(.password("wrong-\(server.password)")), hostKeys: TestEvaluator(decision: .trusted))
+        let failingEvents = EventRecorder(failing.events)
+        await failing.start(cols: 80, rows: 24)
+        try await failingEvents.waitForFinish()
+        XCTAssertEqual(failingEvents.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
     }
 
     func testEd25519KeyLoginWithAndWithoutPassphrase() async throws {
@@ -107,7 +126,7 @@ final class CitadelSessionTests: XCTestCase {
         // Give the shell task time to tear the connection down, then close.
         try await Task.sleep(for: .milliseconds(300))
         try await assertCompletes(within: .seconds(2)) { await session.close() }
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.remoteClosed)])
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)])
     }
 
     func testRunCommandAfterRemoteExitThrows() async throws {
@@ -203,7 +222,7 @@ final class CitadelSessionTests: XCTestCase {
             await session.start(cols: 80, rows: 24)
             await session.send(Array(command.utf8))
             try await recorder.waitForFinish()
-            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.remoteClosed)], "after \(command)")
+            XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)], "after \(command)")
         }
     }
 
@@ -266,7 +285,7 @@ final class CitadelSessionTests: XCTestCase {
         try await recorder.waitForFinish()
         await session.close()
         await session.send(Array("echo after-close\n".utf8))
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)])
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)])
     }
 
     func testCloseBeforeStartEmitsUserClosedAndStartDoesNothing() async throws {
@@ -325,7 +344,7 @@ final class CitadelSessionTests: XCTestCase {
                                      connectTimeout: .seconds(3))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected])
+        try await recorder.waitForEvents([.connected, .ready])
         XCTAssertEqual(evaluator.candidates.count, 1, "the user is asked once")
         await session.send(Array("echo slow-$((2+3))\n".utf8))
         try await recorder.waitForOutput(containing: "slow-5")
@@ -345,12 +364,12 @@ final class CitadelSessionTests: XCTestCase {
         let session = CitadelSession(plan: plan(credential), hostKeys: TestEvaluator(decision: .trusted))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected], file: file, line: line)
+        try await recorder.waitForEvents([.connected, .ready], file: file, line: line)
         await session.send(Array("echo key-$((6*7))\n".utf8))
         try await recorder.waitForOutput(containing: "key-42")
         await session.close()
         try await recorder.waitForFinish()
-        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)], file: file, line: line)
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.userClosed)], file: file, line: line)
     }
 
     /// Fails (instead of hanging the suite) when `body` doesn't finish in time.
@@ -411,7 +430,7 @@ final class EventRecorder: @unchecked Sendable {
     private var events: [SessionEvent] = []
     private var bytes: [UInt8] = []
     private var finished = false
-    /// Set when output arrives before `.connected` or after `.closed`.
+    /// Set when output arrives before `.connected` or after `.closed`, or `.ready` is out of place.
     private var outputOutsideSession = false
 
     init(_ stream: AsyncStream<SessionEvent>) {
@@ -424,9 +443,14 @@ final class EventRecorder: @unchecked Sendable {
     private func record(_ event: SessionEvent) {
         lock.withLock {
             if case .output(let chunk) = event {
-                if events.last != .connected { outputOutsideSession = true }
+                if !events.contains(.connected) || events.contains(where: { if case .closed = $0 { true } else { false } }) {
+                    outputOutsideSession = true
+                }
                 bytes.append(contentsOf: chunk)
             } else {
+                if event == .ready && (events.last != .connected || events.contains(.ready)) {
+                    outputOutsideSession = true // .ready only once, straight after .connected
+                }
                 events.append(event)
             }
         }
@@ -455,10 +479,20 @@ final class EventRecorder: @unchecked Sendable {
         }
     }
 
+    /// Waits until the non-output events are exactly `expected` (the recorder consumes on its own task, so
+    /// it can lag slightly behind `start()` returning).
+    func waitForEvents(_ expected: [SessionEvent], timeout: TimeInterval = 5,
+                       file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await waitUntil(timeout: timeout, file: file, line: line,
+                            message: { "events \(self.nonOutputEvents) never became \(expected)" }) {
+            self.nonOutputEvents == expected
+        }
+    }
+
     func waitForFinish(timeout: TimeInterval = 20, file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil(timeout: timeout, file: file, line: line,
                             message: { "event stream did not finish: \(self.nonOutputEvents)" }) { self.isFinished }
-        XCTAssertFalse(lock.withLock { outputOutsideSession }, "output outside connected..closed", file: file, line: line)
+        XCTAssertFalse(lock.withLock { outputOutsideSession }, "output outside connected..closed, or .ready misplaced", file: file, line: line)
         let closedCount = nonOutputEvents.filter { if case .closed = $0 { true } else { false } }.count
         XCTAssertEqual(closedCount, 1, "exactly one .closed event", file: file, line: line)
         if case .closed = nonOutputEvents.last {} else { XCTFail("last event is not .closed", file: file, line: line) }

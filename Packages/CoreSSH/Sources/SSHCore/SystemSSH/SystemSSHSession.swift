@@ -14,12 +14,14 @@ import Synchronization
 ///   0600 file passed with `-i`. Both are deleted as soon as the session has started or ssh exits
 ///   (whichever comes first), and on `close()`.
 /// - **Session start** is detected when ssh switches the terminal out of canonical mode, which it does
-///   only after authentication, right before the remote session's output. With a stored secret, ssh's
-///   own messages before that point are held back and, if ssh fails (exit status 255), turned into the
-///   error. Without a stored secret, ssh asks in the terminal, so `.connected` is emitted as soon as ssh
-///   runs and its prompts are shown as output.
+///   only after authentication, right before the remote session's output; it emits `.ready`. With a
+///   stored secret, ssh's own messages before that point are held back and, if ssh fails (exit status
+///   255), turned into the error; `.connected` and `.ready` come together. Without a stored secret, ssh
+///   asks in the terminal, so `.connected` is emitted as soon as ssh runs (its prompts are shown as
+///   output) and `.ready` once the user has signed in.
 /// - **Commands** (`runCommand`) reuse the session's connection through ssh's control socket
-///   (`ControlMaster=auto`), in batch mode, without askpass.
+///   (`ControlMaster=auto`, socket in `SSHRuntimeDirectory.controlDirectory`), in batch mode, without
+///   askpass.
 public final class SystemSSHSession: TerminalSession {
     public let events: AsyncStream<SessionEvent>
 
@@ -145,8 +147,7 @@ public final class SystemSSHSession: TerminalSession {
         guard !ended else { throw SessionError.connectionFailed("Session closed") }
         guard let algorithms else { throw SessionError.connectionFailed("The session is not connected.") }
 
-        let arguments = Self.optionArguments(host: host, port: plan.port, username: plan.username,
-                                             runtimeRoot: runtime.root)
+        let arguments = Self.optionArguments(port: plan.port, username: plan.username, runtime: runtime)
             + ["-o", "HostKeyAlgorithms=\(algorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]
         let process: PTYProcess
         do {
@@ -222,6 +223,15 @@ public final class SystemSSHSession: TerminalSession {
             finish(.failed(.connectionFailed("Could not prepare the runtime directory")))
             return
         }
+        do {
+            try runtime.prepareControlDirectory()
+        } catch SSHRuntimeError.unsafeControlDirectory(let path) {
+            finish(.failed(.connectionFailed("Unsafe control socket directory \(path)")))
+            return
+        } catch {
+            finish(.failed(.connectionFailed("Could not prepare the control socket directory")))
+            return
+        }
 
         // 1. Fetch the server's host keys.
         guard let candidate = await scanHostKey() else { return }
@@ -270,7 +280,7 @@ public final class SystemSSHSession: TerminalSession {
         // 5. Launch ssh.
         let algorithms = Self.hostKeyAlgorithms(for: candidate.keyType)
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username,
-                                          runtimeRoot: runtime.root, keyFile: keyFile, hostKeyAlgorithms: algorithms)
+                                          runtime: runtime, keyFile: keyFile, hostKeyAlgorithms: algorithms)
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
@@ -286,7 +296,7 @@ public final class SystemSSHSession: TerminalSession {
             finish(.failed(.connectionFailed("Could not run ssh")))
             return
         }
-        let controlKey = [runtime.root.path, host, String(plan.port), plan.username].joined(separator: "\n")
+        let controlKey = [runtime.controlDirectory.path, host, String(plan.port), plan.username].joined(separator: "\n")
         let launched = state.withLock { state -> Bool in
             guard !state.ended else { return false }
             state.ssh = ssh
@@ -390,6 +400,7 @@ public final class SystemSSHSession: TerminalSession {
                 if !state.heldOutput.isEmpty { eventContinuation.yield(.output(state.heldOutput)) }
                 state.heldOutput = []
             }
+            eventContinuation.yield(.ready)
             defer { state.tempFiles = [] }
             return state.tempFiles
         }
@@ -478,7 +489,7 @@ public final class SystemSSHSession: TerminalSession {
     /// `ssh -O exit` for this host's control socket, bounded.
     private func stopControlMaster() async {
         let arguments = ["-p", String(plan.port), "-l", plan.username,
-                         "-o", "ControlPath=\(Self.quoted(runtime.root.appendingPathComponent("cm-%C").path))",
+                         "-o", "ControlPath=\(Self.controlPath(runtime))",
                          "-O", "exit", "--", host]
         guard let process = try? PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
                                             cols: 80, rows: 24, rawMode: true) else { return }
@@ -489,9 +500,9 @@ public final class SystemSSHSession: TerminalSession {
 
     /// The interactive session's arguments (after the executable), exactly as the global constraints
     /// specify, plus `HostKeyAlgorithms` limited to the trusted key's type.
-    static func sshArguments(host: String, port: Int, username: String, runtimeRoot: URL,
+    static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                              keyFile: URL?, hostKeyAlgorithms: String) -> [String] {
-        var arguments = ["-tt"] + optionArguments(host: host, port: port, username: username, runtimeRoot: runtimeRoot)
+        var arguments = ["-tt"] + optionArguments(port: port, username: username, runtime: runtime)
         if let keyFile {
             arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path]
         }
@@ -499,19 +510,25 @@ public final class SystemSSHSession: TerminalSession {
         return arguments
     }
 
-    /// Port, user and the `-o` options shared by the session, its commands and `-O exit`. Paths are
-    /// double-quoted because ssh splits `-o` values at spaces ("Application Support").
-    static func optionArguments(host: String, port: Int, username: String, runtimeRoot: URL) -> [String] {
+    /// Port, user and the `-o` options shared by the session and its commands. Paths are double-quoted
+    /// because ssh splits `-o` values at spaces ("Application Support").
+    static func optionArguments(port: Int, username: String, runtime: SSHRuntimeDirectory) -> [String] {
         [
             "-p", String(port), "-l", username,
-            "-o", "UserKnownHostsFile=\(quoted(runtimeRoot.appendingPathComponent("known_hosts").path))",
+            "-o", "UserKnownHostsFile=\(quoted(runtime.knownHostsURL.path))",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(quoted(runtimeRoot.appendingPathComponent("cm-%C").path))",
+            "-o", "ControlPath=\(controlPath(runtime))",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=30",
+            "-o", "ConnectTimeout=15",
         ]
+    }
+
+    /// `"<controlDirectory>/%C"`: short enough for the Unix socket path limit.
+    static func controlPath(_ runtime: SSHRuntimeDirectory) -> String {
+        quoted(runtime.controlDirectory.appendingPathComponent("%C").path)
     }
 
     /// `ssh-rsa` host keys are verified with SHA-2 signatures only.
