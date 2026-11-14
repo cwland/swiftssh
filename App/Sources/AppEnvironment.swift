@@ -125,7 +125,8 @@ final class AppEnvironment {
             },
             deviceName: Self.deviceName,
             defaultUsername: NSUserName(),
-            keepAlivePolicy: { connectionSettings.detection.policy }
+            keepAlivePolicy: { connectionSettings.detection.policy },
+            autoReconnectEnabled: { connectionSettings.autoReconnect }
         )
     }
 

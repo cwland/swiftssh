@@ -13,6 +13,19 @@ struct ConnectionSettingsPane: View {
                 Text("Connection")
                     .font(.system(size: 22, weight: .semibold))
 
+                Toggle(isOn: Binding(get: { settings.autoReconnect },
+                                     set: { settings.autoReconnect = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reconnect automatically")
+                            .font(.system(size: Theme.cardTitleFontSize))
+                        Text("When a connection drops, try again after 5 seconds, then 10, 20 and 30 \u{2014} up to 5 tries.")
+                            .font(.system(size: Theme.cardSubtitleFontSize))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+
                 Text("Detect dropped connections")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
