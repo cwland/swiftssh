@@ -1277,6 +1277,28 @@ extension SessionManagerTests {
         await waitUntil("disconnected") {
             tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example.")
         }
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup, "1Password may hold another key, or be locked")
+    }
+
+    func testUnreachableAgentDisconnectsWithItsMessageAndSetupSuggestion() async throws {
+        let unreachable = SessionError.agentUnavailable(
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(unreachable))) }
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHost().id)
+        await waitUntil("disconnected") { tab.state == .disconnected(unreachable.localizedDescription) }
+        XCTAssertEqual(tab.state, .disconnected(
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it."))
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        XCTAssertNil(tab.autoReconnect)
+    }
+
+    func testRejectedKeyWithoutTheAgentSuggestsNothing() async throws {
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        let key = vault.saveNow(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "PEM"))
+        let tab = try manager.open(hostID: vault.saveNow(SavedHost(label: "K", address: "k.example", username: "root",
+                                                                   sshKeyID: key.id)).id)
+        await waitUntil("disconnected") { tab.state == .disconnected("The server rejected the key for root@k.example.") }
         XCTAssertNil(tab.suggestedAction)
     }
 }
@@ -1623,6 +1645,83 @@ final class SessionManagerOnePasswordTests: XCTestCase {
         await settle()
         XCTAssertEqual(op?.reads, [])
         XCTAssertTrue(factory.sessions.isEmpty)
+    }
+
+    private let unreachable = SessionError.agentUnavailable(
+        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+
+    func testAutoReconnectStopsWhenTheAgentCantBeReached() async throws {
+        manager = agentAndOpManager(socket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHostWithReference().id)
+        await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
+        factory.sessions[0].emit(.closed(.failed(broken)))
+        await waitUntil("waiting") { tab.autoReconnect != nil }
+        let unreachable = unreachable
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(unreachable))) }
+        sleeper.elapseAll()
+        await waitUntil("stopped") { tab.state == .disconnected(unreachable.localizedDescription) }
+        XCTAssertNil(tab.autoReconnect)
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        await settle()
+        XCTAssertEqual(sleeper.pending, 0)
+        XCTAssertEqual(factory.sessions.count, 2, "never tried again")
+        XCTAssertEqual(manager.waitingForReconnectCount, 0)
+    }
+
+    func testAutoReconnectStopsWhenTheAgentKeyIsRejected() async throws {
+        manager = agentAndOpManager(socket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHostWithReference().id)
+        await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
+        factory.sessions[0].emit(.closed(.failed(broken)))
+        await waitUntil("waiting") { tab.autoReconnect != nil }
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        sleeper.elapseAll()
+        await waitUntil("stopped") {
+            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example.")
+        }
+        XCTAssertNil(tab.autoReconnect)
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        await settle()
+        XCTAssertEqual(sleeper.pending, 0)
+        XCTAssertEqual(factory.sessions.count, 2)
+    }
+
+    // MARK: A typed 1Password reference
+
+    func testTypedReferenceIsReadForTheLoginAndTheReferenceIsSaved() async throws {
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let tab = try manager.open(hostID: host.id)
+        XCTAssertEqual(tab.state, .awaitingPassword(prompt: "Password for root@np.example"))
+        manager.providePassword(tabID: tab.id, " \(reference) ", save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads, [reference])
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw", "the login uses the value")
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        await settle()
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.password, " \(reference) ",
+                       "the vault holds the reference as typed, never the value")
+    }
+
+    func testTypedReferenceSavedOnTheIdentityIsTheReference() async throws {
+        let identity = vault.saveNow(Identity(label: "i", username: "alice"))
+        let host = vault.saveNow(SavedHost(label: "H", address: "h.example", identityID: identity.id))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, reference, save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
+        await waitUntil("stored on identity") { self.vault.get(Identity.self, id: identity.id)?.password != nil }
+        XCTAssertEqual(vault.get(Identity.self, id: identity.id)?.password, reference)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
+    }
+
+    func testTypedReferenceWithoutSaveStoresNothing() async throws {
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, reference, save: false)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        await settle()
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
     }
 
     func testReferenceHostsStillResolveWhenAnAgentProviderIsSet() async throws {

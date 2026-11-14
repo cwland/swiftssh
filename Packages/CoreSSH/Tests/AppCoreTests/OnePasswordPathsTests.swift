@@ -72,6 +72,18 @@ final class OnePasswordPathsTests: XCTestCase {
         XCTAssertEqual(OnePasswordPaths.Probe(statErrno: ENOTDIR), .missing)
     }
 
+    func testSocketOverrideValidation() {
+        let problem = "The 1Password agent path contains characters ssh can't use."
+        for good in ["/tmp/a.sock", "~/custom/agent.sock", "/Users/c/Library/Group Containers/x/t/agent.sock",
+                     "/tmp/100%/a.sock", "/tmp/caf\u{E9}/a.sock", "", "  "] {
+            XCTAssertNil(OnePasswordPaths.validateSocketOverride(good), good)
+        }
+        for bad in ["/tmp/a\".sock", "/tmp/a\\b.sock", "/tmp/a\nb.sock", "/tmp/a\tb.sock", "/tmp/a\u{7F}.sock",
+                    "/tmp/a\u{1B}[0m.sock", "/tmp/a\u{85}.sock", "/tmp/${HOME}/a.sock"] {
+            XCTAssertEqual(OnePasswordPaths.validateSocketOverride(bad), problem, bad.debugDescription)
+        }
+    }
+
     func testCLI() {
         XCTAssertEqual(OnePasswordPaths.cli(override: nil, isExecutable: { _ in true }), "/opt/homebrew/bin/op")
         XCTAssertEqual(OnePasswordPaths.cli(override: nil, isExecutable: { $0 == "/usr/local/bin/op" }), "/usr/local/bin/op")

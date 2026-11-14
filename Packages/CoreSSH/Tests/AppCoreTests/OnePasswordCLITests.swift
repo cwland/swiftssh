@@ -400,4 +400,28 @@ final class OnePasswordCLITests: XCTestCase {
         let sshKey = OnePasswordField.standardFields(itemID: "abc", vault: "V", vaultID: nil, category: "SSH_KEY")
         XCTAssertEqual(sshKey.map(\.label), ["private key", "public key"])
     }
+
+    func testPasswordPurposeOffersOnlyPasswordFields() {
+        func labels(_ category: String?) -> [String] {
+            OnePasswordField.standardFields(itemID: "abc", vault: "V", vaultID: nil, category: category,
+                                            purpose: .password).map(\.label)
+        }
+        for category in ["LOGIN", "PASSWORD", "SERVER", "DATABASE"] {
+            XCTAssertEqual(labels(category), ["password"], category)
+        }
+        let login = OnePasswordField.standardFields(itemID: "abc", vault: "V", vaultID: nil, category: "LOGIN",
+                                                    purpose: .password)
+        XCTAssertEqual(login.map(\.reference), ["op://V/abc/password"])
+        XCTAssertEqual(login.map(\.isSecret), [true])
+        // An SSH key's private or public key is never a password: the UI steers to the agent instead.
+        XCTAssertEqual(labels("SSH_KEY"), [])
+        for other in ["SECURE_NOTE", "CREDIT_CARD", "API_CREDENTIAL", "", nil] as [String?] {
+            XCTAssertEqual(labels(other), [], other ?? "nil")
+        }
+        // Without a purpose, every standard field (as before).
+        XCTAssertEqual(OnePasswordField.standardFields(itemID: "abc", vault: "V", vaultID: nil, category: "SSH_KEY",
+                                                       purpose: .any).map(\.label), ["private key", "public key"])
+        XCTAssertEqual(OnePasswordField.standardFields(itemID: "abc", vault: "V", vaultID: nil, category: "LOGIN",
+                                                       purpose: .any).map(\.label), ["password", "username"])
+    }
 }

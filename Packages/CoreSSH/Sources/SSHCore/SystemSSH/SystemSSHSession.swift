@@ -13,11 +13,15 @@ import Synchronization
 ///   written to a one-time 0600 file that the askpass helper prints and deletes; a private key goes to a
 ///   0600 file passed with `-i`. Both are deleted as soon as the session has started or ssh exits
 ///   (whichever comes first), and on `close()`.
-/// - **SSH agent** (`.agent`, 1Password): `IdentityAgent` names the agent's socket and authentication is
-///   public key only. A pinned key's public key goes to a 0600 `<uuid>.pub` passed as `IdentityFile` with
-///   `IdentitiesOnly=yes`, removed with the other per-session files; unpinned, any agent key is offered but
-///   none of the user's own key files (`IdentityFile=none`). No askpass is set; the session behaves like
-///   one with a stored secret.
+/// - **SSH agent** (`.agent`, 1Password): `IdentityAgent` names the agent's socket (`%` written as `%%`;
+///   a path ssh can't take fails before ssh runs) and authentication is public key only. Every ssh run
+///   here passes `-F /dev/null`, so neither `~/.ssh/config` nor `/etc/ssh/ssh_config` is read and no
+///   `IdentityFile` (or any other option) from them applies. A pinned key's public key goes to a 0600
+///   `<uuid>.pub` passed as `IdentityFile` with `IdentitiesOnly=yes`, removed with the other per-session
+///   files: only that agent key is tried. Unpinned, any agent key is offered, and `IdentityFile=none`
+///   stops ssh's built-in default key files (`~/.ssh/id_rsa`, `id_ecdsa`, `id_ed25519`, …), which ssh
+///   would otherwise still try despite `-F /dev/null`. No askpass is set; the session behaves like one
+///   with a stored secret.
 /// - **Session start** is detected when ssh switches the terminal out of canonical mode, which it does
 ///   only after authentication, right before the remote session's output; it emits `.ready`. With a
 ///   stored secret, ssh's own messages before that point are held back and, if ssh fails (exit status
@@ -251,6 +255,10 @@ public final class SystemSSHSession: TerminalSession {
             finish(.failed(.connectionFailed("Invalid port or user name")))
             return
         }
+        if case .agent(let socket, _) = plan.credential, let problem = Self.agentSocketProblem(socket) {
+            finish(.failed(.agentUnavailable(problem)))
+            return
+        }
         do {
             try runtime.prepare()
         } catch {
@@ -333,8 +341,6 @@ public final class SystemSSHSession: TerminalSession {
         }
         // An agent signs without the user typing anything (1Password asks in its own window), so its
         // sessions behave like ones with a stored secret: ssh's messages before the session become the error.
-        let usesAgent: Bool
-        if case .agent = plan.credential { usesAgent = true } else { usesAgent = false }
         let interactive = secretFile == nil && !usesAgent
         let (cols, rows) = state.withLock { ($0.cols, $0.rows) }
         let ssh: PTYProcess
@@ -498,6 +504,7 @@ public final class SystemSSHSession: TerminalSession {
             (state.sessionStarted, state.sessionStarted ? state.recentOutput : state.preSessionOutput)
         }
         let reason = await Self.classifyExit(status: status, sessionStarted: started, output: output, secrets: secrets,
+                                             agent: usesAgent,
                                              controlMasterAlive: { await self.controlMasterIsRunning() })
         let taken = state.withLock { state in
             if !state.ended {
@@ -550,6 +557,11 @@ public final class SystemSSHSession: TerminalSession {
 
     private var isEnded: Bool { state.withLock { $0.ended } }
 
+    private var usesAgent: Bool {
+        if case .agent = plan.credential { return true }
+        return false
+    }
+
     private var secrets: [String] {
         switch plan.credential {
         case .password(let password): [password].filter { !$0.isEmpty }
@@ -587,7 +599,9 @@ public final class SystemSSHSession: TerminalSession {
         /// Password or keyboard-interactive only (the user's default keys are never tried).
         case password
         /// Public key only, signed by the agent at `socket`: with `publicKeyFile`, only that key
-        /// (`IdentitiesOnly`); without, any agent key, but never the user's own key files (`IdentityFile=none`).
+        /// (`IdentitiesOnly`); without, any agent key. The user's ssh config is never read (`-F /dev/null`),
+        /// and `IdentityFile=none` stops ssh's built-in defaults (`~/.ssh/id_*`), which `-F /dev/null`
+        /// alone does not.
         case agent(socket: String, publicKeyFile: URL?)
         /// No restriction (ssh asks in the terminal).
         case none
@@ -609,7 +623,7 @@ public final class SystemSSHSession: TerminalSession {
             arguments += ["-o", "PubkeyAuthentication=no",
                           "-o", "PreferredAuthentications=keyboard-interactive,password"]
         case .agent(let socket, let publicKeyFile):
-            arguments += ["-o", "IdentityAgent=\(quoted(socket))"]
+            arguments += ["-o", "IdentityAgent=\(quoted(socket.replacingOccurrences(of: "%", with: "%%")))"]
             if let publicKeyFile {
                 arguments += ["-o", "IdentityFile=\(quoted(publicKeyFile.path))", "-o", "IdentitiesOnly=yes"]
             } else {
@@ -714,6 +728,30 @@ public final class SystemSSHSession: TerminalSession {
         keyType == "ssh-rsa" ? "rsa-sha2-512,rsa-sha2-256" : keyType
     }
 
+    /// Why ssh can't be given `path` as `IdentityAgent="…"`, or nil when it can. The value is double-quoted
+    /// (ssh has no escape for `"` or `\` inside it), must be one line without control characters, and ssh
+    /// expands `${NAME}` from the environment (an error when unset). `%` is fine: it is written as `%%`.
+    package static func agentSocketProblem(_ path: String) -> String? {
+        let unusable = path.unicodeScalars.contains { scalar in
+            scalar == "\"" || scalar == "\\" || scalar.properties.generalCategory == .control
+        } || path.contains("${")
+        return unusable ? agentPathProblemMessage : nil
+    }
+
+    static let agentPathProblemMessage = "The 1Password agent path contains characters ssh can't use."
+
+    /// Shown when an agent attempt fails because the agent couldn't be reached or wouldn't sign.
+    static let agentUnavailableMessage =
+        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it."
+
+    /// ssh's messages (from a line before the session started) that the agent couldn't be used.
+    static let agentFailureMarkers = [
+        "Error connecting to agent",
+        "Could not open a connection to your authentication agent",
+        "agent refused operation",
+        "communication with agent failed",
+    ]
+
     private static func quoted(_ path: String) -> String {
         "\"\(path)\""
     }
@@ -758,15 +796,23 @@ public final class SystemSSHSession: TerminalSession {
     /// Maps ssh's messages before the session started (exit status 255) to an error. The message is the
     /// last non-empty line without terminal control sequences; secrets are redacted as a last line of
     /// defence (ssh never prints them).
-    static func classifyFailure(_ output: [UInt8], secrets: [String]) -> SessionError {
+    ///
+    /// For an `agent` attempt, any of ssh's messages that the agent couldn't be reached or refused to sign
+    /// (`agentFailureMarkers`) is `.agentUnavailable`. There is no private key file then, so a "Load key"
+    /// message (about the pinned key's `.pub`) is never `.keyUnreadable`. OpenSSH 9.6 prints nothing for
+    /// a missing socket: that ends as `.authenticationFailed`.
+    static func classifyFailure(_ output: [UInt8], secrets: [String], agent: Bool = false) -> SessionError {
         let lines = stripTerminalSequences(String(decoding: output, as: UTF8.self))
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         if lines.contains(where: { $0.contains("Host key verification failed") }) { return .hostKeyRejected }
+        if agent, lines.contains(where: { line in agentFailureMarkers.contains { line.contains($0) } }) {
+            return .agentUnavailable(agentUnavailableMessage)
+        }
         let last = lines.last ?? ""
         if last.contains("Permission denied") || last.contains("Too many authentication failures") {
-            if lines.contains(where: { $0.hasPrefix("Load key ") && $0.contains("invalid format") }) {
+            if !agent, lines.contains(where: { $0.hasPrefix("Load key ") && $0.contains("invalid format") }) {
                 return .keyUnreadable
             }
             return .authenticationFailed
@@ -792,10 +838,10 @@ public final class SystemSSHSession: TerminalSession {
     ///   control master, whose own messages go nowhere), asks `controlMasterAlive`: a master that still
     ///   runs means the shell exited with 255; a master that is gone means the connection was lost
     ///   (`connectionLostMessage`).
-    static func classifyExit(status: Int32?, sessionStarted: Bool, output: [UInt8], secrets: [String],
+    static func classifyExit(status: Int32?, sessionStarted: Bool, output: [UInt8], secrets: [String], agent: Bool = false,
                              controlMasterAlive: @Sendable () async -> Bool) async -> SessionEndReason {
         guard status == 255 else { return .remoteClosed }
-        guard sessionStarted else { return .failed(classifyFailure(output, secrets: secrets)) }
+        guard sessionStarted else { return .failed(classifyFailure(output, secrets: secrets, agent: agent)) }
         let last = stripTerminalSequences(String(decoding: output, as: UTF8.self))
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
