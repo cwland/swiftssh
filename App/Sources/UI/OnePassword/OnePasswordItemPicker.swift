@@ -2,9 +2,10 @@ import SwiftUI
 import AppCore
 
 /// "Pick from 1Password…": search the items `op` lists, choose one, then choose a field; the
-/// field's `op://…` reference is handed back. Only titles, vaults, categories and field names are
-/// fetched here (`listItems` / `fields`), never a secret value: the password is read with `op read`
-/// each time a session connects.
+/// field's `op://…` reference is handed back. Only titles, vaults and categories are fetched here
+/// (`listItems`), never a secret value: the fields offered are the item category's standard fields,
+/// built from the chosen summary with `OnePasswordField.standardFields` (no `op` call, no cache on the
+/// client), and the password is read with `op read` each time a session connects.
 struct OnePasswordItemPicker: View {
     /// nil when `op` wasn't found.
     let client: (any OnePasswordCLI)?
@@ -20,9 +21,7 @@ struct OnePasswordItemPicker: View {
     @State private var items: Load<[OnePasswordItemSummary]> = .loading
     @State private var query = ""
     @State private var selectedItem: OnePasswordItemSummary?
-    @State private var fields: Load<[OnePasswordField]> = .loading
     @State private var itemsAttempt = 0
-    @State private var fieldsAttempt = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -120,18 +119,10 @@ struct OnePasswordItemPicker: View {
 
     @ViewBuilder
     private func fieldList(_ item: OnePasswordItemSummary) -> some View {
-        switch fields {
-        case .loading:
-            waiting("Reading the item\u{2019}s fields\u{2026}")
-                .task(id: "\(item.id)|\(fieldsAttempt)") { await loadFields(item) }
-        case .failed(let error):
-            failure(error) {
-                fields = .loading
-                fieldsAttempt += 1
-            }
-        case .loaded(let all) where all.isEmpty:
+        let all = Self.fields(of: item)
+        if all.isEmpty {
             message("This item has no fields to use.")
-        case .loaded(let all):
+        } else {
             List(Self.ordered(all)) { field in
                 Button {
                     choose(field.reference)
@@ -231,20 +222,13 @@ struct OnePasswordItemPicker: View {
     }
 
     private func select(_ item: OnePasswordItemSummary) {
-        fields = .loading
         selectedItem = item
     }
 
-    private func loadFields(_ item: OnePasswordItemSummary) async {
-        guard let client else { return }
-        do throws(OnePasswordError) {
-            let loaded = try await client.fields(itemID: item.id, vault: item.vault)
-            guard selectedItem?.id == item.id else { return }
-            fields = .loaded(loaded)
-        } catch {
-            guard selectedItem?.id == item.id, !Task.isCancelled else { return }
-            fields = .failed(error)
-        }
+    /// The chosen item's standard fields, from its own summary (category and vault ID included).
+    private static func fields(of item: OnePasswordItemSummary) -> [OnePasswordField] {
+        OnePasswordField.standardFields(itemID: item.id, vault: item.vault, vaultID: item.vaultID,
+                                        category: item.category)
     }
 
     // MARK: Helpers
