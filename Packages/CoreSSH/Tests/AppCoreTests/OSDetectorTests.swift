@@ -77,6 +77,7 @@ final class OSDetectorTests: XCTestCase {
             ("FreeBSD", "", "pfsense", .pfsense),
             ("FreeBSD", "", "opnsense", .opnsense),
             ("Linux", "NAME=\"Alpine Linux\"\nID=alpine\n", "docker", .docker),
+            ("Linux", "NAME=\"Alpine Linux\"\nID=alpine\n", "home-assistant", .homeAssistant),
             ("Linux", "NAME=\"Debian GNU/Linux\"\nID=debian\n", "raspbian", .raspbian), // Raspberry Pi OS 64-bit
         ]
         for (uname, osRelease, marker, expected) in cases {
@@ -88,6 +89,11 @@ final class OSDetectorTests: XCTestCase {
         // Docker only when no other marker matched.
         XCTAssertEqual(detect(posix("Linux", "ID=debian\n", markers: ["casaos", "docker"])), .casaos)
         XCTAssertEqual(detect(posix("Linux", "ID=debian\n", markers: ["docker", "proxmox"])), .proxmox)
+        // The Home Assistant SSH add-on is an Alpine container: Home Assistant wins over Docker.
+        let addOn = "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.20.3\n"
+        XCTAssertEqual(detect(posix("Linux", addOn, markers: ["docker", "home-assistant"])), .homeAssistant)
+        XCTAssertEqual(detect(posix("Linux", addOn, markers: ["home-assistant", "docker"])), .homeAssistant)
+        XCTAssertEqual(detect(posix("Linux", addOn, markers: ["docker"])), .docker)
         // Appliances on Raspberry Pi OS show the appliance.
         XCTAssertEqual(detect(posix("Linux", "ID=debian\n", markers: ["raspbian", "openmediavault"])), .openmediavault)
         XCTAssertEqual(detect(posix("Linux", "ID=debian\n", markers: ["raspbian", "umbrel"])), .umbrel)
@@ -215,7 +221,7 @@ final class OSDetectorTests: XCTestCase {
             XCTAssertFalse(inner.contains(character), "inner script contains \(character)")
         }
         XCTAssertFalse(probe.contains("sudo"))
-        XCTAssertLessThan(probe.count, 850)
+        XCTAssertLessThan(probe.count, 950)
         for check in [
             "[ -e /etc/synoinfo.conf ] && echo TR_OS=synology",
             "[ -e /etc/unraid-version ] && echo TR_OS=unraid",
@@ -231,6 +237,7 @@ final class OSDetectorTests: XCTestCase {
             "grep -qs pfSense /etc/platform && echo TR_OS=pfsense",
             "[ -e /usr/local/opnsense ] && echo TR_OS=opnsense",
             "[ -e /etc/rpi-issue ] && echo TR_OS=raspbian",
+            "[ -e /config/configuration.yaml -o -e /homeassistant/configuration.yaml ] && echo TR_OS=home-assistant",
             "[ -e /.dockerenv ] && echo TR_OS=docker",
         ] {
             XCTAssertTrue(probe.contains(check), check)

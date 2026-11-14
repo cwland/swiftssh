@@ -311,21 +311,49 @@ final class SessionManagerTests: XCTestCase {
 
     /// "Automatic" in Host Details clears the badge; the next connection probes again even if
     /// this host was probed earlier in the app session.
-    func testAutomaticHostWithoutBadgeIsProbedAgain() async throws {
+    func testChoosingAutomaticProbesAgainOnNextConnection() async throws {
         let host = passwordHost(label: "Auto")
         let first = try manager.open(hostID: host.id)
         await waitUntil("badge") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .ubuntu }
         XCTAssertEqual(first.badge, .ubuntu)
 
-        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        stored.osBadge = nil
-        stored.osBadgeIsManual = false
-        vault.saveNow(stored)
+        HostDetailsViewModel(vault: vault, hostID: host.id).useAutomaticOS()
         factory.commandOutput = "TR_OS_ENV=%OS%\nLinux\nID=debian\n"
         let second = try manager.open(hostID: host.id)
         await waitUntil("re-probed") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .debian }
         XCTAssertEqual(second.badge, .debian)
         XCTAssertEqual(factory.sessions[1].recorded.commands, [OSDetector.probeCommand])
+    }
+
+    /// An automatic host whose OS the probe cannot identify keeps no badge, and is probed once
+    /// per app session, not on every connection.
+    func testUndetectableAutomaticHostIsProbedOncePerAppSession() async throws {
+        factory.commandOutput = "Unknown action 0\n"
+        let host = passwordHost(label: "Router")
+        _ = try manager.open(hostID: host.id)
+        await waitUntil("probed") { self.factory.sessions.first?.recorded.commands == [OSDetector.probeCommand] }
+        await settle()
+        let second = try manager.open(hostID: host.id)
+        await waitUntil("second connected") { self.factory.sessions.count == 2 }
+        await settle()
+        XCTAssertNil(second.badge)
+        XCTAssertEqual(factory.sessions[1].recorded.commands, [])
+    }
+
+    /// The Automatic request is spent by one probe, even when the probe finds nothing.
+    func testAutomaticRequestIsConsumedByOneProbe() async throws {
+        factory.commandOutput = "Unknown action 0\n"
+        let host = passwordHost(label: "Router")
+        _ = try manager.open(hostID: host.id)
+        await settle()
+        HostDetailsViewModel(vault: vault, hostID: host.id).useAutomaticOS()
+        _ = try manager.open(hostID: host.id)
+        await waitUntil("re-probed") { self.factory.sessions.count == 2 && self.factory.sessions[1].recorded.commands == [OSDetector.probeCommand] }
+        await settle()
+        _ = try manager.open(hostID: host.id)
+        await waitUntil("third") { self.factory.sessions.count == 3 }
+        await settle()
+        XCTAssertEqual(factory.sessions[2].recorded.commands, [])
     }
 
     func testStartupScriptIsSentAfterConnect() async throws {

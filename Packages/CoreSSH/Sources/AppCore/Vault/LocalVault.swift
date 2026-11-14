@@ -34,6 +34,15 @@ public final class LocalVault {
     @ObservationIgnored private var queuedPersists: [Int: Task<Void, Error>] = [:]
     @ObservationIgnored private var persistCounter = 0
     @ObservationIgnored private var syncState = SyncState(vaultID: nil, lastSeq: 0)
+    /// Hosts the user set back to "Automatic" OS; the next connection probes them once more.
+    /// In memory only: it is an app-session hint, not synced data.
+    @ObservationIgnored private var osProbeRequests: Set<UUID> = []
+
+    /// Asks for one more OS probe of this host on its next connection.
+    public func requestOSProbe(for hostID: UUID) { osProbeRequests.insert(hostID) }
+
+    /// True once per `requestOSProbe(for:)`; clears the request.
+    public func takeOSProbeRequest(for hostID: UUID) -> Bool { osProbeRequests.remove(hostID) != nil }
 
     private init(persistence: any VaultPersistence, deviceID: String) {
         self.persistence = persistence

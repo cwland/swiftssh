@@ -80,14 +80,4 @@ public enum BadgeStyle {
 
     /// Per-OS appearance settings inside the Badges folder (see `BadgeSettings`).
     public static let settingsFileName = "settings.json"
-
-    /// Rows of Settings → OS Icons, in catalog order.
-    public static var settingsOrder: [OSBadge] {
-        OSCatalog.shared.entries.map(\.id)
-    }
-
-    /// Row name in Settings → OS Icons.
-    public static func settingsName(for badge: OSBadge) -> String {
-        displayName(for: badge)
-    }
 }

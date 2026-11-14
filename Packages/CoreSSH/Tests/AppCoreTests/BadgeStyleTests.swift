@@ -84,9 +84,4 @@ final class BadgeStyleTests: XCTestCase {
                        "a newer raspbian logo wins; the old file is left alone")
         XCTAssertEqual(BadgeStyle.logoFileMigrations(existingFileNames: ["ubuntu.svg", "settings.json"]), [])
     }
-
-    func testSettingsRowsFollowTheCatalog() {
-        XCTAssertEqual(BadgeStyle.settingsOrder, OSCatalog.shared.entries.map(\.id))
-        XCTAssertEqual(BadgeStyle.settingsName(for: .raspbian), "Raspberry Pi OS")
-    }
 }
