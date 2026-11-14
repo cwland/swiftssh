@@ -1287,3 +1287,351 @@ private final class SocketBox {
     var reads = 0
     init(_ path: String?) { self.path = path }
 }
+
+// MARK: - Secrets from 1Password
+
+/// A scripted `OnePasswordCLI`: `answer` decides each `read`; reads are recorded.
+private final class FakeOnePassword: OnePasswordCLI, Sendable {
+    private let state = Mutex<(reads: [String], cancelled: Int)>(([], 0))
+    let answer: Mutex<@Sendable (String) async throws(OnePasswordError) -> String>
+
+    init(_ answer: @escaping @Sendable (String) async throws(OnePasswordError) -> String) {
+        self.answer = Mutex(answer)
+    }
+
+    var reads: [String] { state.withLock { $0.reads } }
+    var cancelled: Int { state.withLock { $0.cancelled } }
+
+    func setAnswer(_ answer: @escaping @Sendable (String) async throws(OnePasswordError) -> String) {
+        self.answer.withLock { $0 = answer }
+    }
+
+    func read(reference: String) async throws(OnePasswordError) -> String {
+        state.withLock { $0.reads.append(reference) }
+        let answer = self.answer.withLock { $0 }
+        do {
+            return try await answer(reference)
+        } catch {
+            if error == .cancelled { state.withLock { $0.cancelled += 1 } }
+            throw error
+        }
+    }
+
+    func listItems() async throws(OnePasswordError) -> [OnePasswordItemSummary] { [] }
+    func fields(itemID: String, vault: String) async throws(OnePasswordError) -> [OnePasswordField] { [] }
+    func check() async throws(OnePasswordError) {}
+}
+
+@MainActor
+final class SessionManagerOnePasswordTests: XCTestCase {
+    private var vault: LocalVault!
+    private var store: KnownHostsStore!
+    private var factory: FakeFactory!
+    private var sleeper: FakeSleeper!
+    private var manager: SessionManager!
+    private var op: FakeOnePassword?
+    private let reference = "op://Private/web/password"
+    private let broken = SessionError.connectionFailed("Broken pipe")
+
+    override func setUp() async throws {
+        vault = try await LocalVault.open(persistence: InMemoryVaultPersistence(), newDeviceID: { "dev" })
+        store = KnownHostsStore(vault: vault)
+        factory = FakeFactory()
+        sleeper = FakeSleeper()
+        op = FakeOnePassword { _ in "resolved-pw" }
+        let factory = factory!
+        let sleeper = sleeper!
+        manager = SessionManager(vault: vault, knownHosts: store,
+                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                                 deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                                 sleep: { try await sleeper.sleep($0) },
+                                 opClient: { [unowned self] in self.op })
+    }
+
+    override func tearDown() async throws {
+        sleeper?.elapseAll()
+    }
+
+    private func waitUntil(_ what: String = "condition", timeout: TimeInterval = 2,
+                           _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { return XCTFail("timed out waiting for \(what)", file: file, line: line) }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    private func settle() async {
+        for _ in 0..<20 { await Task.yield() }
+        try? await Task.sleep(for: .milliseconds(20))
+    }
+
+    private func referenceHost(password: String? = nil, useSystemSSH: Bool? = nil) -> SavedHost {
+        vault.saveNow(SavedHost(label: "Web", address: "web.example", username: "root",
+                                password: password ?? reference, useSystemSSH: useSystemSSH))
+    }
+
+    private func password(of session: FakeSession) -> String? {
+        if case .password(let p) = session.plan.credential { return p }
+        return nil
+    }
+
+    func testReferencedPasswordIsReadBeforeTheSessionStarts() async throws {
+        let host = referenceHost(password: "  \(reference) ")
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads, [reference])
+        XCTAssertEqual(factory.sessions.count, 1)
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
+        XCTAssertNil(tab.suggestedAction)
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.password, "  \(reference) ", "the secret is never stored")
+    }
+
+    func testStartWaitsForTheRead() async throws {
+        let gate = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        op?.setAnswer { _ in
+            await withCheckedContinuation { c in gate.withLock { $0 = c } }
+            return "late"
+        }
+        let tab = try manager.open(hostID: referenceHost().id)
+        XCTAssertEqual(tab.state, .connecting)
+        await waitUntil("reading") { gate.withLock { $0 != nil } }
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 0, "no session before the secret is known")
+        gate.withLock { $0.take() }?.resume()
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(password(of: factory.sessions[0]), "late")
+    }
+
+    func testReferencedPassphraseIsRead() async throws {
+        let key = vault.saveNow(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "PEM",
+                                       passphrase: "op://Private/key/passphrase"))
+        let host = vault.saveNow(SavedHost(label: "K", address: "k.example", username: "root", sshKeyID: key.id))
+        op?.setAnswer { _ in "resolved-passphrase" }
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads, ["op://Private/key/passphrase"])
+        guard case .privateKey(.ed25519, "PEM", "resolved-passphrase") = factory.sessions[0].plan.credential else {
+            return XCTFail("\(factory.sessions[0].plan.credential)")
+        }
+    }
+
+    func testPlainSecretsDoNotCallOnePassword() async throws {
+        let tab = try manager.open(hostID: referenceHost(password: "plain").id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads, [])
+        XCTAssertEqual(password(of: factory.sessions[0]), "plain")
+    }
+
+    func testATypedPasswordWinsOverTheReference() async throws {
+        op?.setAnswer { _ throws(OnePasswordError) in throw .notFound("could not find item web") }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("failed") { tab.state != .connecting }
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        // A rejected resolved password leads to a prompt; the typed one is used without reading again.
+        op?.setAnswer { _ in "resolved-pw" }
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("prompt") { if case .awaitingPassword = tab.state { true } else { false } }
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
+        factory.onStart = { @Sendable s in s.emit(.connected); s.emit(.ready) }
+        let reads = op?.reads.count
+        manager.providePassword(tabID: tab.id, "typed", save: false)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads.count, reads)
+        XCTAssertEqual(password(of: factory.sessions[1]), "typed")
+    }
+
+    func testErrorsDisconnectWithTheMessageAndSuggestSetupWhenItHelps() async throws {
+        let cases: [(OnePasswordError, SuggestedAction?)] = [
+            (.cliNotFound, .openOnePasswordSetup), (.integrationOff, .openOnePasswordSetup),
+            (.appLocked, .openOnePasswordSetup), (.timedOut, nil), (.notFound("could not find item web"), nil),
+            (.failed("boom"), nil),
+        ]
+        for (error, suggestion) in cases {
+            op?.setAnswer { _ throws(OnePasswordError) in throw error }
+            let tab = try manager.open(hostID: referenceHost().id)
+            await waitUntil("disconnected \(error)") { tab.state == .disconnected(error.message) }
+            XCTAssertEqual(tab.suggestedAction, suggestion, "\(error)")
+            manager.close(tabID: tab.id)
+        }
+        XCTAssertEqual(factory.sessions.count, 0)
+    }
+
+    func testCancelledShowsCancelledWithoutASuggestion() async throws {
+        op?.setAnswer { _ throws(OnePasswordError) in throw .cancelled }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("disconnected") { tab.state == .disconnected("Cancelled") }
+        XCTAssertNil(tab.suggestedAction)
+    }
+
+    func testNoClientMeansCLINotFound() async throws {
+        op = nil
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("disconnected") { tab.state == .disconnected(OnePasswordError.cliNotFound.message) }
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        XCTAssertEqual(factory.sessions.count, 0)
+    }
+
+    func testSuggestionIsClearedWhenANewAttemptStarts() async throws {
+        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("suggestion") { tab.suggestedAction == .openOnePasswordSetup }
+        op?.setAnswer { _ in "resolved-pw" }
+        manager.reconnect(tabID: tab.id)
+        XCTAssertNil(tab.suggestedAction)
+        XCTAssertEqual(tab.state, .connecting)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertNil(tab.suggestedAction)
+    }
+
+    func testClosingTheTabWhileReadingCancelsTheRead() async throws {
+        op?.setAnswer { _ throws(OnePasswordError) in
+            do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled }
+            return "too late"
+        }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("reading") { self.op?.reads.count == 1 }
+        manager.close(tabID: tab.id)
+        await waitUntil("cancelled") { self.op?.cancelled == 1 }
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 0)
+    }
+
+    func testReconnectWhileReadingSupersedesTheOldRead() async throws {
+        let first = Mutex(true)
+        op?.setAnswer { _ throws(OnePasswordError) in
+            let isFirst = first.withLock { value -> Bool in
+                defer { value = false }
+                return value
+            }
+            if isFirst {
+                do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled }
+                return "stale"
+            }
+            return "fresh"
+        }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("reading") { self.op?.reads.count == 1 }
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("old read cancelled") { self.op?.cancelled == 1 }
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 1)
+        XCTAssertEqual(password(of: factory.sessions[0]), "fresh")
+        XCTAssertEqual(tab.state, .connected, "the cancelled read changes nothing")
+    }
+
+    func testAutoReconnectReadsAgainOnEveryTry() async throws {
+        let count = Mutex(0)
+        op?.setAnswer { _ in "pw-\(count.withLock { $0 += 1; return $0 })" }
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.connectionFailed("Connection refused")))) }
+        factory.sessions[0].emit(.closed(.failed(broken)))
+        for attempt in 1...2 {
+            await waitUntil("waiting \(attempt)") { if case .waiting(attempt, _, _) = tab.autoReconnect { true } else { false } }
+            sleeper.elapseAll()
+            await waitUntil("try \(attempt)") { self.factory.sessions.count == attempt + 1 }
+        }
+        XCTAssertEqual(op?.reads.count, 3)
+        XCTAssertEqual(factory.sessions.map { password(of: $0) }, ["pw-1", "pw-2", "pw-3"])
+    }
+
+    func testAutoReconnectStopsOnAOnePasswordError() async throws {
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
+        factory.sessions[0].emit(.closed(.failed(broken)))
+        await waitUntil("waiting") { tab.autoReconnect != nil }
+        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked }
+        sleeper.elapseAll()
+        await waitUntil("stopped") { tab.state == .disconnected(OnePasswordError.appLocked.message) }
+        XCTAssertNil(tab.autoReconnect)
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        await settle()
+        XCTAssertEqual(sleeper.pending, 0)
+        XCTAssertEqual(factory.sessions.count, 1)
+        XCTAssertEqual(manager.waitingForReconnectCount, 0)
+    }
+
+    func testAutoReconnectStaysReconnectingWhileReading() async throws {
+        let gate = Mutex<CheckedContinuation<Void, Never>?>(nil)
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
+        factory.sessions[0].emit(.closed(.failed(broken)))
+        await waitUntil("waiting") { tab.autoReconnect != nil }
+        op?.setAnswer { _ in
+            await withCheckedContinuation { c in gate.withLock { $0 = c } }
+            return "pw"
+        }
+        sleeper.elapseAll()
+        await waitUntil("reading") { gate.withLock { $0 != nil } }
+        XCTAssertEqual(tab.autoReconnect, .reconnecting(attempt: 1))
+        XCTAssertEqual(manager.waitingForReconnectCount, 1)
+        manager.stopAutoReconnect(tabID: tab.id)
+        XCTAssertNil(tab.autoReconnect)
+        XCTAssertEqual(tab.state, .disconnected(broken.localizedDescription))
+        gate.withLock { $0.take() }?.resume()
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 1, "the stopped try never starts")
+        XCTAssertEqual(tab.state, .disconnected(broken.localizedDescription))
+    }
+
+    func testSystemSSHAlsoResolvesTheReference() async throws {
+        let tab = try manager.open(hostID: referenceHost(useSystemSSH: true).id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(factory.sessions[0].plan.engine, .systemSSH)
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
+    }
+
+    // MARK: Agent keys and 1Password references together
+
+    /// A manager with both providers, in the init's final order (…, sleep, agentSocket, opClient).
+    private func agentAndOpManager(socket: @escaping @MainActor () -> String?) -> SessionManager {
+        let factory = factory!
+        let sleeper = sleeper!
+        return SessionManager(vault: vault, knownHosts: store,
+                              makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                              deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                              sleep: { try await sleeper.sleep($0) },
+                              agentSocket: socket,
+                              opClient: { [unowned self] in self.op })
+    }
+
+    private func agentHostWithReference() -> SavedHost {
+        // The stored password is a reference, but the agent key wins: it must never be read.
+        vault.saveNow(SavedHost(label: "Agent", address: "agent.example", username: "root", password: reference,
+                                agentKey: AgentKeyChoice(publicKey: nil)))
+    }
+
+    func testAgentHostNeverReadsTheStoredReference() async throws {
+        manager = agentAndOpManager(socket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHostWithReference().id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(op?.reads, [])
+        guard case .agent("/tmp/a.sock", nil) = factory.sessions[0].plan.credential else {
+            return XCTFail("\(factory.sessions[0].plan.credential)")
+        }
+    }
+
+    func testMissingAgentSocketIsReportedBeforeAnyOnePasswordRead() async throws {
+        manager = agentAndOpManager(socket: { nil })
+        let tab = try manager.open(hostID: agentHostWithReference().id)
+        XCTAssertEqual(tab.state, .disconnected(
+            "1Password's SSH agent wasn't found. Turn on \u{201C}Use the SSH agent\u{201D} in 1Password \u{2192} Settings \u{2192} Developer."))
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        await settle()
+        XCTAssertEqual(op?.reads, [])
+        XCTAssertTrue(factory.sessions.isEmpty)
+    }
+
+    func testReferenceHostsStillResolveWhenAnAgentProviderIsSet() async throws {
+        var socketReads = 0
+        manager = agentAndOpManager(socket: { socketReads += 1; return "/tmp/a.sock" })
+        let tab = try manager.open(hostID: referenceHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(socketReads, 0)
+        XCTAssertEqual(op?.reads, [reference])
+        XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
+    }
+}

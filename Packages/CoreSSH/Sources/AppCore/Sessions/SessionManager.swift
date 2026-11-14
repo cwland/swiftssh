@@ -40,6 +40,9 @@ public final class TerminalTab: Identifiable {
 
     @ObservationIgnored fileprivate let target: SessionTarget
     @ObservationIgnored fileprivate var attempt: SessionAttempt?
+    /// Reading the attempt's secrets from 1Password before its session is made; ends (is cancelled)
+    /// with the attempt.
+    @ObservationIgnored fileprivate var resolvingSecrets: Task<Void, Never>?
     /// Bumped whenever the current attempt is replaced or ended; stale host key prompts compare it.
     @ObservationIgnored fileprivate var generation = 0
     /// A password typed for this tab, used instead of the stored one until the server rejects it
@@ -154,6 +157,10 @@ fileprivate final class SessionAttempt {
 /// 1Password agent keys: a plan with `agentKey` gets its socket from `agentSocket()` at every attempt and
 /// connects with `.agent(socketPath:publicKey:)` through system ssh. Without a socket no session starts:
 /// the tab is disconnected with a setup hint and `suggestedAction = .openOnePasswordSetup`.
+///
+/// 1Password references: a password or key passphrase that is an `op://` reference is read with
+/// `opClient()` before each attempt starts (after the agent check; agent plans never read). The value is
+/// used for that attempt only and never stored.
 @MainActor @Observable
 public final class SessionManager {
     public private(set) var tabs: [TerminalTab] = []
@@ -175,6 +182,7 @@ public final class SessionManager {
     @ObservationIgnored private let agentSocket: @MainActor () -> String?
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
+    @ObservationIgnored private let opClient: @MainActor () -> (any OnePasswordCLI)?
     /// Every attempt whose session has not ended yet, including ones being closed.
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
@@ -188,8 +196,10 @@ public final class SessionManager {
                 autoReconnectEnabled: @escaping @MainActor () -> Bool = { true },
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
-                agentSocket: @escaping @MainActor () -> String? = { nil }) {
+                agentSocket: @escaping @MainActor () -> String? = { nil },
+                opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil }) {
         self.agentSocket = agentSocket
+        self.opClient = opClient
         self.keepAlivePolicy = keepAlivePolicy
         self.autoReconnectEnabled = autoReconnectEnabled
         self.now = now
@@ -348,7 +358,7 @@ public final class SessionManager {
         cancelCountdown(of: tab)
         tab.autoReconnect = .reconnecting(attempt: attempt)
         connect(tab, plan: nil)
-        if tab.attempt == nil { tab.autoReconnect = nil }
+        if tab.attempt == nil, tab.resolvingSecrets == nil { tab.autoReconnect = nil }
     }
 
     /// After the tab's current attempt ended with `reason` (its state already updated).
@@ -453,10 +463,12 @@ public final class SessionManager {
         tabs.contains { $0 === tab }
     }
 
-    /// Detaches the current attempt (its later events only finish its log), rejects a pending host
-    /// key prompt and stops input. The caller closes the session.
+    /// Detaches the current attempt (its later events only finish its log), cancels reading its
+    /// secrets, rejects a pending host key prompt and stops input. The caller closes the session.
     private func detachAttempt(of tab: TerminalTab) -> SessionAttempt? {
         tab.generation += 1
+        tab.resolvingSecrets?.cancel()
+        tab.resolvingSecrets = nil
         rejectPendingHostKey(of: tab)
         if let waiter = tab.sizeWaiter {
             tab.sizeWaiter = nil
@@ -521,6 +533,85 @@ public final class SessionManager {
         }
 
         tab.state = .connecting
+        if Self.secretReferences(in: plan.credential) {
+            resolveSecrets(of: plan, usedEnteredPassword: usedEnteredPassword, tab: tab)
+            return
+        }
+        startAttempt(tab, plan: plan, usedEnteredPassword: usedEnteredPassword)
+    }
+
+    // MARK: Secrets from 1Password
+
+    /// Whether the plan's password or key passphrase is a 1Password secret reference.
+    private static func secretReferences(in credential: SSHCredential) -> Bool {
+        switch credential {
+        case .password(let password): SecretReference.isReference(password)
+        case .privateKey(_, _, let passphrase?): SecretReference.isReference(passphrase)
+        case .privateKey, .none, .agent: false
+        }
+    }
+
+    /// Reads the plan's referenced secret with `op read`, then starts the attempt with the value. The value
+    /// lives only in that attempt's plan: it is never stored, and every attempt (including each automatic
+    /// try) reads it again. A failure ends the attempt (and auto-reconnect) with the error's message.
+    private func resolveSecrets(of plan: ConnectionPlan, usedEnteredPassword: Bool, tab: TerminalTab) {
+        let generation = tab.generation
+        guard let client = opClient() else {
+            failResolving(tab, .cliNotFound)
+            return
+        }
+        let credential = plan.credential
+        tab.resolvingSecrets = Task { [weak self, weak tab] in
+            let result: Result<SSHCredential, OnePasswordError>
+            do throws(OnePasswordError) {
+                result = .success(try await Self.resolve(credential, with: client))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self, let tab, self.isOpen(tab), tab.generation == generation else { return }
+            tab.resolvingSecrets = nil
+            switch result {
+            case .success(let resolved):
+                var plan = plan
+                plan.credential = resolved
+                self.startAttempt(tab, plan: plan, usedEnteredPassword: usedEnteredPassword)
+            case .failure(let error):
+                self.failResolving(tab, error)
+            }
+        }
+    }
+
+    private nonisolated static func resolve(_ credential: SSHCredential,
+                                            with client: any OnePasswordCLI) async throws(OnePasswordError) -> SSHCredential {
+        switch credential {
+        case .password(let reference) where SecretReference.isReference(reference):
+            return .password(try await client.read(reference: Self.trimmed(reference)))
+        case .privateKey(let type, let pem, let passphrase?) where SecretReference.isReference(passphrase):
+            return .privateKey(type: type, pem: pem, passphrase: try await client.read(reference: Self.trimmed(passphrase)))
+        case .password, .privateKey, .none, .agent:
+            return credential
+        }
+    }
+
+    private nonisolated static func trimmed(_ reference: String) -> String {
+        reference.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func failResolving(_ tab: TerminalTab, _ error: OnePasswordError) {
+        endAutoReconnect(of: tab)
+        switch error {
+        case .cancelled:
+            tab.state = .disconnected("Cancelled")
+        case .cliNotFound, .integrationOff, .appLocked:
+            tab.state = .disconnected(error.message)
+            tab.suggestedAction = .openOnePasswordSetup
+        case .timedOut, .notFound, .failed:
+            tab.state = .disconnected(error.message)
+        }
+    }
+
+    /// Makes the attempt's session and starts it.
+    private func startAttempt(_ tab: TerminalTab, plan: ConnectionPlan, usedEnteredPassword: Bool) {
         let generation = tab.generation
         let evaluator = PromptingHostKeyEvaluator(store: knownHosts) { [weak self, weak tab] candidate, check in
             guard let self, let tab else { return .rejected }
