@@ -51,7 +51,8 @@ private struct ReadyArea: View {
     var body: some View {
         Group {
             if let tab = environment.selectedTab {
-                TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews)
+                TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews,
+                                closeTab: { environment.closeTab(tabID: tab.id) })
                     .id(tab.id)
             } else {
                 MainArea(

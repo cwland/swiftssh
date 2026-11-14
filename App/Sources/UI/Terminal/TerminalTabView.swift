@@ -8,11 +8,13 @@ struct TerminalTabView: View {
     let tab: TerminalTab
     let sessions: SessionManager
     let store: TerminalViewStore
+    /// Closes this tab, the same as Cmd+W.
+    let closeTab: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            if case .disconnected(let message) = tab.state {
-                DisconnectedBanner(message: message) {
+            if case .disconnected(let message) = tab.state, !isAutoReconnecting {
+                DisconnectedBanner(message: bannerMessage(message)) {
                     sessions.reconnect(tabID: tab.id)
                 }
             }
@@ -20,9 +22,21 @@ struct TerminalTabView: View {
                 .padding(.leading, 8)
                 .padding(.top, 4)
                 .overlay(alignment: .top) {
-                    if tab.state == .connecting {
+                    if tab.state == .connecting, !isAutoReconnecting {
                         ConnectingBadge(title: tab.title)
                             .padding(.top, 12)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
+                    if let state = tab.autoReconnect, isAutoReconnecting {
+                        ReconnectPopup(
+                            state: state,
+                            sessionCount: sessions.waitingForReconnectCount,
+                            reconnectNow: { sessions.reconnectWaitingNow() },
+                            closeTerminal: closeTab,
+                            dismiss: { sessions.stopAutoReconnect(tabID: tab.id) }
+                        )
+                        .padding(12)
                     }
                 }
         }
@@ -31,6 +45,24 @@ struct TerminalTabView: View {
             promptSheet(prompt)
                 .interactiveDismissDisabled()
         }
+    }
+
+    // MARK: Auto-reconnect
+
+    /// The popup (not the banner) is up while a countdown or an automatic try is running.
+    private var isAutoReconnecting: Bool {
+        switch tab.autoReconnect {
+        case .waiting, .reconnecting: true
+        case .gaveUp, nil: false
+        }
+    }
+
+    /// After the last automatic try the banner says so, instead of the bare error.
+    private func bannerMessage(_ message: String?) -> String? {
+        if case .gaveUp(let attempts) = tab.autoReconnect {
+            return "Couldn\u{2019}t reconnect after \(attempts) \(attempts == 1 ? "try" : "tries")."
+        }
+        return message
     }
 
     // MARK: Prompts
