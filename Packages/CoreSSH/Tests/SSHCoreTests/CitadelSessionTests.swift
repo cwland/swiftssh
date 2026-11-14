@@ -51,8 +51,9 @@ final class CitadelSessionTests: XCTestCase {
         try server.authorize(publicKeyLine: String(contentsOf: keyFile.appendingPathExtension("pub"), encoding: .utf8))
         try await assertShellWorks(.privateKey(type: .ed25519, pem: pem, passphrase: "correct horse"))
 
-        // Wrong passphrase: authentication failure, nothing secret in the events.
-        let session = CitadelSession(plan: plan(.privateKey(type: .ed25519, pem: pem, passphrase: "wrong horse")),
+        // A key the server doesn't know is rejected by the server: authenticationFailed.
+        let stranger = SSHKeyGenerator.ed25519(comment: "not-authorized")
+        let session = CitadelSession(plan: plan(.privateKey(type: .ed25519, pem: stranger.privateKey, passphrase: nil)),
                                      hostKeys: TestEvaluator(decision: .trusted))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
@@ -70,6 +71,105 @@ final class CitadelSessionTests: XCTestCase {
         let described = recorder.nonOutputEvents.map { "\($0)" }.joined()
             + (SessionError.authenticationFailed.errorDescription ?? "")
         XCTAssertFalse(described.contains(wrong))
+    }
+
+    func testUnreadableKeyIsReportedBeforeConnecting() async throws {
+        let keyFile = server.directory.appendingPathComponent("locked_ed25519")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "correct horse", "-f", keyFile.path])
+        let pem = try String(contentsOf: keyFile, encoding: .utf8)
+        let corrupt = "-----BEGIN OPENSSH PRIVATE KEY-----\nbm90IGEga2V5\n-----END OPENSSH PRIVATE KEY-----\n"
+        let cases: [(String, SSHCredential)] = [
+            ("wrong passphrase", .privateKey(type: .ed25519, pem: pem, passphrase: "wrong horse")),
+            ("missing passphrase", .privateKey(type: .ed25519, pem: pem, passphrase: nil)),
+            ("corrupt key", .privateKey(type: .ed25519, pem: corrupt, passphrase: nil)),
+        ]
+        for (name, credential) in cases {
+            let evaluator = TestEvaluator(decision: .trusted)
+            let session = CitadelSession(plan: plan(credential), hostKeys: evaluator)
+            let recorder = EventRecorder(session.events)
+            await session.start(cols: 80, rows: 24)
+            try await recorder.waitForFinish()
+            XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.keyUnreadable))], name)
+            XCTAssertTrue(evaluator.candidates.isEmpty, "\(name): decided before connecting")
+            XCTAssertFalse("\(recorder.nonOutputEvents)".contains("wrong horse"))
+        }
+        XCTAssertEqual(SessionError.keyUnreadable.errorDescription,
+                       "The private key couldn't be opened. Check the passphrase.")
+        XCTAssertFalse(server.log().contains("Connection from"), "no connection was made")
+    }
+
+    func testCloseAfterRemoteExitReturnsPromptly() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("exit\n".utf8))
+        try await recorder.waitForFinish()
+        // Give the shell task time to tear the connection down, then close.
+        try await Task.sleep(for: .milliseconds(300))
+        try await assertCompletes(within: .seconds(2)) { await session.close() }
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.remoteClosed)])
+    }
+
+    func testRunCommandAfterRemoteExitThrows() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("exit\n".utf8))
+        try await recorder.waitForFinish()
+        for delay in [Duration.zero, .milliseconds(300)] {
+            try await Task.sleep(for: delay)
+            try await assertCompletes(within: .seconds(2)) {
+                do {
+                    _ = try await session.runCommand("echo nope")
+                    XCTFail("runCommand after the session ended must throw")
+                } catch let error as SessionError {
+                    XCTAssertEqual(error, .connectionFailed("Session closed"))
+                } catch {
+                    XCTFail("unexpected error \(error)")
+                }
+            }
+        }
+    }
+
+    func testRunCommandOutputCapClosesChannelAndThrows() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await assertCompletes(within: .seconds(10)) {
+            do {
+                _ = try await session.runCommand("yes")
+                XCTFail("an endless command must hit the cap")
+            } catch let error as SessionError {
+                XCTAssertEqual(error, .connectionFailed("Command output too large"))
+            } catch {
+                XCTFail("unexpected error \(error)")
+            }
+        }
+        // The exec channel was closed: `yes` is gone on the server, and the shell still works.
+        await session.send(Array("pgrep -x yes || echo no-$((3+4))-yes\n".utf8))
+        try await recorder.waitForOutput(containing: "no-7-yes")
+        let probe = try await session.runCommand("echo again")
+        XCTAssertTrue(probe.contains("again"))
+        await session.close()
+    }
+
+    func testRunCommandTimeoutClosesChannelAndThrows() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(1))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        let clock = ContinuousClock()
+        let begin = clock.now
+        do {
+            _ = try await session.runCommand("sleep 30")
+            XCTFail("expected a timeout")
+        } catch let error as SessionError {
+            XCTAssertEqual(error, .timedOut)
+        }
+        XCTAssertLessThan(clock.now - begin, .seconds(5))
+        await session.send(Array("pgrep -x sleep || echo no-$((2+2))-sleep\n".utf8))
+        try await recorder.waitForOutput(containing: "no-4-sleep")
+        await session.close()
     }
 
     func testRSAKeyIsReportedUnsupported() async throws {
@@ -111,17 +211,20 @@ final class CitadelSessionTests: XCTestCase {
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
-        await session.send(Array("head -c 5000000 /dev/zero | tr '\\0' 'a'; echo END\n".utf8))
+        await session.send(Array("seq 1 700000\n".utf8))
 
-        let marker = Array(String(repeating: "a", count: 16).utf8) + Array("END".utf8)
+        let lastLine = Array("\r\n700000\r\n".utf8)
         try await recorder.waitForOutput(timeout: 60) { bytes in
-            bytes.count > 5_000_000 && bytes.suffix(1024).contains(subsequence: marker)
+            bytes.count > 4_000_000 && bytes.suffix(1024).contains(subsequence: lastLine)
         }
-        let bytes = recorder.output
-        let endRange = try XCTUnwrap(bytes.lastRange(of: Array("END".utf8)))
-        var runStart = endRange.lowerBound
-        while runStart > 0 && bytes[runStart - 1] == UInt8(ascii: "a") { runStart -= 1 }
-        XCTAssertEqual(endRange.lowerBound - runStart, 5_000_000, "exactly 5,000,000 'a' directly before END")
+        let lines = recorder.outputText.components(separatedBy: "\r\n")
+        // The line holding "1" may carry terminal mode sequences printed before the command's output.
+        let first = try XCTUnwrap(lines.indices.first {
+            lines[$0].hasSuffix("1") && lines.indices.contains($0 + 1) && lines[$0 + 1] == "2"
+        })
+        let rest = lines[(first + 1)..<min(first + 700_000, lines.count)]
+        XCTAssertEqual(rest.count, 699_999)
+        XCTAssertTrue(rest.elementsEqual((2...700_000).lazy.map(String.init)), "lines are exactly 1…700000 in order")
         await session.close()
     }
 
@@ -178,21 +281,23 @@ final class CitadelSessionTests: XCTestCase {
     }
 
     func testCloseDuringHostKeyPromptSendsNoCredentials() async throws {
-        let evaluator = TestEvaluator(decision: .trusted, delay: .seconds(2))
+        let evaluator = TestEvaluator(decision: .trusted, delay: .seconds(6))
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: evaluator)
         let recorder = EventRecorder(session.events)
         let started = Task { await session.start(cols: 80, rows: 24) }
         try await waitUntil { !evaluator.candidates.isEmpty }
-        let clock = ContinuousClock()
-        let closeStart = clock.now
-        await session.close()
-        await started.value
-        XCTAssertLessThan(clock.now - closeStart, .seconds(1), "start returns promptly after close")
+        try await assertCompletes(within: .seconds(1)) {
+            await session.close()
+            await started.value
+        }
         try await recorder.waitForFinish()
         XCTAssertEqual(recorder.nonOutputEvents, [.closed(.userClosed)])
 
-        // The evaluator later says "trusted"; the abandoned attempt must still not authenticate.
-        try await Task.sleep(for: .seconds(3))
+        // The connection is torn down without waiting for the evaluator (still "thinking" for ~5 s).
+        let server: TestSSHServer = server
+        try await waitUntil(timeout: 2) { server.log().contains("[preauth]") }
+        // The evaluator later says "trusted"; that answer is ignored and nothing authenticates.
+        try await Task.sleep(for: .seconds(6))
         assertNoAuthenticationAttempt(in: server.log())
     }
 
@@ -246,6 +351,23 @@ final class CitadelSessionTests: XCTestCase {
         await session.close()
         try await recorder.waitForFinish()
         XCTAssertEqual(recorder.nonOutputEvents, [.connected, .closed(.userClosed)], file: file, line: line)
+    }
+
+    /// Fails (instead of hanging the suite) when `body` doesn't finish in time.
+    private func assertCompletes(within limit: Duration, file: StaticString = #filePath, line: UInt = #line,
+                                 _ body: @escaping @Sendable () async -> Void) async throws {
+        let done = Task { await body() }
+        let clock = ContinuousClock()
+        let deadline = clock.now + limit
+        let finished = TestFlag()
+        Task { await done.value; finished.set() }
+        while !finished.value {
+            if clock.now > deadline {
+                XCTFail("did not complete within \(limit)", file: file, line: line)
+                throw WaitTimeout(description: "did not complete within \(limit)")
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
     }
 
     private func waitForLog(containing text: String) async throws {
@@ -341,6 +463,13 @@ final class EventRecorder: @unchecked Sendable {
         XCTAssertEqual(closedCount, 1, "exactly one .closed event", file: file, line: line)
         if case .closed = nonOutputEvents.last {} else { XCTFail("last event is not .closed", file: file, line: line) }
     }
+}
+
+final class TestFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var flag = false
+    var value: Bool { lock.withLock { flag } }
+    func set() { lock.withLock { flag = true } }
 }
 
 struct WaitTimeout: Error, CustomStringConvertible {

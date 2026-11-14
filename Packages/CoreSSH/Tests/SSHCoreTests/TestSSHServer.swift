@@ -9,17 +9,22 @@ import Darwin
 /// A throwaway OpenSSH server for integration tests.
 ///
 /// Starts `/usr/sbin/sshd -D` on 127.0.0.1 with a fresh ed25519 host key, its own `authorized_keys`
-/// file and a log file (LogLevel VERBOSE), all inside a temporary directory. A local test user is
-/// created once (`useradd -m` + `chpasswd`). Requires root; tests are skipped otherwise.
+/// file and a log file (LogLevel VERBOSE), all inside a per-run directory under
+/// `<tmp>/tr-sshd-tests/`. A local test user is created once (`useradd -m`); its password is random
+/// and set with `chpasswd` on every start. Requires root; tests are skipped otherwise.
+///
+/// Processes are started with `posix_spawn` and reaped with `waitpid`: Foundation's
+/// `Process.waitUntilExit()` can hang on Linux when called from a Swift concurrency thread.
 final class TestSSHServer: @unchecked Sendable {
     static let username = "trtestuser"
-    static let password = "Tr-test-pw-7f3c9"
     static let sshdPath = "/usr/sbin/sshd"
+    static let baseDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("tr-sshd-tests", isDirectory: true)
 
     let host = "127.0.0.1"
     let port: Int
-    var username: String { Self.username }
-    var password: String { Self.password }
+    let username = TestSSHServer.username
+    let password: String
     /// OpenSSH key type name, e.g. `ssh-ed25519`.
     let hostKeyType: String
     /// Public key wire blob of the server's host key.
@@ -27,29 +32,61 @@ final class TestSSHServer: @unchecked Sendable {
     let directory: URL
     let logFile: URL
     let authorizedKeysFile: URL
-    private let process: Process
+    private let pid: pid_t
+    private let stopped = NSLock()
+    private var isStopped = false
 
-    private init(port: Int, hostKeyType: String, hostKeyBlob: Data, directory: URL, process: Process) {
+    /// Run directories of servers started by this process (never treated as stale).
+    private static let liveLock = NSLock()
+    nonisolated(unsafe) private static var liveDirectories: Set<String> = []
+
+    private init(port: Int, password: String, hostKeyType: String, hostKeyBlob: Data, directory: URL, pid: pid_t) {
         self.port = port
+        self.password = password
         self.hostKeyType = hostKeyType
         self.hostKeyBlob = hostKeyBlob
         self.directory = directory
         self.logFile = directory.appendingPathComponent("sshd.log")
         self.authorizedKeysFile = directory.appendingPathComponent("authorized_keys")
-        self.process = process
+        self.pid = pid
     }
 
     /// Starts a server, or throws `XCTSkip` when not running as root or sshd is missing.
     static func start() throws -> TestSSHServer {
         guard geteuid() == 0 else { throw XCTSkip("TestSSHServer needs root") }
         guard FileManager.default.isExecutableFile(atPath: sshdPath) else { throw XCTSkip("sshd not installed") }
-        try ensureTestUser()
         try FileManager.default.createDirectory(atPath: "/run/sshd", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+        killStaleServers()
 
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("tr-sshd-\(UUID().uuidString)", isDirectory: true)
+        let password = "Tr-" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(20)
+        try ensureTestUser(password: password)
+
+        var lastError: Error = TestSSHServerError.didNotStart("no attempt")
+        for _ in 1...3 {
+            do {
+                return try startOnce(password: password)
+            } catch TestSSHServerError.portInUse(let log) {
+                lastError = TestSSHServerError.portInUse(log) // another process took the port; try a new one
+            }
+        }
+        throw lastError
+    }
+
+    private static func startOnce(password: String) throws -> TestSSHServer {
+        let dir = baseDirectory.appendingPathComponent("run-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o755])
+        liveLock.withLock { _ = liveDirectories.insert(dir.path) }
+        var started = false
+        defer {
+            if !started {
+                liveLock.withLock { _ = liveDirectories.remove(dir.path) }
+                try? FileManager.default.removeItem(at: dir)
+            }
+        }
+
         let hostKey = dir.appendingPathComponent("ssh_host_ed25519_key")
         try run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", hostKey.path])
         let pubLine = try String(contentsOf: hostKey.appendingPathExtension("pub"), encoding: .utf8)
@@ -62,6 +99,7 @@ final class TestSSHServer: @unchecked Sendable {
         _ = FileManager.default.createFile(atPath: authorized.path, contents: Data(),
                                            attributes: [.posixPermissions: 0o644])
         let log = dir.appendingPathComponent("sshd.log")
+        // StrictModes no: the authorized_keys path is under world-writable /tmp.
         let config = """
         ListenAddress 127.0.0.1
         HostKey \(hostKey.path)
@@ -81,24 +119,24 @@ final class TestSSHServer: @unchecked Sendable {
         try config.write(to: configFile, atomically: true, encoding: .utf8)
 
         let port = try freePort()
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: sshdPath)
-        process.arguments = ["-D", "-f", configFile.path, "-p", String(port), "-E", log.path]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-
-        let server = TestSSHServer(port: port, hostKeyType: String(fields[0]), hostKeyBlob: blob,
-                                   directory: dir, process: process)
+        let pid = try spawnDetached(sshdPath, ["-D", "-f", configFile.path, "-p", String(port), "-E", log.path])
+        let server = TestSSHServer(port: port, password: password, hostKeyType: String(fields[0]),
+                                   hostKeyBlob: blob, directory: dir, pid: pid)
         let deadline = Date().addingTimeInterval(10)
         while !server.log().contains("Server listening on") {
-            guard process.isRunning, Date() < deadline else {
-                let log = server.log()
-                server.stop()
-                throw TestSSHServerError.didNotStart(log)
+            var status: Int32 = 0
+            let exited = waitpid(pid, &status, WNOHANG) == pid
+            if exited || Date() > deadline {
+                let text = server.log()
+                if !exited { server.stop() }
+                if text.contains("Bind to port") || text.contains("Cannot bind any address") {
+                    throw TestSSHServerError.portInUse(text)
+                }
+                throw TestSSHServerError.didNotStart(text)
             }
             Thread.sleep(forTimeInterval: 0.05)
         }
+        started = true
         return server
     }
 
@@ -116,55 +154,89 @@ final class TestSSHServer: @unchecked Sendable {
     }
 
     func stop() {
-        if process.isRunning {
-            process.terminate()
-            process.waitUntilExit()
+        let first = stopped.withLock { () -> Bool in
+            defer { isStopped = true }
+            return !isStopped
         }
+        guard first else { return }
+        kill(pid, SIGTERM)
+        var status: Int32 = 0
+        while waitpid(pid, &status, 0) == -1 && errno == EINTR {}
+        Self.liveLock.withLock { _ = Self.liveDirectories.remove(directory.path) }
         try? FileManager.default.removeItem(at: directory)
+    }
+
+    // MARK: Stale servers
+
+    /// Kills sshd processes left by an earlier, crashed test run, but only those whose PID file lives
+    /// in our own `tr-sshd-tests` area and whose command line names that run directory.
+    private static func killStaleServers() {
+        let live = liveLock.withLock { liveDirectories }
+        let entries = (try? FileManager.default.contentsOfDirectory(at: baseDirectory, includingPropertiesForKeys: nil)) ?? []
+        for dir in entries where dir.lastPathComponent.hasPrefix("run-") && !live.contains(dir.path) {
+            let pidText = (try? String(contentsOf: dir.appendingPathComponent("sshd.pid"), encoding: .utf8)) ?? ""
+            if let stale = pid_t(pidText.trimmingCharacters(in: .whitespacesAndNewlines)), stale > 1,
+               commandLine(of: stale).contains(dir.path) {
+                kill(stale, SIGTERM)
+                let deadline = Date().addingTimeInterval(2)
+                while kill(stale, 0) == 0 && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+                if kill(stale, 0) == 0 { kill(stale, SIGKILL) }
+            }
+            try? FileManager.default.removeItem(at: dir)
+        }
+    }
+
+    private static func commandLine(of pid: pid_t) -> String {
+        #if os(Linux)
+        guard let data = FileManager.default.contents(atPath: "/proc/\(pid)/cmdline") else { return "" }
+        return String(decoding: data.map { $0 == 0 ? UInt8(ascii: " ") : $0 }, as: UTF8.self)
+        #else
+        return ""
+        #endif
     }
 
     // MARK: Helpers
 
-    private static func ensureTestUser() throws {
+    private static func ensureTestUser(password: String) throws {
         if getpwnam(username) == nil {
             try run("/usr/sbin/useradd", ["-m", "-s", "/bin/bash", username])
         }
-        // Always (re)set the password so a user left over from an older run still matches.
         try run("/usr/sbin/chpasswd", [], stdin: "\(username):\(password)\n")
     }
 
+    /// Spawns a long-running process with stdin/stdout/stderr on /dev/null; reap it with `waitpid`.
+    private static func spawnDetached(_ path: String, _ arguments: [String]) throws -> pid_t {
+        try withFileActions { actions in
+            posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0)
+            posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0)
+            posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0)
+            return try spawn(path, arguments, actions: &actions)
+        }
+    }
+
     /// Runs a tool and returns its combined output; arguments never carry secrets (chpasswd reads them
-    /// from stdin). Uses posix_spawn + waitpid: Foundation's `Process.waitUntilExit` can hang on Linux
-    /// when called from a Swift concurrency thread (the child is never reaped).
+    /// from stdin).
     @discardableResult
     static func run(_ path: String, _ arguments: [String], stdin: String? = nil) throws -> String {
         var input: [Int32] = [0, 0]
         var output: [Int32] = [0, 0]
         guard pipe(&input) == 0, pipe(&output) == 0 else { throw TestSSHServerError.socket("pipe") }
-        #if os(Linux)
-        var actions = posix_spawn_file_actions_t()
-        #else
-        var actions: posix_spawn_file_actions_t?
-        #endif
-        posix_spawn_file_actions_init(&actions)
-        defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_adddup2(&actions, input[0], 0)
-        posix_spawn_file_actions_adddup2(&actions, output[1], 1)
-        posix_spawn_file_actions_adddup2(&actions, output[1], 2)
-        posix_spawn_file_actions_addclose(&actions, input[1])
-        posix_spawn_file_actions_addclose(&actions, output[0])
-
-        let argv: [UnsafeMutablePointer<CChar>?] = ([path] + arguments).map { strdup($0) } + [nil]
-        defer { argv.forEach { free($0) } }
-        var pid: pid_t = 0
-        let spawned = posix_spawn(&pid, path, &actions, nil, argv, environ)
+        let pid: pid_t
+        do {
+            pid = try withFileActions { actions in
+                posix_spawn_file_actions_adddup2(&actions, input[0], 0)
+                posix_spawn_file_actions_adddup2(&actions, output[1], 1)
+                posix_spawn_file_actions_adddup2(&actions, output[1], 2)
+                posix_spawn_file_actions_addclose(&actions, input[1])
+                posix_spawn_file_actions_addclose(&actions, output[0])
+                return try spawn(path, arguments, actions: &actions)
+            }
+        } catch {
+            [input[0], input[1], output[0], output[1]].forEach { close($0) }
+            throw error
+        }
         close(input[0])
         close(output[1])
-        guard spawned == 0 else {
-            close(input[1])
-            close(output[0])
-            throw TestSSHServerError.commandFailed(path, spawned, "posix_spawn failed")
-        }
         if let stdin {
             let bytes = Array(stdin.utf8)
             var offset = 0
@@ -196,6 +268,28 @@ final class TestSSHServer: @unchecked Sendable {
         return text
     }
 
+    #if os(Linux)
+    private typealias FileActions = posix_spawn_file_actions_t
+    #else
+    private typealias FileActions = posix_spawn_file_actions_t?
+    #endif
+
+    private static func withFileActions<T>(_ body: (inout FileActions) throws -> T) throws -> T {
+        var actions = FileActions()
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        return try body(&actions)
+    }
+
+    private static func spawn(_ path: String, _ arguments: [String], actions: inout FileActions) throws -> pid_t {
+        let argv: [UnsafeMutablePointer<CChar>?] = ([path] + arguments).map { strdup($0) } + [nil]
+        defer { argv.forEach { free($0) } }
+        var pid: pid_t = 0
+        let result = posix_spawn(&pid, path, &actions, nil, argv, environ)
+        guard result == 0 else { throw TestSSHServerError.commandFailed(path, result, "posix_spawn failed") }
+        return pid
+    }
+
     /// Binds port 0 on 127.0.0.1 to let the kernel pick a free port, then releases it.
     static func freePort() throws -> Int {
         let fd = try ListeningSocket.makeBoundSocket()
@@ -207,6 +301,7 @@ final class TestSSHServer: @unchecked Sendable {
 enum TestSSHServerError: Error {
     case badHostKey
     case didNotStart(String)
+    case portInUse(String)
     case commandFailed(String, Int32, String)
     case socket(String)
 }

@@ -12,10 +12,9 @@ import Synchronization
 ///   handshake, so no credentials are sent.
 /// - Every connection attempt runs on its own one-thread event loop group, which is shut down when the
 ///   session ends or the attempt is abandoned, so no half-open connection outlives the session.
-/// - `connectTimeout` covers TCP connect, handshake and authentication, but not the time the host key
-///   evaluator takes (it may be waiting for the user). If answering the prompt takes longer than Citadel's
-///   fixed 10 s login timer, the connection is retried once and the key the user just trusted is accepted
-///   without asking again.
+/// - `connectTimeout` covers TCP connect, handshake and authentication (time spent in the host key
+///   evaluator, which may be waiting for the user, is not counted), and separately the opening of the
+///   PTY channel.
 public final class CitadelSession: TerminalSession {
     public let events: AsyncStream<SessionEvent>
 
@@ -25,6 +24,7 @@ public final class CitadelSession: TerminalSession {
     private let plan: ConnectionPlan
     private let hostKeys: any HostKeyEvaluator
     private let connectTimeout: Duration
+    private let commandTimeout: Duration
     private let eventContinuation: AsyncStream<SessionEvent>.Continuation
     private let input: AsyncStream<PTYInput>
     private let inputContinuation: AsyncStream<PTYInput>.Continuation
@@ -34,8 +34,9 @@ public final class CitadelSession: TerminalSession {
         var started = false
         /// `.closed` was emitted and the event stream finished.
         var ended = false
+        /// The live connection; detached (set to nil) as soon as the session ends.
         var connection: Connection?
-        /// Wakes up `start` while it waits on a connection attempt or the PTY opening.
+        /// Wakes up `start` (and abandons the work) while it waits on a connection attempt or the PTY.
         var cancelPending: (@Sendable () -> Void)?
     }
 
@@ -44,10 +45,16 @@ public final class CitadelSession: TerminalSession {
         case resize(cols: Int, rows: Int)
     }
 
-    public init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration = .seconds(15)) {
+    public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration = .seconds(15)) {
+        self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
+    }
+
+    /// `commandTimeout` bounds `runCommand`; only tests change it.
+    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration) {
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
+        self.commandTimeout = commandTimeout
         (events, eventContinuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .unbounded)
         (input, inputContinuation) = AsyncStream.makeStream(of: PTYInput.self, bufferingPolicy: .unbounded)
     }
@@ -89,32 +96,34 @@ public final class CitadelSession: TerminalSession {
         inputContinuation.yield(.resize(cols: cols, rows: rows))
     }
 
-    /// Runs `command` on a separate exec channel of the same connection. stdout and stderr are merged
-    /// in arrival order; output above 1 MB throws. A non-zero exit status still returns the output.
+    /// Runs `command` on a separate exec channel of the same connection. stdout and stderr are merged in
+    /// arrival order. A non-zero exit status still returns the output. Output above 1 MB or a run longer
+    /// than 15 s closes the exec channel and throws (`.connectionFailed("Command output too large")` /
+    /// `.timedOut`).
     public func runCommand(_ command: String) async throws -> String {
-        guard let connection = state.withLock({ $0.ended ? nil : $0.connection }) else {
-            throw SessionError.connectionFailed("The session is not connected.")
+        let (connection, ended) = state.withLock { ($0.connection, $0.ended) }
+        guard let connection else {
+            throw SessionError.connectionFailed(ended ? "Session closed" : "The session is not connected.")
         }
-        var output: [UInt8] = []
-        do {
-            let stream = try await connection.client.executeCommandStream(command)
-            for try await chunk in stream {
-                let buffer: ByteBuffer
-                switch chunk {
-                case .stdout(let data), .stderr(let data): buffer = data
-                }
-                guard output.count + buffer.readableBytes <= Self.commandOutputLimit else {
-                    throw SessionError.connectionFailed("The command produced more than 1 MB of output.")
-                }
-                output.append(contentsOf: buffer.readableBytesView)
+        let limit = Self.commandOutputLimit
+        let timeout = commandTimeout
+        let secrets = secretStrings
+        let work = Task {
+            try await connection.withClient { client in
+                try await Self.execute(command, on: client, limit: limit, timeout: timeout, secrets: secrets)
             }
-        } catch is SSHClient.CommandFailed {
-            // Non-zero exit status: the output collected so far is still the answer.
-        } catch let error as SessionError {
-            throw error
-        } catch {
-            throw SessionError.connectionFailed(describe(error))
         }
+        // Backstop: even if the server keeps the exec channel open after the kill signal (closing waits
+        // for the server's confirmation), runCommand returns shortly after the timeout.
+        let result = OneShot<Result<[UInt8]?, Error>>()
+        Task { result.resolve(await work.result) }
+        let backstop = Task {
+            try await Task.sleep(for: timeout + .seconds(3))
+            result.resolve(.failure(SessionError.timedOut))
+        }
+        let finished = await result.wait()
+        backstop.cancel()
+        guard let output = try finished.get() else { throw SessionError.connectionFailed("Session closed") }
         return String(decoding: output, as: UTF8.self)
     }
 
@@ -125,14 +134,15 @@ public final class CitadelSession: TerminalSession {
                 eventContinuation.yield(.closed(.userClosed))
                 eventContinuation.finish()
             }
-            return (state.connection, state.cancelPending)
+            let connection = state.connection
+            state.connection = nil
+            return (connection, state.cancelPending)
         }
         inputContinuation.finish()
         cancel?()
-        if let connection {
-            // Closing the TCP connection ends the PTY; its task then shuts the event loop group down.
-            try? await connection.client.close()
-        }
+        // Closing the TCP connection ends the PTY; the shell task then shuts the event loop group down.
+        // Does nothing when teardown has already begun.
+        await connection?.closeClient()
     }
 
     // MARK: Events
@@ -144,9 +154,11 @@ public final class CitadelSession: TerminalSession {
         }
     }
 
-    /// Emits the single `.closed` event and finishes the stream. Later calls do nothing.
+    /// Emits the single `.closed` event, finishes the stream and detaches the connection.
+    /// Later calls do nothing.
     private func finish(_ reason: SessionEndReason) {
         state.withLock { state in
+            state.connection = nil
             guard !state.ended else { return }
             state.ended = true
             eventContinuation.yield(.closed(reason))
@@ -161,6 +173,7 @@ public final class CitadelSession: TerminalSession {
 
     typealias AuthenticationFactory = @Sendable () -> SSHAuthenticationMethod
 
+    /// Decides the credential locally, before any connection is made.
     static func authenticationFactory(for plan: ConnectionPlan) -> Result<AuthenticationFactory, SessionError> {
         let username = plan.username
         switch plan.credential {
@@ -178,8 +191,8 @@ public final class CitadelSession: TerminalSession {
                     let key = UncheckedSendable(value: try Curve25519.Signing.PrivateKey(sshEd25519: pem, decryptionKey: decryptionKey))
                     return .success { .ed25519(username: username, privateKey: key.value) }
                 } catch {
-                    // Unreadable key or wrong passphrase.
-                    return .failure(.authenticationFailed)
+                    // Wrong or missing passphrase, or a corrupt key.
+                    return .failure(.keyUnreadable)
                 }
             }
         case .none:
@@ -197,12 +210,16 @@ public final class CitadelSession: TerminalSession {
     }
 
     private func connect(_ authentication: @escaping AuthenticationFactory) async -> AttemptOutcome {
+        // Upstream limit: Citadel 0.12.1's ClientHandshakeHandler fails every connect 10 s after the TCP
+        // channel opens, and this can't be configured. A user who takes longer than that to answer the
+        // host key prompt makes the first attempt fail; the session then reconnects once and accepts
+        // the byte-identical key without asking again. A server slower than 10 s to authenticate still
+        // fails with `.timedOut`.
         var preapproved: HostKeyCandidate?
         for attempt in 1...2 {
             let tracker = HostKeyTracker(preapproved: preapproved)
             let outcome = await attemptConnection(authentication, tracker: tracker)
             if case .failed(.timedOut) = outcome, attempt == 1, let trusted = tracker.slowlyTrustedCandidate {
-                // The user took longer than Citadel's login timer to trust the key; retry once.
                 preapproved = trusted
                 continue
             }
@@ -217,7 +234,12 @@ public final class CitadelSession: TerminalSession {
         let outcome = OneShot<AttemptOutcome>()
         let registered = state.withLock { state -> Bool in
             guard !state.ended else { return false }
-            state.cancelPending = { outcome.resolve(.userClosed) }
+            state.cancelPending = {
+                outcome.resolve(.userClosed)
+                // Fails a pending host key validation at once: the handshake stops and the connect task
+                // below shuts the group down without waiting for the evaluator.
+                tracker.abandon()
+            }
             return true
         }
         guard registered else {
@@ -230,6 +252,7 @@ public final class CitadelSession: TerminalSession {
         let port = plan.port
         let timeout = connectTimeout
         let secrets = secretStrings
+        // This task owns the group: it is the only place that shuts it down for a failed or lost attempt.
         Task {
             do {
                 let client = try await SSHClient.connect(
@@ -249,8 +272,6 @@ public final class CitadelSession: TerminalSession {
             } catch {
                 outcome.resolve(.failed(Self.connectError(error, tracker: tracker, secrets: secrets)))
                 tracker.abandon()
-                // Shut down only once no host key decision is pending, so its promise is completed first.
-                await tracker.waitUntilIdle()
                 try? await group.shutdownGracefully()
             }
         }
@@ -276,10 +297,11 @@ public final class CitadelSession: TerminalSession {
             tracker.abandon()
             return result
         case .failed:
-            // A late "trusted" must not lead to authentication on this abandoned attempt.
+            // A late "trusted" must not lead to authentication on this attempt.
             tracker.abandon()
-            // Let a pending host key decision finish so the outcome reflects it.
-            await tracker.waitUntilIdle(orUntil: { [weak self] in self?.isEnded ?? true })
+            // Wait for a pending host key decision (the user may still be answering) so the outcome
+            // reflects it: rejected, or trusted slowly enough to retry. `close()` ends the wait.
+            await tracker.waitForDecision(orUntil: { [weak self] in self?.isEnded ?? true })
             if isEnded { return .userClosed }
             if tracker.wasRejected { return .failed(.hostKeyRejected) }
             return result
@@ -303,23 +325,39 @@ public final class CitadelSession: TerminalSession {
 
     // MARK: Shell
 
+    private enum ShellOpening: Sendable {
+        case opened, failedOrClosed, timedOut
+    }
+
     private func openShell(on connection: Connection, cols: Int, rows: Int) async {
-        let opened = OneShot<Bool>()
+        let opening = OneShot<ShellOpening>()
         let registered = state.withLock { state -> Bool in
             guard !state.ended else { return false }
-            state.cancelPending = { opened.resolve(false) }
+            state.cancelPending = { opening.resolve(.failedOrClosed) }
             return true
         }
         guard registered else {
             await connection.shutdown()
             return
         }
-        Task { await self.runShell(on: connection, cols: cols, rows: rows, opened: opened) }
-        _ = await opened.wait()
+        Task { await self.runShell(on: connection, cols: cols, rows: rows, opening: opening) }
+        let timeout = connectTimeout
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            if !Task.isCancelled { opening.resolve(.timedOut) }
+        }
+        let result = await opening.wait()
+        timer.cancel()
         state.withLock { $0.cancelPending = nil }
+        if result == .timedOut {
+            // The PTY/shell request was never answered. Ending the connection makes the shell task
+            // finish and shut the group down.
+            finish(.failed(.timedOut))
+            await connection.closeClient()
+        }
     }
 
-    private func runShell(on connection: Connection, cols: Int, rows: Int, opened: OneShot<Bool>) async {
+    private func runShell(on connection: Connection, cols: Int, rows: Int, opening: OneShot<ShellOpening>) async {
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
             term: Self.terminalType,
@@ -348,7 +386,7 @@ public final class CitadelSession: TerminalSession {
                 defer { writerTask.cancel() }
 
                 self.emit(.connected)
-                opened.resolve(true)
+                opening.resolve(.opened)
                 for try await chunk in inbound {
                     switch chunk {
                     case .stdout(let buffer), .stderr(let buffer):
@@ -360,8 +398,78 @@ public final class CitadelSession: TerminalSession {
             reason = endReason(for: error)
         }
         finish(reason)
-        opened.resolve(false)
+        opening.resolve(.failedOrClosed)
         await connection.shutdown()
+    }
+
+    // MARK: Commands
+
+    private static func execute(_ command: String, on client: SSHClient, limit: Int, timeout: Duration,
+                                secrets: [String]) async throws -> [UInt8] {
+        let collected = LockedBox<[UInt8]>([])
+        let failure = LockedBox<SessionError?>(nil)
+        let completed = LockedBox(false)
+        do {
+            // `withExec` closes the exec channel when the closure returns or throws.
+            try await client.withExec(command) { inbound, outbound in
+                let stream = UncheckedSendable(value: inbound)
+                let channel = UncheckedSendable(value: Self.channel(of: outbound))
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        do {
+                            for try await chunk in stream.value {
+                                let buffer: ByteBuffer
+                                switch chunk {
+                                case .stdout(let data), .stderr(let data): buffer = data
+                                }
+                                let fits = collected.withLock { output -> Bool in
+                                    guard output.count + buffer.readableBytes <= limit else { return false }
+                                    output.append(contentsOf: buffer.readableBytesView)
+                                    return true
+                                }
+                                guard fits else {
+                                    let error = SessionError.connectionFailed("Command output too large")
+                                    failure.withLock { $0 = error }
+                                    throw error
+                                }
+                            }
+                        } catch is SSHClient.CommandFailed {
+                            // Non-zero exit status: the output collected so far is still the answer.
+                        }
+                        completed.withLock { $0 = true }
+                    }
+                    group.addTask {
+                        try await Task.sleep(for: timeout)
+                        failure.withLock { $0 = $0 ?? .timedOut }
+                        throw SessionError.timedOut
+                    }
+                    do {
+                        try await group.next()
+                        group.cancelAll()
+                    } catch {
+                        // Over the cap or out of time: stop the remote command so the server closes the
+                        // channel promptly (closing an exec channel waits for the server to agree).
+                        if let channel = channel.value {
+                            try? await channel.triggerUserOutboundEvent(SSHChannelRequestEvent.SignalRequest(signal: "KILL"))
+                        }
+                        throw error
+                    }
+                }
+            }
+        } catch {
+            if let failure = failure.withLock({ $0 }) { throw failure }
+            // Citadel's own close of a channel the server already closed ("Already closed") is fine.
+            if !completed.withLock({ $0 }) {
+                throw error as? SessionError ?? .connectionFailed(redact(String(describing: error), secrets: secrets))
+            }
+        }
+        if let failure = failure.withLock({ $0 }) { throw failure }
+        return collected.withLock { $0 }
+    }
+
+    /// The exec channel behind Citadel's writer (not public API; nil if Citadel changes its layout).
+    private static func channel(of writer: TTYStdinWriter) -> Channel? {
+        Mirror(reflecting: writer).children.first { $0.label == "channel" }?.value as? Channel
     }
 
     // MARK: Error mapping
@@ -441,19 +549,79 @@ public final class CitadelSession: TerminalSession {
 // MARK: - Connection plumbing
 
 /// An authenticated client and the event loop group that owns its socket.
-/// `SSHClient` is not `Sendable`; it is only used through its async API, which hops to its event loop.
-private struct Connection: @unchecked Sendable {
-    let client: SSHClient
+///
+/// Teardown happens once (`shutdown`). After it has begun, `withClient` and `closeClient` do nothing,
+/// so nobody ever schedules work on a loop that is shut down (such work would never complete).
+private final class Connection: Sendable {
+    /// `SSHClient` is not `Sendable`; it is only used through its async API, which hops to its event loop.
+    private let clientBox: UncheckedSendable<SSHClient>
     let group: MultiThreadedEventLoopGroup
 
+    private struct State {
+        var shuttingDown = false
+        var users = 0
+    }
+
+    private let state = Mutex(State())
+
+    init(client: SSHClient, group: MultiThreadedEventLoopGroup) {
+        clientBox = UncheckedSendable(value: client)
+        self.group = group
+    }
+
+    /// For the shell task only, which calls `shutdown` itself when it is done.
+    var client: SSHClient { clientBox.value }
+
+    /// Runs `body` with the client, or returns nil when teardown has begun. Teardown waits for running bodies.
+    func withClient<T: Sendable>(_ body: (SSHClient) async throws -> T) async throws -> T? {
+        let admitted = state.withLock { state -> Bool in
+            guard !state.shuttingDown else { return false }
+            state.users += 1
+            return true
+        }
+        guard admitted else { return nil }
+        defer { state.withLock { $0.users -= 1 } }
+        return try await body(clientBox.value)
+    }
+
+    func closeClient() async {
+        _ = try? await withClient { try await $0.close() }
+    }
+
     func shutdown() async {
-        try? await client.close()
+        let first = state.withLock { state -> Bool in
+            guard !state.shuttingDown else { return false }
+            state.shuttingDown = true
+            return true
+        }
+        guard first else { return }
+        // Closing the socket ends any running exec channel, so in-flight users finish promptly.
+        try? await clientBox.value.close()
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(5)
+        while state.withLock({ $0.users > 0 }) && clock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
         try? await group.shutdownGracefully()
     }
 }
 
 private struct UncheckedSendable<Value>: @unchecked Sendable {
     let value: Value
+}
+
+/// A small lock-protected value shared with child tasks.
+private final class LockedBox<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Value
+
+    init(_ value: Value) { self.value = value }
+
+    func withLock<R>(_ body: (inout Value) throws -> R) rethrows -> R {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body(&value)
+    }
 }
 
 struct HostKeyNotTrusted: Error {}
@@ -471,13 +639,17 @@ final class HostKeyTracker: Sendable {
         var abandoned = false
         var evaluatingSince: ContinuousClock.Instant?
         var evaluationTime: Duration = .zero
+        /// The validation promise of the running evaluation; completed exactly once.
+        var pendingPromise: EventLoopPromise<Void>?
     }
 
-    private let state: Mutex<State>
+    // Initialised empty and filled in `init`: `Mutex(State(preapproved:))` in an initialiser crashes the
+    // Swift 6.0.3 compiler (IRGen "Element number out of range").
+    private let state = Mutex(State())
     private let clock = ContinuousClock()
 
     init(preapproved: HostKeyCandidate?) {
-        state = Mutex(State(preapproved: preapproved))
+        state.withLock { $0.preapproved = preapproved }
     }
 
     /// The same key was already trusted in this session (a retry, or a re-key during the session).
@@ -486,31 +658,39 @@ final class HostKeyTracker: Sendable {
     }
 
     /// Returns false when the attempt was abandoned and the key must not be accepted.
-    func beginEvaluation() -> Bool {
+    func beginEvaluation(promise: EventLoopPromise<Void>) -> Bool {
         let now = clock.now
         return state.withLock { state in
             guard !state.abandoned else { return false }
             state.evaluatingSince = now
+            state.pendingPromise = promise
             return true
         }
     }
 
-    /// Records the decision; returns whether the handshake may continue.
-    func endEvaluation(of candidate: HostKeyCandidate, decision: HostKeyDecision) -> Bool {
+    /// Records the decision and completes the validation promise, unless `abandon()` already failed it.
+    func endEvaluation(of candidate: HostKeyCandidate, decision: HostKeyDecision) {
         let now = clock.now
-        return state.withLock { state in
+        let (promise, proceed) = state.withLock { state -> (EventLoopPromise<Void>?, Bool) in
             let took = state.evaluatingSince.map { now - $0 } ?? .zero
             state.evaluationTime += took
             state.evaluatingSince = nil
+            let promise = state.pendingPromise
+            state.pendingPromise = nil
             switch decision {
             case .trusted:
                 state.trusted = candidate
                 state.trustedSlowly = took >= Self.slowDecision
-                return !state.abandoned
+                return (promise, !state.abandoned)
             case .rejected:
                 state.rejected = true
-                return false
+                return (promise, false)
             }
+        }
+        if proceed {
+            promise?.succeed(())
+        } else {
+            promise?.fail(HostKeyNotTrusted())
         }
     }
 
@@ -518,8 +698,15 @@ final class HostKeyTracker: Sendable {
         state.withLock { $0.rejected = true }
     }
 
+    /// Stops the attempt: a pending validation fails now; a later answer is recorded but ignored.
     func abandon() {
-        state.withLock { $0.abandoned = true }
+        let promise = state.withLock { state -> EventLoopPromise<Void>? in
+            state.abandoned = true
+            let promise = state.pendingPromise
+            state.pendingPromise = nil
+            return promise
+        }
+        promise?.fail(HostKeyNotTrusted())
     }
 
     var wasRejected: Bool { state.withLock { $0.rejected } }
@@ -538,7 +725,8 @@ final class HostKeyTracker: Sendable {
 
     private var isEvaluating: Bool { state.withLock { $0.evaluatingSince != nil } }
 
-    func waitUntilIdle(orUntil stop: @Sendable () -> Bool = { false }) async {
+    /// Waits until a running evaluation has produced its decision, or `stop` returns true.
+    func waitForDecision(orUntil stop: @Sendable () -> Bool = { false }) async {
         while isEvaluating && !stop() {
             try? await Task.sleep(for: .milliseconds(50))
         }
@@ -569,7 +757,7 @@ final class HostKeyValidationDelegate: NIOSSHClientServerAuthenticationDelegate,
             validationCompletePromise.succeed(())
             return
         }
-        guard tracker.beginEvaluation() else {
+        guard tracker.beginEvaluation(promise: validationCompletePromise) else {
             validationCompletePromise.fail(HostKeyNotTrusted())
             return
         }
@@ -577,11 +765,7 @@ final class HostKeyValidationDelegate: NIOSSHClientServerAuthenticationDelegate,
         let tracker = tracker
         Task {
             let decision = await evaluator.evaluate(candidate)
-            if tracker.endEvaluation(of: candidate, decision: decision) {
-                validationCompletePromise.succeed(())
-            } else {
-                validationCompletePromise.fail(HostKeyNotTrusted())
-            }
+            tracker.endEvaluation(of: candidate, decision: decision)
         }
     }
 

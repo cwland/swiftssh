@@ -68,7 +68,11 @@ public enum SessionEvent: Sendable, Equatable {
 public enum SessionError: Error, Sendable, Equatable, LocalizedError {
     case hostKeyRejected
     case hostKeyChanged(previous: String, presented: String)
+    /// The server rejected the credentials.
     case authenticationFailed
+    /// The private key could not be decoded locally (wrong or missing passphrase, corrupt key);
+    /// decided before connecting.
+    case keyUnreadable
     case connectionFailed(String)
     case unsupportedKey(String)
     case timedOut
@@ -81,6 +85,8 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
             "The server's host key has changed. Previously trusted: \(previous). Presented now: \(presented)."
         case .authenticationFailed:
             "Authentication failed. Check the username and credentials."
+        case .keyUnreadable:
+            "The private key couldn't be opened. Check the passphrase."
         case .connectionFailed(let reason):
             "The connection failed: \(reason)"
         case .unsupportedKey(let type):
