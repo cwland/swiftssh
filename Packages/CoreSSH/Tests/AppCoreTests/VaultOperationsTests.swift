@@ -82,6 +82,15 @@ final class VaultOperationsTests: XCTestCase {
         XCTAssertEqual(groups.first?.map(\.id), same.map(\.id))
     }
 
+    nonisolated func testCredentialReuseSkipsHostsThatLogInWithTheAgent() {
+        // An agent host keeps its old password (switching back restores it), but it doesn't log in with it.
+        let password = (0..<2).map { Host(label: "p\($0)", address: "p", username: "cory", password: "pw") }
+        let agent = Host(label: "a", address: "a", username: "cory", password: "pw", agentKey: AgentKeyChoice(publicKey: nil))
+        let groups = CredentialReuse.groups(in: password + [agent])
+        XCTAssertEqual(groups.map { $0.map(\.id) }, [password.map(\.id)])
+        XCTAssertTrue(CredentialReuse.groups(in: [password[0], agent]).isEmpty)
+    }
+
     nonisolated func testCredentialReuseIgnoresEmptyAndSortsLargestFirst() {
         let small = (0..<2).map { Host(label: "s\($0)", address: "s", username: "x", password: "p1") }
         let big = (0..<3).map { Host(label: "g\($0)", address: "g", username: "y", password: "p2") }

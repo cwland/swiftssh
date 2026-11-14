@@ -198,6 +198,29 @@ final class KeychainViewModelTests: XCTestCase {
         XCTAssertNil(saved.sshKeyID)
     }
 
+    func testUpdateNowMergesAgentKey() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let stored = try await vault.save(Identity(label: "i", username: "u", password: "pw"))
+        var edited = stored
+        edited.agentKey = AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin")
+        vm.updateNow(edited)
+        var saved = try XCTUnwrap(vault.get(Identity.self, id: stored.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin"))
+        XCTAssertEqual(saved.password, "pw", "the stored password is kept while the agent is used")
+
+        edited.agentKey = AgentKeyChoice(publicKey: nil)
+        vm.updateNow(edited)
+        saved = try XCTUnwrap(vault.get(Identity.self, id: stored.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+
+        edited.agentKey = nil
+        vm.updateNow(edited)
+        saved = try XCTUnwrap(vault.get(Identity.self, id: stored.id))
+        XCTAssertNil(saved.agentKey)
+        XCTAssertEqual(saved.password, "pw")
+    }
+
     func testUpdateNowIsNoOpAfterDelete() async throws {
         let vault = try await makeVault()
         let vm = KeychainViewModel(vault: vault)

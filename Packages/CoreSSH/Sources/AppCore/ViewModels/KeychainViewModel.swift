@@ -98,8 +98,9 @@ public final class KeychainViewModel {
         try await vault.save(identity)
     }
 
-    /// Synchronous save for editors: applies `edited`'s label, username, password (empty = none)
-    /// and key (cleared if the key no longer exists) to the currently stored identity. Does
+    /// Synchronous save for editors: applies `edited`'s label, username, password (empty = none),
+    /// key (cleared if the key no longer exists) and 1Password agent key to the currently stored
+    /// identity. A set agent key leaves the password and key stored (the agent takes precedence). Does
     /// nothing when the identity is missing or deleted, so a late edit never resurrects it.
     public func updateNow(_ edited: Identity) {
         guard var current = vault.get(Identity.self, id: edited.id) else { return }
@@ -111,6 +112,7 @@ public final class KeychainViewModel {
         } else {
             current.sshKeyID = nil
         }
+        current.agentKey = edited.agentKey
         vault.saveNow(current)
     }
 

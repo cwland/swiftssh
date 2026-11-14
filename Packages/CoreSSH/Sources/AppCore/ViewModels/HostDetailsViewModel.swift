@@ -140,13 +140,15 @@ public final class HostDetailsViewModel {
     }
 
     /// `.identity` when the host links an identity, or when the user picked identity mode and
-    /// the host has neither an identity nor direct credentials yet; otherwise `.direct`. Switching to `.identity` clears the direct
-    /// username, password and key; switching to `.direct` clears the identity.
+    /// the host has neither an identity nor direct credentials (an agent key counts) yet; otherwise
+    /// `.direct`. Switching to `.identity` clears the direct username, password, key and agent key;
+    /// switching to `.direct` clears the identity.
     public var credentialMode: CredentialMode {
         get {
             guard let host else { return .direct }
             if host.identityID != nil { return .identity }
             let hasDirect = host.username != nil || host.password != nil || host.sshKeyID != nil
+                || host.agentKey != nil
             return identityModePicked && !hasDirect ? .identity : .direct
         }
         set {
@@ -166,9 +168,10 @@ public final class HostDetailsViewModel {
         host.username = nil
         host.password = nil
         host.sshKeyID = nil
+        host.agentKey = nil
     }
 
-    /// Linking an identity clears the direct username, password and key.
+    /// Linking an identity clears the direct username, password, key and agent key.
     public var identityID: UUID? {
         get { host?.identityID }
         set {
@@ -203,6 +206,14 @@ public final class HostDetailsViewModel {
     public var sshKeyID: UUID? {
         get { host?.sshKeyID }
         set { updateDirect(isEmpty: newValue == nil) { $0.sshKeyID = newValue } }
+    }
+
+    /// Non-nil = log in with the 1Password SSH agent (`publicKey` nil = any agent key). Setting a
+    /// non-nil value unlinks any identity; the stored password and key are kept (the agent takes
+    /// precedence while set), so setting nil again goes back to them.
+    public var agentKey: AgentKeyChoice? {
+        get { host?.agentKey }
+        set { updateDirect(isEmpty: newValue == nil) { $0.agentKey = newValue } }
     }
 
     // MARK: Read-only

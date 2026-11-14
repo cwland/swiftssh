@@ -424,4 +424,93 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertNil(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(vm.label, "")
     }
+
+    // MARK: 1Password agent key
+
+    func testSettingAgentKeySavesAndUnlinksTheIdentity() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", identityID: identity.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertNil(vm.agentKey)
+        XCTAssertEqual(vm.credentialMode, .identity)
+
+        vm.agentKey = AgentKeyChoice(publicKey: nil)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertNil(saved.identityID)
+        XCTAssertEqual(vm.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertEqual(vm.credentialMode, .direct)
+
+        vm.agentKey = AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin")
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.agentKey?.publicKey, "ssh-ed25519 AAAA pin")
+    }
+
+    func testAgentKeyKeepsTheStoredPasswordAndKey() async throws {
+        let vault = try await makeVault()
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "s"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  password: "pw", sshKeyID: key.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.agentKey = AgentKeyChoice(publicKey: nil)
+        vm.agentKey = nil // back to password or key: both are still there
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(saved.agentKey)
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+        XCTAssertEqual(saved.username, "root")
+    }
+
+    func testClearingAgentKeyKeepsALinkedIdentityAlone() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", identityID: identity.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let revision = vault.revision
+        vm.agentKey = nil
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.identityID, identity.id)
+        XCTAssertEqual(vault.revision, revision, "nothing changed, nothing saved")
+    }
+
+    func testAgentKeyAloneCountsAsDirectCredentials() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.credentialMode = .identity
+        XCTAssertEqual(vm.credentialMode, .identity)
+        vm.agentKey = AgentKeyChoice(publicKey: nil)
+        XCTAssertEqual(vm.credentialMode, .direct)
+
+        let other = try await vault.save(SavedHost(label: "o", address: "o.example",
+                                                   agentKey: AgentKeyChoice(publicKey: nil)))
+        let otherVM = HostDetailsViewModel(vault: vault, hostID: other.id)
+        otherVM.credentialMode = .direct
+        XCTAssertEqual(otherVM.credentialMode, .direct)
+    }
+
+    func testSwitchingToIdentityModeOrLinkingAnIdentityClearsAgentKey() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let a = try await vault.save(SavedHost(label: "a", address: "a.example", username: "root",
+                                               agentKey: AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin")))
+        let b = try await vault.save(SavedHost(label: "b", address: "b.example",
+                                               agentKey: AgentKeyChoice(publicKey: nil)))
+        HostDetailsViewModel(vault: vault, hostID: a.id).credentialMode = .identity
+        XCTAssertNil(vault.get(SavedHost.self, id: a.id)?.agentKey)
+        XCTAssertNil(vault.get(SavedHost.self, id: a.id)?.username)
+        HostDetailsViewModel(vault: vault, hostID: b.id).identityID = identity.id
+        let linked = try XCTUnwrap(vault.get(SavedHost.self, id: b.id))
+        XCTAssertNil(linked.agentKey)
+        XCTAssertEqual(linked.identityID, identity.id)
+    }
+
+    func testAgentKeySetIsIgnoredOnceTheHostIsDeleted() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        try await vm.delete()
+        vm.agentKey = AgentKeyChoice(publicKey: nil)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(vm.agentKey)
+    }
 }
