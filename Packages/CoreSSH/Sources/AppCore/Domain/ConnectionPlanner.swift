@@ -2,16 +2,30 @@ import CoreModels
 import Foundation
 import SSHCore
 
+/// Where the missing username should have come from.
+public enum UsernameSource: Equatable, Sendable {
+    /// The identity in effect (the host's own or its group's default) has an empty username.
+    case identity(label: String)
+    /// The host's own direct credentials have no username.
+    case host(label: String)
+}
+
 public enum ConnectionPlanError: Error, Equatable, LocalizedError {
     case hostNotFound
     case missingAddress
-    case missingUsername
+    case missingUsername(UsernameSource)
+
+    /// Title for the alert that shows this error.
+    public var alertTitle: String { "Can't connect" }
 
     public var errorDescription: String? {
         switch self {
         case .hostNotFound: "This host no longer exists."
         case .missingAddress: "This host has no address."
-        case .missingUsername: "This host has no username."
+        case .missingUsername(.identity(let label)):
+            "The identity \u{201C}\(label)\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host."
+        case .missingUsername(.host(let label)):
+            "\u{201C}\(label)\u{201D} has no username. Add one in Host Details."
         }
     }
 }
@@ -31,7 +45,12 @@ public enum ConnectionPlanner {
         let username = resolved.username
         let password = resolved.password
         let key = resolved.key
-        guard let username else { throw ConnectionPlanError.missingUsername }
+        guard let username else {
+            if let identity = resolved.identity {
+                throw ConnectionPlanError.missingUsername(.identity(label: identity.label))
+            }
+            throw ConnectionPlanError.missingUsername(.host(label: host.label))
+        }
 
         let credential: SSHCredential
         if let key {

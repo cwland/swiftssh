@@ -167,11 +167,45 @@ final class ConnectionPlannerTests: XCTestCase {
             XCTAssertEqual($0 as? ConnectionPlanError, .missingAddress)
         }
         XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: noUser.id, vault: vault)) {
-            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername)
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername(.host(label: "2")))
         }
         XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: UUID(), vault: vault)) {
             XCTAssertEqual($0 as? ConnectionPlanError, .hostNotFound)
         }
+    }
+
+    func testMissingUsernameNamesTheIdentityInEffect() async throws {
+        let vault = try await makeVault()
+        let emptyUser = try await vault.save(Identity(label: "NAS admin", username: "", password: "pw"))
+        let explicit = try await vault.save(SavedHost(label: "NAS", address: "nas", identityID: emptyUser.id))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: explicit.id, vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername(.identity(label: "NAS admin")))
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription,
+                           "The identity \u{201C}NAS admin\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host.")
+        }
+        // Inherited from the group default identity.
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: emptyUser.id))
+        let inheriting = try await vault.save(SavedHost(label: "Child", address: "c", groupID: group.id))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: inheriting.id, vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername(.identity(label: "NAS admin")))
+        }
+    }
+
+    func testMissingUsernameOnDirectCredentialsNamesTheHost() async throws {
+        let vault = try await makeVault()
+        let direct = try await vault.save(SavedHost(label: "Docker", address: "d", password: "pw"))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: direct.id, vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername(.host(label: "Docker")))
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription,
+                           "\u{201C}Docker\u{201D} has no username. Add one in Host Details.")
+        }
+    }
+
+    func testPlanErrorsHaveCantConnectTitle() async {
+        let errors: [ConnectionPlanError] = [.hostNotFound, .missingAddress,
+                                             .missingUsername(.host(label: "h")),
+                                             .missingUsername(.identity(label: "i"))]
+        for error in errors { XCTAssertEqual(error.alertTitle, "Can't connect") }
     }
 
     func testQuickConnectUsesDefaultUsernameAndCitadel() async {

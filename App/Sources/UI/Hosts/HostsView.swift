@@ -19,6 +19,7 @@ struct HostsView: View {
     @State private var showDeleteGroup = false
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var errorTitle = "Something went wrong"
 
     var body: some View {
         HStack(spacing: 0) {
@@ -61,7 +62,7 @@ struct HostsView: View {
         } message: { _ in
             Text("Its hosts and subgroups move up one level. No hosts are deleted.")
         }
-        .alert("Something went wrong", isPresented: $showError) {
+        .alert(errorTitle, isPresented: $showError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
@@ -330,6 +331,7 @@ struct HostsView: View {
     }
 
     private func present(_ error: any Error) {
+        errorTitle = (error as? ConnectionPlanError)?.alertTitle ?? "Something went wrong"
         errorMessage = error.localizedDescription
         showError = true
     }
