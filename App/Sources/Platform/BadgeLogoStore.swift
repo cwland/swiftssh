@@ -52,6 +52,11 @@ final class BadgeLogoStore {
     @ObservationIgnored private var rowTokens: [OSBadge: UUID] = [:]
     @ObservationIgnored private var batchTask: Task<Void, Never>?
     @ObservationIgnored private var batchFailures = 0
+    /// Tokens of the jobs Download All Defaults started; only their failures count in its summary.
+    @ObservationIgnored private var batchTokens: Set<UUID> = []
+    /// Per badge id: the modification date of the `<id>.png` our last download wrote. A logo whose
+    /// file doesn't match wasn't (or is no longer) a plain download of its link.
+    @ObservationIgnored private var downloadStamps: [String: Date] = [:]
 
     /// Color changes are written this long after the last change.
     static let colorSaveDelay: Duration = .milliseconds(300)
@@ -61,6 +66,7 @@ final class BadgeLogoStore {
 
     init(directory: URL?) {
         self.directory = directory
+        downloadStamps = Self.loadDownloadStamps(for: downloadStampsKey)
         reload()
     }
 
@@ -187,6 +193,9 @@ final class BadgeLogoStore {
         batchMessage = nil
         var targets: [(OSBadge, URL)] = []
         for entry in catalog.entries where settings.wantsDefaultDownload(entry.id, hasLogo: hasLogo(entry.id)) {
+            // A logo that isn't the file a download of this link wrote (dropped in by hand, chosen,
+            // or changed since) is never replaced by a batch.
+            if hasLogo(entry.id), !ownsDownloadedLogo(entry.id) { continue }
             guard !isWorking(entry.id), let url = try? BadgeImageRules.webURL(from: entry.defaultLink) else { continue }
             targets.append((entry.id, url))
         }
@@ -196,6 +205,7 @@ final class BadgeLogoStore {
         }
         batch = BatchProgress(total: targets.count, finished: 0)
         batchFailures = 0
+        batchTokens = []
         for (badge, _) in targets {
             rowStatus[badge] = .working(Self.waitingLabel)
         }
@@ -240,14 +250,15 @@ final class BadgeLogoStore {
 
     private func startDownload(_ badge: OSBadge, from url: URL) {
         rowTasks[badge]?.cancel()
-        rowStatus[badge] = .working("Downloading…") // at once; the job itself starts a moment later
+        // Begun here, not inside the task: a cancelled older job finishing before the new task
+        // starts must see the new token and leave this row's task handle alone.
+        let token = beginJob(badge, label: "Downloading…")
         rowTasks[badge] = Task { [weak self] in
-            await self?.runDownload(badge, from: url)
+            await self?.runDownload(badge, from: url, token: token)
         }
     }
 
-    private func runDownload(_ badge: OSBadge, from url: URL) async {
-        let token = beginJob(badge, label: "Downloading…")
+    private func runDownload(_ badge: OSBadge, from url: URL, token: UUID) async {
         let result: Result<Data, BadgeImageError>
         do throws(BadgeImageError) {
             let data = try await BadgeImageDownloader.download(from: url)
@@ -271,6 +282,7 @@ final class BadgeLogoStore {
     private func finishJob(_ badge: OSBadge, token: UUID, result: Result<Data, BadgeImageError>, source: String?) {
         guard rowTokens[badge] == token else { return } // a newer job (or Reset) took over
         rowTokens[badge] = nil
+        defer { batchTokens.remove(token) }
         rowTasks[badge] = nil
         if Task.isCancelled {
             rowStatus[badge] = nil
@@ -279,7 +291,7 @@ final class BadgeLogoStore {
         switch result {
         case .success(let png):
             do throws(BadgeImageError) {
-                try writeInstalledLogo(png, for: badge)
+                try writeInstalledLogo(png, for: badge, fromDownload: source != nil)
                 rowStatus[badge] = nil
                 recordSource(source, for: badge)
             } catch {
@@ -287,11 +299,11 @@ final class BadgeLogoStore {
                     recordSource(source, for: badge) // the new image is shown
                 }
                 rowStatus[badge] = .failed(error.message)
-                if batch != nil { batchFailures += 1 }
+                if batchTokens.remove(token) != nil { batchFailures += 1 }
             }
         case .failure(let error):
             rowStatus[badge] = .failed(error.message)
-            if batch != nil { batchFailures += 1 }
+            if batchTokens.remove(token) != nil { batchFailures += 1 }
         }
     }
 
@@ -305,7 +317,9 @@ final class BadgeLogoStore {
     /// Download, Choose Image… or Reset).
     private func runBatchItem(_ badge: OSBadge, from url: URL) async {
         if rowStatus[badge] == .working(Self.waitingLabel), !Task.isCancelled {
-            await runDownload(badge, from: url)
+            let token = beginJob(badge, label: "Downloading…")
+            batchTokens.insert(token)
+            await runDownload(badge, from: url, token: token)
         }
         batch?.finished += 1
     }
@@ -326,14 +340,18 @@ final class BadgeLogoStore {
         }
         batch = nil
         batchTask = nil
+        batchTokens = []
     }
 
     // MARK: Files
 
-    /// Writes `<id>.png`, shows it, then removes an older `<id>.svg`. If that removal fails the new
-    /// image is still saved and shown (and, being the newest file, keeps winning on later reads);
-    /// the error says so.
-    private func writeInstalledLogo(_ png: Data, for badge: OSBadge) throws(BadgeImageError) {
+    /// Writes `<id>.png`, shows it, then moves an older `<id>.svg` to the Trash. An existing
+    /// `<id>.png` that isn't our own earlier download (a hand-made or chosen logo) is moved to the
+    /// Trash first; nothing is ever deleted outright. The new image is written to a temporary file
+    /// first, so a failure before the swap leaves the old image untouched. If the `.svg` can't be
+    /// trashed the new image is still saved and shown (and, being the newest file, keeps winning on
+    /// later reads); the error says so.
+    private func writeInstalledLogo(_ png: Data, for badge: OSBadge, fromDownload: Bool) throws(BadgeImageError) {
         guard let directory else {
             throw .couldNotSave("the Application Support folder could not be found")
         }
@@ -341,22 +359,72 @@ final class BadgeLogoStore {
             throw .couldNotSave("this OS has no file name")
         }
         let fileManager = FileManager.default
+        let target = directory.appendingPathComponent(installedName)
+        let temporary = directory.appendingPathComponent(".\(installedName).\(UUID().uuidString).tmp")
         do {
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try png.write(to: directory.appendingPathComponent(installedName), options: .atomic)
+            try png.write(to: temporary, options: .atomic)
+            if fileManager.fileExists(atPath: target.path), !ownsDownloadedLogo(badge) {
+                try fileManager.trashItem(at: target, resultingItemURL: nil)
+            }
+            if fileManager.fileExists(atPath: target.path) {
+                _ = try fileManager.replaceItemAt(target, withItemAt: temporary)
+            } else {
+                try fileManager.moveItem(at: temporary, to: target)
+            }
         } catch {
+            try? fileManager.removeItem(at: temporary) // our own temporary file
             throw .couldNotSave(error.localizedDescription)
         }
+        if fromDownload {
+            downloadStamps[badge.rawValue] = Self.modificationDate(of: target)
+        } else {
+            downloadStamps[badge.rawValue] = nil
+        }
+        persistDownloadStamps()
         logos[badge] = NSImage(data: png) ?? Self.loadLogo(for: badge, in: directory)
         for name in BadgeStyle.logoFileNames(for: badge) where name != installedName {
             let url = directory.appendingPathComponent(name)
             guard fileManager.fileExists(atPath: url.path) else { continue }
             do {
-                try fileManager.removeItem(at: url)
+                try fileManager.trashItem(at: url, resultingItemURL: nil)
             } catch {
                 throw .oldFileNotRemoved(name: name, reason: error.localizedDescription)
             }
         }
+    }
+
+    /// True when the badge's logo is exactly the file one of our downloads wrote: the only logo
+    /// file, with the modification date recorded at that write. A logo dropped in by hand (even
+    /// over a download), a chosen image or a leftover `.svg` makes this false, so such a logo is
+    /// never replaced by Download All Defaults.
+    private func ownsDownloadedLogo(_ badge: OSBadge) -> Bool {
+        guard let directory, let installedName = BadgeStyle.installedLogoFileName(for: badge),
+              let stamp = downloadStamps[badge.rawValue] else { return false }
+        let fileManager = FileManager.default
+        for name in BadgeStyle.logoFileNames(for: badge) where name != installedName {
+            if fileManager.fileExists(atPath: directory.appendingPathComponent(name).path) { return false }
+        }
+        return Self.modificationDate(of: directory.appendingPathComponent(installedName)) == stamp
+    }
+
+    private static func modificationDate(of url: URL) -> Date? {
+        try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private var downloadStampsKey: String {
+        "BadgeLogoStore.downloadStamps." + (directory?.path ?? "")
+    }
+
+    /// Reads the stamps saved by earlier launches (modification date per badge id, in seconds).
+    private static func loadDownloadStamps(for key: String) -> [String: Date] {
+        let stored = UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]
+        return stored.mapValues { Date(timeIntervalSinceReferenceDate: $0) }
+    }
+
+    private func persistDownloadStamps() {
+        let stored = downloadStamps.mapValues { $0.timeIntervalSinceReferenceDate }
+        UserDefaults.standard.set(stored, forKey: downloadStampsKey)
     }
 
     /// Back to the standard symbol, color, white drawing and default link. Logo files are moved to
@@ -376,13 +444,11 @@ final class BadgeLogoStore {
                 do {
                     try fileManager.trashItem(at: url, resultingItemURL: nil)
                 } catch {
-                    do {
-                        try fileManager.removeItem(at: url)
-                    } catch {
-                        failure = "Couldn't remove \(name): \(error.localizedDescription)"
-                    }
+                    failure = "Couldn't move \(name) to the Trash: \(error.localizedDescription)"
                 }
             }
+            downloadStamps[badge.rawValue] = nil
+            persistDownloadStamps()
             logos[badge] = Self.loadLogo(for: badge, in: directory)
         }
         if settings.hasCustomSettings(for: badge) {
