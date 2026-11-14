@@ -26,6 +26,25 @@ public enum SSHCredential: Sendable, CustomStringConvertible, CustomDebugStringC
     public var debugDescription: String { description }
 }
 
+/// How a session detects a dropped connection: a keep-alive probe every `interval`; after
+/// `maxUnanswered` unanswered probes in a row the session is declared dead.
+public struct KeepAlivePolicy: Sendable, Equatable {
+    /// nil = keep-alive off.
+    public var interval: Duration?
+    /// Unanswered probes in a row before the session is declared dead.
+    public var maxUnanswered: Int
+
+    public init(interval: Duration?, maxUnanswered: Int) {
+        self.interval = interval
+        self.maxUnanswered = maxUnanswered
+    }
+
+    public static let fast = KeepAlivePolicy(interval: .seconds(15), maxUnanswered: 2)
+    public static let normal = KeepAlivePolicy(interval: .seconds(30), maxUnanswered: 3)
+    public static let relaxed = KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5)
+    public static let off = KeepAlivePolicy(interval: nil, maxUnanswered: 0)
+}
+
 public struct ConnectionPlan: Sendable {
     public var hostID: UUID?
     public var label: String
@@ -35,12 +54,15 @@ public struct ConnectionPlan: Sendable {
     public var credential: SSHCredential
     public var engine: SSHEngine
     public var startupScript: String?
+    public var keepAlive: KeepAlivePolicy
 
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,
-                credential: SSHCredential, engine: SSHEngine, startupScript: String?) {
+                credential: SSHCredential, engine: SSHEngine, startupScript: String?,
+                keepAlive: KeepAlivePolicy = .normal) {
         self.hostID = hostID; self.label = label; self.host = host; self.port = port
         self.username = username; self.credential = credential; self.engine = engine
         self.startupScript = startupScript
+        self.keepAlive = keepAlive
     }
 }
 

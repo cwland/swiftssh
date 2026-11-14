@@ -166,6 +166,7 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "ControlPath=\"/tmp/tr-501/%C\"",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-o", "ConnectTimeout=15",
         ]
         func args(_ auth: SystemSSHSession.AuthArguments, _ algorithms: String = "ssh-ed25519") -> [String] {
@@ -201,10 +202,33 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "ControlPath=\"/tmp/tr-501/abc\"",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
             "-o", "ConnectTimeout=15",
             "-o", "HostKeyAlgorithms=ssh-ed25519",
             "-T", "-o", "BatchMode=yes", "--", "example.com", "uname -s",
         ])
+    }
+
+    func testKeepAliveArgumentsForEachPreset() {
+        let root = URL(fileURLWithPath: "/r")
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let knownHosts = root.appendingPathComponent("S.known_hosts")
+        func alive(_ policy: KeepAlivePolicy) -> [String] {
+            let interactive = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: directory,
+                                                            knownHosts: knownHosts, auth: .none,
+                                                            hostKeyAlgorithms: "ssh-ed25519", keepAlive: policy)
+            let command = SystemSSHSession.commandArguments(host: "h", port: 22, username: "u", runtime: directory,
+                                                            knownHosts: knownHosts, controlSocket: "/tmp/s",
+                                                            hostKeyAlgorithms: "ssh-ed25519", command: "x",
+                                                            keepAlive: policy)
+            let pick = { (args: [String]) in args.filter { $0.hasPrefix("ServerAlive") } }
+            XCTAssertEqual(pick(interactive), pick(command))
+            return pick(interactive)
+        }
+        XCTAssertEqual(alive(.fast), ["ServerAliveInterval=15", "ServerAliveCountMax=2"])
+        XCTAssertEqual(alive(.normal), ["ServerAliveInterval=30", "ServerAliveCountMax=3"])
+        XCTAssertEqual(alive(.relaxed), ["ServerAliveInterval=60", "ServerAliveCountMax=5"])
+        XCTAssertEqual(alive(.off), ["ServerAliveInterval=0"])
     }
 
     func testKnownHostsLinesReplaceEveryLineForTheHost() {

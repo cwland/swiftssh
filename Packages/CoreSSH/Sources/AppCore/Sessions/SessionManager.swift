@@ -148,6 +148,7 @@ public final class SessionManager {
     @ObservationIgnored private let makeSession: @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession
     @ObservationIgnored private let deviceName: String
     @ObservationIgnored private let defaultUsername: String
+    @ObservationIgnored private let keepAlivePolicy: @MainActor () -> KeepAlivePolicy
     /// Every attempt whose session has not ended yet, including ones being closed.
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
@@ -156,7 +157,9 @@ public final class SessionManager {
     public init(vault: LocalVault, knownHosts: KnownHostsStore,
                 makeSession: @escaping @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession,
                 deviceName: String, defaultUsername: String,
-                initialSizeTimeout: Duration = .milliseconds(500)) {
+                initialSizeTimeout: Duration = .milliseconds(500),
+                keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .normal }) {
+        self.keepAlivePolicy = keepAlivePolicy
         self.initialSizeTimeout = initialSizeTimeout
         self.vault = vault
         self.knownHosts = knownHosts
@@ -347,6 +350,7 @@ public final class SessionManager {
                 return
             }
         }
+        plan.keepAlive = keepAlivePolicy() // read once per attempt: open tabs keep theirs, Reconnect uses the current one
         tab.title = plan.label
         if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { tab.badge = host.osBadge }
 

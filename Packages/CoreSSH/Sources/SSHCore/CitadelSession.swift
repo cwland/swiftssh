@@ -22,21 +22,10 @@ public final class CitadelSession: TerminalSession {
     static let commandOutputLimit = 1_048_576
     static let unresponsiveMessage = "The server stopped responding."
 
-    /// SSH-level keep-alive: a want-reply global request every `interval`; the session ends when
-    /// `maxUnanswered` probes in a row got no reply within `interval` each.
-    struct KeepAlive: Sendable, Equatable {
-        var interval: Duration
-        var maxUnanswered: Int
-
-        /// Like OpenSSH's ServerAliveInterval 30 / ServerAliveCountMax 3.
-        static let `default` = KeepAlive(interval: .seconds(30), maxUnanswered: 3)
-    }
-
     private let plan: ConnectionPlan
     private let hostKeys: any HostKeyEvaluator
     private let connectTimeout: Duration
     private let commandTimeout: Duration
-    private let keepAlive: KeepAlive
     private let eventContinuation: AsyncStream<SessionEvent>.Continuation
     private let input: AsyncStream<PTYInput>
     private let inputContinuation: AsyncStream<PTYInput>.Continuation
@@ -63,14 +52,12 @@ public final class CitadelSession: TerminalSession {
         self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
     }
 
-    /// `commandTimeout` bounds `runCommand`; `keepAlive` sets the liveness probes. Only tests change them.
-    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration,
-         keepAlive: KeepAlive = .default) {
+    /// `commandTimeout` bounds `runCommand`; only tests change it. Liveness probes follow `plan.keepAlive`.
+    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration) {
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
         self.commandTimeout = commandTimeout
-        self.keepAlive = keepAlive
         (events, eventContinuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .unbounded)
         (input, inputContinuation) = AsyncStream.makeStream(of: PTYInput.self, bufferingPolicy: .unbounded)
     }
@@ -412,8 +399,11 @@ public final class CitadelSession: TerminalSession {
                 // The PTY channel's parent is the TCP channel that carries the SSH connection.
                 let root = Self.channel(of: outbound)?.parent
                 assert(root != nil, "Keep-alive disabled: Citadel's TTYStdinWriter no longer exposes its channel (or it has no parent)")
-                let keepAliveTask = root.map { root in
-                    Task { await self.runKeepAlive(on: root, connection: connection) }
+                let keepAliveTask = root.flatMap { root in
+                    plan.keepAlive.interval.map { interval in
+                        Task { await self.runKeepAlive(on: root, connection: connection,
+                                                       interval: interval, maxUnanswered: plan.keepAlive.maxUnanswered) }
+                    }
                 }
                 defer { keepAliveTask?.cancel() }
                 for try await chunk in inbound {
@@ -446,11 +436,11 @@ public final class CitadelSession: TerminalSession {
         case replied, noReply, failed
     }
 
-    /// Probes the server every `keepAlive.interval`. After `maxUnanswered` probes in a row without a reply
+    /// Probes the server every `interval`. After `maxUnanswered` probes in a row without a reply
     /// (each given `interval` to answer) the session ends with `unresponsiveMessage`. Stops when the
     /// session ends or the connection fails (the shell task reports that).
-    private func runKeepAlive(on root: Channel, connection: Connection) async {
-        let interval = keepAlive.interval
+    private func runKeepAlive(on root: Channel, connection: Connection,
+                              interval: Duration, maxUnanswered: Int) async {
         var unanswered = 0
         var wait = interval
         while true {
@@ -484,7 +474,7 @@ public final class CitadelSession: TerminalSession {
             case .noReply:
                 unanswered += 1
                 wait = .zero // the reply wait already took one interval
-                if unanswered >= keepAlive.maxUnanswered {
+                if unanswered >= maxUnanswered {
                     finish(.failed(.connectionFailed(Self.unresponsiveMessage)))
                     await connection.closeClient()
                     return

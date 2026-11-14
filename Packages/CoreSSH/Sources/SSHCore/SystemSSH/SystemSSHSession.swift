@@ -166,7 +166,8 @@ public final class SystemSSHSession: TerminalSession {
 
         let arguments = Self.commandArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
                                               knownHosts: knownHosts, controlSocket: socket,
-                                              hostKeyAlgorithms: algorithms, command: command)
+                                              hostKeyAlgorithms: algorithms, command: command,
+                                              keepAlive: plan.keepAlive)
         let process: PTYProcess
         do {
             process = try PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
@@ -302,7 +303,8 @@ public final class SystemSSHSession: TerminalSession {
         case .none: auth = .none
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
-                                          knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms)
+                                          knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms,
+                                          keepAlive: plan.keepAlive)
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
@@ -554,9 +556,11 @@ public final class SystemSSHSession: TerminalSession {
     /// `-F /dev/null`, `ConnectTimeout`, the per-credential authentication restrictions and
     /// `HostKeyAlgorithms` limited to the trusted key's type.
     static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
-                             knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String) -> [String] {
+                             knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String,
+                             keepAlive: KeepAlivePolicy = .normal) -> [String] {
         var arguments = ["-tt"] + optionArguments(port: port, username: username, knownHosts: knownHosts,
-                                                  controlMaster: "auto", controlPath: controlPath(runtime))
+                                                  controlMaster: "auto", controlPath: controlPath(runtime),
+                                                  keepAlive: keepAlive)
         switch auth {
         case .key(let keyFile):
             arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path,
@@ -576,16 +580,16 @@ public final class SystemSSHSession: TerminalSession {
     /// A command through the existing control master only (`ControlMaster=no`, the exact socket).
     static func commandArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                                  knownHosts: URL, controlSocket: String, hostKeyAlgorithms: String,
-                                 command: String) -> [String] {
+                                 command: String, keepAlive: KeepAlivePolicy = .normal) -> [String] {
         optionArguments(port: port, username: username, knownHosts: knownHosts,
-                        controlMaster: "no", controlPath: quoted(controlSocket))
+                        controlMaster: "no", controlPath: quoted(controlSocket), keepAlive: keepAlive)
             + ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]
     }
 
     /// `-F /dev/null` (the user's ssh configuration never applies), port, user and the shared `-o` options.
     /// Paths are double-quoted because ssh splits `-o` values at spaces ("Application Support").
     static func optionArguments(port: Int, username: String, knownHosts: URL, controlMaster: String,
-                                controlPath: String) -> [String] {
+                                controlPath: String, keepAlive: KeepAlivePolicy) -> [String] {
         [
             "-F", "/dev/null",
             "-p", String(port), "-l", username,
@@ -595,16 +599,24 @@ public final class SystemSSHSession: TerminalSession {
             "-o", "ControlMaster=\(controlMaster)",
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlPersist=15",
-            "-o", "ServerAliveInterval=30",
+        ] + aliveArguments(keepAlive) + [
             "-o", "ConnectTimeout=15",
         ]
+    }
+
+    /// `ServerAliveInterval`/`ServerAliveCountMax` for the policy; off is `ServerAliveInterval=0`.
+    private static func aliveArguments(_ policy: KeepAlivePolicy) -> [String] {
+        guard let interval = policy.interval else { return ["-o", "ServerAliveInterval=0"] }
+        let seconds = Int(interval.components.seconds)
+        return ["-o", "ServerAliveInterval=\(seconds)", "-o", "ServerAliveCountMax=\(policy.maxUnanswered)"]
     }
 
     /// The control socket path with `%C` expanded, as ssh computes it (`ssh -G`). Cached.
     private func controlSocketPath(knownHosts: URL) async -> String? {
         if let cached = state.withLock({ $0.controlSocket }) { return cached }
         let arguments = ["-G"] + Self.optionArguments(port: plan.port, username: plan.username, knownHosts: knownHosts,
-                                                      controlMaster: "no", controlPath: Self.controlPath(runtime))
+                                                      controlMaster: "no", controlPath: Self.controlPath(runtime),
+                                                      keepAlive: plan.keepAlive)
             + ["--", host]
         guard let process = try? PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
                                             cols: 200, rows: 24, rawMode: true),
