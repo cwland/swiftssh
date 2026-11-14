@@ -132,6 +132,7 @@ public final class HostDetailsViewModel {
 
     /// "Automatic": forgets the chosen OS, so the next connection detects it.
     public func useAutomaticOS() {
+        vault.requestOSProbe(for: hostID)
         update {
             $0.osBadge = nil
             $0.osBadgeIsManual = false

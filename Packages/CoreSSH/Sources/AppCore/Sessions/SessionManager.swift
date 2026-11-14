@@ -491,27 +491,31 @@ public final class SessionManager {
         if let hostID = plan.hostID, var host = vault.get(SavedHost.self, id: hostID) {
             host.lastConnectedAt = Date()
             vault.saveNow(host)
-            // Once per host per app session, and again whenever an automatic host has no badge
-            // (e.g. after "Automatic" in Host Details).
-            if !host.osBadgeIsManual, !probedHosts.contains(hostID) || host.osBadge == nil {
-                probedHosts.insert(hostID)
-                let session = attempt.session
-                Task { [weak self] in
-                    do {
-                        var output = try await session.runCommand(OSDetector.probeCommand)
-                        if let followUp = OSDetector.followUpCommand(forProbeOutput: output),
-                           let more = try? await session.runCommand(followUp) {
-                            output += "\n" + more
-                        }
-                        self?.applyProbe(output, hostID: hostID)
-                    } catch {
-                        self?.probedHosts.remove(hostID) // try again on the next connection
-                    }
-                }
+            // Once per host per app session, and again on the next connection after the user chose
+            // "Automatic" in Host Details (`vault.requestOSProbe`), even if nothing was detected.
+            if !host.osBadgeIsManual {
+                let requested = vault.takeOSProbeRequest(for: hostID)
+                if requested || !probedHosts.contains(hostID) { probeOS(of: hostID, over: attempt.session) }
             }
         }
         if let script = plan.startupScript, !script.isEmpty {
             attempt.inputs.yield(.bytes(Array((script + "\n").utf8)))
+        }
+    }
+
+    private func probeOS(of hostID: UUID, over session: any TerminalSession) {
+        probedHosts.insert(hostID)
+        Task { [weak self] in
+            do {
+                var output = try await session.runCommand(OSDetector.probeCommand)
+                if let followUp = OSDetector.followUpCommand(forProbeOutput: output),
+                   let more = try? await session.runCommand(followUp) {
+                    output += "\n" + more
+                }
+                self?.applyProbe(output, hostID: hostID)
+            } catch {
+                self?.probedHosts.remove(hostID) // try again on the next connection
+            }
         }
     }
 

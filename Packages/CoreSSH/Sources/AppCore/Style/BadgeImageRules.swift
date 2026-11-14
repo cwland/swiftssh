@@ -48,8 +48,6 @@ public enum BadgeImageRules {
     public static let maximumDecodePixelSize = 1024
     /// Bitmaps that announce more pixels than this are refused before decoding.
     public static let maximumSourcePixels = 50_000_000
-    /// Stored PNGs are rendered in this color space (`CGColorSpace.sRGB`).
-    public static let colorSpaceName = "kCGColorSpaceSRGB"
 
     /// How image bytes are decoded: vectors (SVG, PDF) by the system's vector renderer, everything
     /// else by ImageIO with the thumbnail pixel limit.

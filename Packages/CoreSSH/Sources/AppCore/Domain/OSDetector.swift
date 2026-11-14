@@ -3,7 +3,7 @@ import Foundation
 
 /// Finds a host's OS (a catalog id) from the output of `probeCommand`, run once on a new session.
 ///
-/// Precedence: Windows, then marker lines (appliance files; Docker last), then os-release `ID`,
+/// Precedence: Windows, then marker lines (appliance files; Docker last; the Home Assistant add-on is a container too), then os-release `ID`,
 /// then `ID_LIKE`, then `uname -s`. Devices without a POSIX shell (MikroTik, Cisco, Fortinet…)
 /// print an error instead, which matches nothing, so they keep whatever badge they had.
 public enum OSDetector {
@@ -28,6 +28,7 @@ public enum OSDetector {
         ("grep -qs pfSense /etc/platform", "pfsense"),
         ("[ -e /usr/local/opnsense ]", "opnsense"),
         ("[ -e /etc/rpi-issue ]", "raspbian"),               // Raspberry Pi OS 64-bit says ID=debian
+        ("[ -e /config/configuration.yaml -o -e /homeassistant/configuration.yaml ]", "home-assistant"), // SSH add-on
         ("[ -e /.dockerenv ]", "docker"),
     ]
 
@@ -50,7 +51,7 @@ public enum OSDetector {
     /// Marker ids, most specific first; Docker only when nothing else matched.
     static let markerPrecedence: [OSBadge] = [
         .truenas, .synology, .qnap, .unraid, .openmediavault, .proxmox, .xcpng, .pfsense, .opnsense,
-        .umbrel, .casaos, .raspbian, .docker,
+        .umbrel, .casaos, .raspbian, .homeAssistant, .docker,
     ]
 
     /// os-release `ID` / `ID_LIKE` values and their catalog ids.
@@ -119,9 +120,9 @@ public enum OSDetector {
             let build = uname.split(separator: "-").last.flatMap { Int($0) }
             return windows(build: build, isServer: false)
         }
-        // Anything else without an os-release ID is not a known OS. A known kernel with an
-        // unknown distribution was handled above.
-        return id != nil && uname == "linux" ? .linux : nil
+        // An unknown kernel name is not a known OS. (`linux` with any os-release ID, known or not,
+        // was handled by the table above, so there is no generic-Linux fallback here.)
+        return nil
     }
 
     // MARK: Windows

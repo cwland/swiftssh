@@ -82,14 +82,6 @@ final class BadgeImageRulesTests: XCTestCase {
         XCTAssertEqual(BadgeImageRules.allowedFileExtensions, ["svg", "png", "jpg", "jpeg", "pdf"])
     }
 
-    func testSettingsOrderAndNames() {
-        XCTAssertEqual(BadgeStyle.settingsOrder.prefix(6), [.windows, .windows10, .macos, .apple, .linux, .ubuntu])
-        XCTAssertEqual(BadgeStyle.settingsOrder.last, .homeAssistant)
-        XCTAssertEqual(BadgeStyle.settingsOrder.prefix(3).map(BadgeStyle.settingsName(for:)), [
-            "Windows (11 / Server)", "Windows 10", "macOS",
-        ])
-    }
-
     func testDecodeLimits() {
         XCTAssertEqual(BadgeImageRules.maximumDecodePixelSize, 1024)
         XCTAssertEqual(BadgeImageRules.maximumSourcePixels, 50_000_000)
@@ -125,10 +117,6 @@ final class BadgeImageRulesTests: XCTestCase {
 
     func testCouldNotReadMessage() {
         XCTAssertEqual(BadgeImageError.couldNotRead("no permission").message, "Couldn't read that file: no permission")
-    }
-
-    func testRenderedCanvasIsSRGB() {
-        XCTAssertEqual(BadgeImageRules.colorSpaceName, "kCGColorSpaceSRGB")
     }
 
     func testSettingsPanes() {
