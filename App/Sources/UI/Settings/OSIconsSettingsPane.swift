@@ -190,7 +190,7 @@ private struct OSIconRow: View {
                     .help("Badge color")
                 Button("Choose Image…", action: chooseImage)
                     .disabled(store.isWorking(badge))
-                Button("Reset", action: reset)
+                Button("Reset", action: resetRow)
                     .disabled(!store.isCustomized(badge) && store.status(for: badge) == nil)
                     .help("Standard symbol, color, white drawing and default link")
             }
@@ -247,6 +247,13 @@ private struct OSIconRow: View {
             return "Downloaded from \(source)"
         }
         return "Custom image"
+    }
+
+    /// Reset, then show the stored (default) link again; a rejected draft was never saved, so the
+    /// store's link doesn't change and nothing else would refresh the field.
+    private func resetRow() {
+        reset()
+        draft = store.link(for: badge)
     }
 
     /// Saves and downloads an edited link; an unchanged link does nothing.
