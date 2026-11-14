@@ -3,19 +3,25 @@ import Observation
 import CoreModels
 import SyncCore
 
+public enum LocalVaultError: Error, Equatable, Sendable {
+    case unsupportedVersion(Int)
+}
+
 /// The app's local, observable record store. Records are kept as `PlainRecord`s in insertion
 /// order and decoded on query. Every change marks the record dirty and is persisted; deletes
 /// are tombstones.
 @MainActor @Observable
 public final class LocalVault {
     public private(set) var revision = 0
-    public var lastSaveError: Error?
+    public private(set) var lastSaveError: Error?
     public private(set) var deviceID: String
 
     @ObservationIgnored private let persistence: any VaultPersistence
     @ObservationIgnored private var records: [UUID: PlainRecord] = [:]
     @ObservationIgnored private var order: [UUID] = []
     @ObservationIgnored private var dirty: Set<UUID> = []
+    @ObservationIgnored private var persistInFlight = false
+    @ObservationIgnored private var persistWaiters: [CheckedContinuation<Void, Never>] = []
     @ObservationIgnored private var syncState = SyncState(vaultID: nil, lastSeq: 0)
 
     private init(persistence: any VaultPersistence, deviceID: String) {
@@ -26,6 +32,7 @@ public final class LocalVault {
     public static func open(persistence: any VaultPersistence,
                             newDeviceID: () -> String = { UUID().uuidString }) async throws -> LocalVault {
         if let contents = try await persistence.load() {
+            guard contents.version == 1 else { throw LocalVaultError.unsupportedVersion(contents.version) }
             let vault = LocalVault(persistence: persistence, deviceID: contents.deviceID)
             vault.syncState = contents.syncState
             vault.dirty = contents.dirty
@@ -81,7 +88,22 @@ public final class LocalVault {
         revision += 1
     }
 
+    /// Persists the current state. Writes are serialized FIFO: each call waits for the previous
+    /// write to finish, then snapshots the state at write time, so the last write on disk is
+    /// always the latest state and `lastSaveError` reflects the most recently completed write.
     private func persist() async throws {
+        if persistInFlight {
+            await withCheckedContinuation { persistWaiters.append($0) }
+        } else {
+            persistInFlight = true
+        }
+        defer {
+            if persistWaiters.isEmpty {
+                persistInFlight = false
+            } else {
+                persistWaiters.removeFirst().resume()
+            }
+        }
         let contents = VaultFileContents(deviceID: deviceID, syncState: syncState,
                                          records: order.compactMap { records[$0] }, dirty: dirty)
         do {

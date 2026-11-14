@@ -64,6 +64,7 @@ final class LocalVaultTests: XCTestCase {
     func testSaveFailureIsReportedAndInMemoryStateKept() async throws {
         let p = InMemoryVaultPersistence()
         let vault = try await open(p)
+        let first = try await vault.save(Host(label: "first", address: "f.example"))
         await p.setFailing(true)
         let host = Host(label: "a", address: "a.example")
         do {
@@ -71,9 +72,83 @@ final class LocalVaultTests: XCTestCase {
             XCTFail("expected throw")
         } catch {}
         XCTAssertNotNil(vault.lastSaveError)
-        XCTAssertNotNil(vault.get(Host.self, id: host.id))
+        let failed = try XCTUnwrap(vault.get(Host.self, id: host.id))
         await p.setFailing(false)
-        _ = try await vault.save(host)
+        let retried = try await vault.save(failed)
         XCTAssertNil(vault.lastSaveError)
+        XCTAssertGreaterThan(retried.updatedAt, failed.updatedAt)
+        let contents = await p.contents
+        XCTAssertEqual(contents?.records.compactMap { try? $0.decode(Host.self) }, [first, retried])
+        XCTAssertEqual(contents?.dirty, [first.id, host.id])
+    }
+
+    func testDeleteFailureKeepsTombstoneAndLaterWritePersistsIt() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        let host = try await vault.save(Host(label: "a", address: "a.example"))
+        await p.setFailing(true)
+        do {
+            try await vault.delete(Host.self, id: host.id)
+            XCTFail("expected throw")
+        } catch {}
+        XCTAssertNil(vault.get(Host.self, id: host.id))
+        XCTAssertNotNil(vault.lastSaveError)
+        await p.setFailing(false)
+        let other = try await vault.save(Host(label: "b", address: "b.example"))
+        let contents = await p.contents
+        let record = try XCTUnwrap(contents?.records.first { $0.id == host.id })
+        XCTAssertTrue(record.deleted)
+        XCTAssertEqual(contents?.dirty, [host.id, other.id])
+    }
+
+    func testUnsupportedVersionThrows() async throws {
+        let p = InMemoryVaultPersistence(contents: VaultFileContents(version: 2, deviceID: "x"))
+        do {
+            _ = try await LocalVault.open(persistence: p)
+            XCTFail("expected throw")
+        } catch {
+            XCTAssertEqual(error as? LocalVaultError, .unsupportedVersion(2))
+        }
+    }
+
+    func testOverlappingSavesPersistLatestState() async throws {
+        let p = GatedPersistence()
+        let vault = try await LocalVault.open(persistence: p, newDeviceID: { "dev-1" })
+        let a = Host(label: "a", address: "a.example")
+        let b = Host(label: "b", address: "b.example")
+        let taskA = Task { @MainActor in try await vault.save(a) }
+        while await p.started < 1 { await Task.yield() }
+        let taskB = Task { @MainActor in try await vault.save(b) }
+        await p.release(2)
+        await p.release(1)
+        _ = try await taskA.value
+        _ = try await taskB.value
+        let contents = await p.contents
+        XCTAssertEqual(Set(contents?.records.map(\.id) ?? []), [a.id, b.id])
+        XCTAssertNil(vault.lastSaveError)
+    }
+}
+
+/// Test persistence whose n-th `save` call (1-based) blocks until `release(n)`.
+private actor GatedPersistence: VaultPersistence {
+    private(set) var contents: VaultFileContents?
+    private(set) var started = 0
+    private var released: Set<Int> = []
+    private var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
+
+    func release(_ n: Int) {
+        released.insert(n)
+        waiting.removeValue(forKey: n)?.resume()
+    }
+
+    func load() async throws -> VaultFileContents? { contents }
+
+    func save(_ new: VaultFileContents) async throws {
+        started += 1
+        let n = started
+        if !released.contains(n) {
+            await withCheckedContinuation { waiting[n] = $0 }
+        }
+        contents = new
     }
 }

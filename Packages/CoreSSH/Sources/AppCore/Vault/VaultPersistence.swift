@@ -19,6 +19,9 @@ public struct VaultFileContents: Codable, Equatable, Sendable {
     }
 }
 
+/// `LocalVault` calls `save` at most once at a time, in the order changes were made, and each
+/// call carries the full state at the time it is made; the last completed `save` is the
+/// latest state.
 public protocol VaultPersistence: Sendable {
     func load() async throws -> VaultFileContents?
     func save(_ contents: VaultFileContents) async throws
