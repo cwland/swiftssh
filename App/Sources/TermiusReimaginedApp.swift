@@ -3,6 +3,7 @@ import AppCore
 
 @main
 struct TermiusReimaginedApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var environment = AppEnvironment()
 
     var body: some Scene {
@@ -10,6 +11,7 @@ struct TermiusReimaginedApp: App {
             RootView(environment: environment)
                 .frame(minWidth: 1100, minHeight: 700)
                 .task {
+                    appDelegate.environment = environment
                     await environment.load()
                 }
         }

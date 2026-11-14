@@ -28,6 +28,14 @@ struct RootView: View {
 private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
+    /// Kept here so search, filters and the open group survive switching sidebar items.
+    @State private var hostsModel: HostsViewModel
+
+    init(navigation: AppNavigation, vault: LocalVault) {
+        self.navigation = navigation
+        self.vault = vault
+        _hostsModel = State(initialValue: HostsViewModel(vault: vault))
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -41,8 +49,10 @@ private struct MainArea: View {
     @ViewBuilder
     private var content: some View {
         switch navigation.sidebar {
-        case .hosts, .keychain:
-            // Filled in by the Hosts and Keychain screens.
+        case .hosts:
+            HostsView(model: hostsModel, vault: vault)
+        case .keychain:
+            // Filled in by the Keychain screen.
             Theme.contentBackground
         case .snippets, .knownHosts, .logs:
             PlaceholderView("Coming in a later milestone")
