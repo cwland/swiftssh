@@ -26,6 +26,12 @@ final class AppEnvironment {
     let navigation: AppNavigation
     /// Per-Mac connection preferences (Settings → Connection); read when a session is opened.
     let connectionSettings = ConnectionSettings()
+    /// Per-Mac 1Password path overrides (Settings → 1Password → Advanced).
+    let onePasswordSettings: OnePasswordSettings
+    /// The 1Password setup status; also finds the agent socket and `op` for sessions.
+    let onePassword: OnePasswordSetup
+    /// The Settings window's selected pane ("Open 1Password Setup" selects 1Password).
+    let settingsNavigation = SettingsNavigation()
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
     /// One SwiftTerm view per open tab, so switching tabs and reconnecting keep scrollback.
@@ -38,6 +44,9 @@ final class AppEnvironment {
     init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider()) {
         self.keyProvider = keyProvider
         self.navigation = AppNavigation()
+        let onePasswordSettings = OnePasswordSettings()
+        self.onePasswordSettings = onePasswordSettings
+        self.onePassword = OnePasswordSetup(settings: onePasswordSettings)
     }
 
     /// Loads the Keychain key and opens `~/Library/Application Support/TermiusReimagined/vault.bin`.
@@ -110,6 +119,7 @@ final class AppEnvironment {
     private func makeSessionManager(vault: LocalVault, runtime: SSHRuntimeDirectory) -> SessionManager {
         let knownHosts = KnownHostsStore(vault: vault)
         let connectionSettings = self.connectionSettings
+        let onePassword = self.onePassword
         return SessionManager(
             vault: vault,
             knownHosts: knownHosts,
@@ -126,7 +136,11 @@ final class AppEnvironment {
             deviceName: Self.deviceName,
             defaultUsername: NSUserName(),
             keepAlivePolicy: { connectionSettings.detection.policy },
-            autoReconnectEnabled: { connectionSettings.autoReconnect }
+            autoReconnectEnabled: { connectionSettings.autoReconnect },
+            // Looked up at each connect, so a socket or `op` that appears later (or a changed
+            // override) is used without restarting the app.
+            agentSocket: { onePassword.agentSocket() },
+            opClient: { onePassword.makeClient() }
         )
     }
 
