@@ -282,7 +282,10 @@ final class CitadelSessionTests: XCTestCase {
         XCTAssertEqual(CitadelSession.KeepAlive.default.maxUnanswered, 3)
     }
 
-    func testKeepAliveKeepsAnIdleHealthySessionOpen() async throws {
+    func testKeepAliveSurvivesManyAnsweredProbesThenDetectsAFrozenServer() async throws {
+        #if !os(Linux)
+        throw XCTSkip("suspendSessions() reads /proc (Linux only)")
+        #endif
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
                                      connectTimeout: .seconds(15), commandTimeout: .seconds(15),
                                      keepAlive: .init(interval: .milliseconds(300), maxUnanswered: 2))
@@ -294,10 +297,20 @@ final class CitadelSessionTests: XCTestCase {
         await session.send(Array("echo alive-$((5+5))\n".utf8))
         try await recorder.waitForOutput(containing: "alive-10")
         XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+        XCTAssertGreaterThanOrEqual(session.answeredKeepAliveProbes, 5)
+
+        // The loop is still running after all those answers: freezing the server now ends the session.
+        server.suspendSessions()
+        try await recorder.waitForFinish(timeout: 10)
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.connected, .ready, .closed(.failed(.connectionFailed(CitadelSession.unresponsiveMessage)))])
         await session.close()
     }
 
     func testUnresponsiveServerEndsSessionAfterMissedKeepAlives() async throws {
+        #if !os(Linux)
+        throw XCTSkip("suspendSessions() reads /proc (Linux only)")
+        #endif
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
                                      connectTimeout: .seconds(15), commandTimeout: .seconds(15),
                                      keepAlive: .init(interval: .milliseconds(500), maxUnanswered: 3))

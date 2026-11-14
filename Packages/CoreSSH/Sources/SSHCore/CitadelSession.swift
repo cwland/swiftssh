@@ -50,6 +50,8 @@ public final class CitadelSession: TerminalSession {
         var connection: Connection?
         /// Wakes up `start` (and abandons the work) while it waits on a connection attempt or the PTY.
         var cancelPending: (@Sendable () -> Void)?
+        /// Keep-alive probes the server answered (accepted or refused); for tests.
+        var answeredProbes = 0
     }
 
     private enum PTYInput: Sendable {
@@ -182,6 +184,9 @@ public final class CitadelSession: TerminalSession {
     }
 
     private var isEnded: Bool { state.withLock { $0.ended } }
+
+    /// Keep-alive probes the server has answered so far (tests only).
+    var answeredKeepAliveProbes: Int { state.withLock { $0.answeredProbes } }
 
     // MARK: Authentication
 
@@ -405,7 +410,9 @@ public final class CitadelSession: TerminalSession {
                 self.emit(.ready)
                 opening.resolve(.opened)
                 // The PTY channel's parent is the TCP channel that carries the SSH connection.
-                let keepAliveTask = Self.channel(of: outbound)?.parent.map { root in
+                let root = Self.channel(of: outbound)?.parent
+                assert(root != nil, "Keep-alive disabled: Citadel's TTYStdinWriter no longer exposes its channel (or it has no parent)")
+                let keepAliveTask = root.map { root in
                     Task { await self.runKeepAlive(on: root, connection: connection) }
                 }
                 defer { keepAliveTask?.cancel() }
@@ -449,8 +456,11 @@ public final class CitadelSession: TerminalSession {
         while true {
             try? await Task.sleep(for: wait)
             if Task.isCancelled || isEnded { return }
+            // Scheduled through `withClient`, so nothing is submitted to a loop that is shutting down.
+            let scheduled = (try? await connection.withClient { _ in Self.probe(root) }) ?? nil
+            guard let probe = scheduled else { return } // teardown has begun
             let result = OneShot<ProbeResult>()
-            Self.probe(root).whenComplete { outcome in
+            probe.whenComplete { outcome in
                 switch outcome {
                 case .success: result.resolve(.replied)
                 case .failure: result.resolve(.failed)
@@ -467,6 +477,7 @@ public final class CitadelSession: TerminalSession {
             if Task.isCancelled || isEnded { return }
             switch outcome {
             case .replied:
+                state.withLock { $0.answeredProbes += 1 }
                 unanswered = 0
                 let elapsed = clock.now - sent
                 wait = elapsed < interval ? interval - elapsed : .zero
@@ -493,6 +504,8 @@ public final class CitadelSession: TerminalSession {
                 let handler = try root.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
                 handler.sendTCPForwardingRequest(keepAliveProbe, promise: promise)
             } catch {
+                // A closed channel has an empty pipeline; on a live one this means Citadel's layout changed.
+                assert(!root.isActive, "Keep-alive disabled: no NIOSSHHandler in the connection's pipeline (\(error))")
                 promise.fail(error)
             }
             return promise.futureResult.map { _ in () }.flatMapErrorThrowing { error in

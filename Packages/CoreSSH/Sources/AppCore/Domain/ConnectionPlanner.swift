@@ -23,10 +23,15 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
         case .hostNotFound: "This host no longer exists."
         case .missingAddress: "This host has no address."
         case .missingUsername(.identity(let label)):
-            "The identity \u{201C}\(label)\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host."
+            "The identity \u{201C}\(Self.display(label, fallback: "Untitled identity"))\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host."
         case .missingUsername(.host(let label)):
-            "\u{201C}\(label)\u{201D} has no username. Add one in Host Details."
+            "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} has no username. Add one in Host Details."
         }
+    }
+
+    /// The label, or `fallback` when it is blank (as the cards show it).
+    private static func display(_ label: String, fallback: String) -> String {
+        label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? fallback : label
     }
 }
 

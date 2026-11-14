@@ -201,6 +201,19 @@ final class ConnectionPlannerTests: XCTestCase {
         }
     }
 
+    func testMissingUsernameMessagesFallBackForEmptyLabels() async throws {
+        XCTAssertEqual(ConnectionPlanError.missingUsername(.identity(label: "")).errorDescription,
+                       "The identity \u{201C}Untitled identity\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host.")
+        XCTAssertEqual(ConnectionPlanError.missingUsername(.host(label: "  ")).errorDescription,
+                       "\u{201C}Untitled host\u{201D} has no username. Add one in Host Details.")
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "", address: "a", password: "pw"))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: host.id, vault: vault)) {
+            XCTAssertEqual(($0 as? LocalizedError)?.errorDescription,
+                           "\u{201C}Untitled host\u{201D} has no username. Add one in Host Details.")
+        }
+    }
+
     func testPlanErrorsHaveCantConnectTitle() async {
         let errors: [ConnectionPlanError] = [.hostNotFound, .missingAddress,
                                              .missingUsername(.host(label: "h")),
