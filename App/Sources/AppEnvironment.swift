@@ -24,6 +24,8 @@ final class AppEnvironment {
 
     private(set) var state: State = .loading
     let navigation: AppNavigation
+    /// Per-Mac connection preferences (Settings → Connection); read when a session is opened.
+    let connectionSettings = ConnectionSettings()
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
     /// One SwiftTerm view per open tab, so switching tabs and reconnecting keep scrollback.
@@ -107,6 +109,7 @@ final class AppEnvironment {
 
     private func makeSessionManager(vault: LocalVault, runtime: SSHRuntimeDirectory) -> SessionManager {
         let knownHosts = KnownHostsStore(vault: vault)
+        let connectionSettings = self.connectionSettings
         return SessionManager(
             vault: vault,
             knownHosts: knownHosts,
@@ -121,7 +124,8 @@ final class AppEnvironment {
                 }
             },
             deviceName: Self.deviceName,
-            defaultUsername: NSUserName()
+            defaultUsername: NSUserName(),
+            keepAlivePolicy: { connectionSettings.detection.policy }
         )
     }
 

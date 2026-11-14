@@ -22,9 +22,9 @@ struct TermiusReimaginedApp: App {
             SessionCommands(environment: environment)
         }
 
-        // Cmd+, — Termius-style sidebar of panes (OS Icons for now).
+        // Cmd+, — Termius-style sidebar of panes (Connection, OS Icons).
         Settings {
-            SettingsView()
+            SettingsView(connectionSettings: environment.connectionSettings)
         }
         .windowResizability(.contentMinSize)
     }

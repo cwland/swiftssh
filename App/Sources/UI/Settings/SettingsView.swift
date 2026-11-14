@@ -4,7 +4,8 @@ import AppCore
 /// The Settings window (Cmd+,): a Termius-style sidebar of panes on the left and the selected
 /// pane on the right. New panes are added to `SettingsPane` and to `pane(for:)`.
 struct SettingsView: View {
-    @State private var selection: SettingsPane = .osIcons
+    let connectionSettings: ConnectionSettings
+    @State private var selection: SettingsPane = .connection
 
     var body: some View {
         HStack(spacing: 0) {
@@ -34,6 +35,7 @@ struct SettingsView: View {
     @ViewBuilder
     private func pane(for pane: SettingsPane) -> some View {
         switch pane {
+        case .connection: ConnectionSettingsPane(settings: connectionSettings)
         case .osIcons: OSIconsSettingsPane()
         }
     }
