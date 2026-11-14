@@ -41,4 +41,18 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(h.tags, [])
         XCTAssertFalse(h.deleted)
     }
+
+    func testOldVaultHostWithoutFlagDecodes() throws {
+        var h = Host(label: "Old", address: "10.0.0.2")
+        h.useSystemSSH = true
+        let data = try CoreJSON.encoder.encode(h)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["useSystemSSH"] as? Bool, true)
+        object.removeValue(forKey: "useSystemSSH")
+        let old = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try CoreJSON.decoder.decode(Host.self, from: old)
+        XCTAssertNil(decoded.useSystemSSH)
+        XCTAssertEqual(decoded.label, "Old")
+        try roundTrip(h)
+    }
 }

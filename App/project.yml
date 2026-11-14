@@ -3,7 +3,7 @@ name: TermiusReimagined
 options:
   bundleIdPrefix: com.cwland
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 
 packages:
@@ -12,7 +12,7 @@ packages:
 
 settings:
   base:
-    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MACOSX_DEPLOYMENT_TARGET: "15.0"
     SWIFT_VERSION: "6.0"
     CODE_SIGN_IDENTITY: "-"
     CODE_SIGN_STYLE: Manual
@@ -23,7 +23,7 @@ targets:
   TermiusReimagined:
     type: application
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Sources
     settings:
@@ -46,7 +46,7 @@ targets:
   TermiusReimaginedTests:
     type: bundle.unit-test
     platform: macOS
-    deploymentTarget: "14.0"
+    deploymentTarget: "15.0"
     sources:
       - path: Tests
     settings:

@@ -50,6 +50,8 @@ public struct Host: SyncableModel {
     public var themeID: String?
     public var startupSnippetID: UUID?
     public var lastConnectedAt: Date?
+    /// nil/false = built-in engine unless the credential forces system ssh; true = always use /usr/bin/ssh.
+    public var useSystemSSH: Bool?
     public var updatedAt: Date
     public var deleted: Bool
 
@@ -57,12 +59,13 @@ public struct Host: SyncableModel {
                 tags: [String] = [], username: String? = nil, identityID: UUID? = nil, password: String? = nil,
                 sshKeyID: UUID? = nil, osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
                 themeID: String? = nil, startupSnippetID: UUID? = nil, lastConnectedAt: Date? = nil,
-                updatedAt: Date = Date(), deleted: Bool = false) {
+                useSystemSSH: Bool? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.address = address; self.port = port
         self.groupID = groupID; self.tags = tags; self.username = username
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
         self.osBadge = osBadge; self.osBadgeIsManual = osBadgeIsManual; self.themeID = themeID
         self.startupSnippetID = startupSnippetID; self.lastConnectedAt = lastConnectedAt
+        self.useSystemSSH = useSystemSSH
         self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
