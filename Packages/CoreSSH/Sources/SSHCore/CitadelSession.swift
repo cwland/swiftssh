@@ -404,11 +404,8 @@ public final class CitadelSession: TerminalSession {
                 }
                 defer { writerTask.cancel() }
 
-                // Authenticated with the PTY open: live and ready at once. `emit` drops both after `.closed`,
-                // and this closure runs once per session, so `.ready` comes at most once.
-                self.emit(.connected)
-                self.emit(.ready)
-                opening.resolve(.opened)
+                // The keep-alive loop starts before `.ready` is announced, so whoever sees `.ready` also sees
+                // the loop running (its first probe waits one interval).
                 // The PTY channel's parent is the TCP channel that carries the SSH connection.
                 let root = Self.channel(of: outbound)?.parent
                 assert(root != nil, "Keep-alive disabled: Citadel's TTYStdinWriter no longer exposes its channel (or it has no parent)")
@@ -420,6 +417,12 @@ public final class CitadelSession: TerminalSession {
                     }
                 }
                 defer { keepAliveTask?.cancel() }
+
+                // Authenticated with the PTY open: live and ready at once. `emit` drops both after `.closed`,
+                // and this closure runs once per session, so `.ready` comes at most once.
+                self.emit(.connected)
+                self.emit(.ready)
+                opening.resolve(.opened)
                 do {
                     for try await chunk in inbound {
                         switch chunk {
