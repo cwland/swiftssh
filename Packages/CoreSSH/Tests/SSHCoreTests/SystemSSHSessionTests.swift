@@ -987,8 +987,18 @@ final class SystemSSHSessionTests: XCTestCase {
         await session.send(Array("stty size\n".utf8))
         try await recorder.waitForOutput(containing: "24 80")
         await session.resize(cols: 100, rows: 40)
-        await session.send(Array("stty size\n".utf8))
-        try await recorder.waitForOutput(containing: "40 100")
+        // ssh learns the new size from SIGWINCH and forwards it from its main loop, which can send typed
+        // bytes that arrived in the same wakeup first; so the remote `stty` may still see 24x80 once.
+        // Ask again until the remote side reports the new size (it must, within the deadline).
+        let deadline = Date().addingTimeInterval(15)
+        while !recorder.outputText.contains("40 100"), Date() < deadline {
+            await session.send(Array("stty size\n".utf8))
+            let asked = Date()
+            while !recorder.outputText.contains("40 100"), Date().timeIntervalSince(asked) < 1 {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+        }
+        XCTAssertTrue(recorder.outputText.contains("40 100"), "remote size never became 40x100: \(recorder.outputText.suffix(500))")
         await session.close()
     }
 
