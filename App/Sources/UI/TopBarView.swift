@@ -93,7 +93,7 @@ extension TopTab {
     }
 }
 
-/// An AppKit view that moves the window when dragged, so the custom top bar behaves like a
+/// An AppKit view that moves the window when dragged and zooms it on double-click, so the custom top bar behaves like a
 /// title bar.
 private struct WindowDragArea: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView {
@@ -107,7 +107,11 @@ private struct WindowDragArea: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             if let window {
-                window.performDrag(with: event)
+                if event.clickCount == 2 {
+                    window.performZoom(nil)
+                } else {
+                    window.performDrag(with: event)
+                }
             } else {
                 super.mouseDown(with: event)
             }

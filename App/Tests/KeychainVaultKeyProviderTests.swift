@@ -64,4 +64,29 @@ final class KeychainVaultKeyProviderTests: XCTestCase {
 
         XCTAssertEqual(key.rawBytes.count, 32)
     }
+
+    func testWrongLengthItemThrowsAndIsNotReplaced() throws {
+        let badData = Data(repeating: 0x5A, count: 16)
+        let attributes: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: badData,
+        ]
+        XCTAssertEqual(SecItemAdd(attributes as CFDictionary, nil), errSecSuccess)
+
+        XCTAssertThrowsError(try makeProvider().loadOrCreateKey()) { error in
+            XCTAssertEqual(error as? VaultKeyBytesError, .wrongLength(16))
+        }
+        XCTAssertEqual(storedData(), badData)
+    }
+
+    func testReportsCreationOnlyOnFirstCall() throws {
+        let first = try makeProvider().loadOrCreateKeyReportingCreation()
+        let second = try makeProvider().loadOrCreateKeyReportingCreation()
+
+        XCTAssertTrue(first.created)
+        XCTAssertFalse(second.created)
+        XCTAssertEqual(first.key, second.key)
+    }
 }

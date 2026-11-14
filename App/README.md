@@ -15,6 +15,13 @@ xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -desti
 open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
 ```
 
+If the test target fails with a "missing required module" (or "no such module 'AppCore'")
+error, see the fallback list in the Task 9 report: add the `AppCore` and `SyncCore` package
+products to the `TermiusReimaginedTests` dependencies in `project.yml` and regenerate.
+
+When the app runs as the unit-test host it skips loading the vault and Keychain key, so tests
+never touch your real vault.
+
 Re-run `xcodegen generate` whenever files are added or removed under `Sources/` or `Tests/`.
 
 ## Where things are stored
@@ -24,5 +31,5 @@ Re-run `xcodegen generate` whenever files are added or removed under `Sources/` 
 - Vault key: login keychain, generic password, service `com.cwland.TermiusReimagined`,
   account `local-vault-key`, not synchronized.
 
-The app is ad-hoc signed, so after a rebuild macOS may ask for permission to read the
-vault key from the keychain; choose "Always Allow".
+The app is ad-hoc signed, so the first launch after each rebuild may ask for access to the
+vault key in your keychain: click "Always Allow".

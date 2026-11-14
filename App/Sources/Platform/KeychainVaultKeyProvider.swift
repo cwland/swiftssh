@@ -3,11 +3,21 @@ import Security
 import AppCore
 import SyncCore
 
-enum KeychainError: Error, Equatable {
+enum KeychainError: Error, Equatable, LocalizedError {
     /// A Security framework call returned this status.
     case status(OSStatus)
     /// The Keychain returned an item whose data was not `Data`.
     case unexpectedItemData
+
+    var errorDescription: String? {
+        switch self {
+        case .status(let status):
+            let detail = (SecCopyErrorMessageString(status, nil) as String?) ?? "Unknown error"
+            return "Keychain error \(status): \(detail)"
+        case .unexpectedItemData:
+            return "The Keychain returned the vault key in an unexpected format."
+        }
+    }
 }
 
 /// Keeps the local vault's 32-byte key as a generic password in the login keychain
@@ -23,8 +33,14 @@ struct KeychainVaultKeyProvider: VaultKeyProvider {
     }
 
     func loadOrCreateKey() throws -> VaultKey {
+        try loadOrCreateKeyReportingCreation().key
+    }
+
+    /// Like `loadOrCreateKey()`, and also says whether this call created a new key (so the app
+    /// can explain why an existing vault file no longer opens).
+    func loadOrCreateKeyReportingCreation() throws -> (key: VaultKey, created: Bool) {
         if let existing = try readKey() {
-            return existing
+            return (existing, false)
         }
 
         var bytes = [UInt8](repeating: 0, count: VaultKey.rawByteCount)
@@ -42,13 +58,13 @@ struct KeychainVaultKeyProvider: VaultKeyProvider {
         let addStatus = SecItemAdd(attributes as CFDictionary, nil)
         switch addStatus {
         case errSecSuccess:
-            return try VaultKey(rawBytes: data)
+            return (try VaultKey(rawBytes: data), true)
         case errSecDuplicateItem:
             // Another caller created the item between our read and add: use theirs.
             guard let existing = try readKey() else {
                 throw KeychainError.status(errSecDuplicateItem)
             }
-            return existing
+            return (existing, false)
         default:
             throw KeychainError.status(addStatus)
         }

@@ -28,22 +28,41 @@ final class AppEnvironment {
     func load() async {
         guard !didStartLoading else { return }
         didStartLoading = true
+        // When this process is the host app for unit tests, don't touch the real Keychain item
+        // or vault file: an ad-hoc signed rebuild would raise a Keychain prompt on every test
+        // run, and tests must never create or move aside the user's vault. Stay `.loading`.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+        var keyWasCreated = false
         do {
             let fileURL = try Self.vaultFileURL()
             let provider = keyProvider
             // Keychain calls can block (e.g. an access prompt), so keep them off the main actor.
-            let key = try await Task.detached(priority: .userInitiated) {
-                try provider.loadOrCreateKey()
+            let loaded = try await Task.detached(priority: .userInitiated) { () throws -> (key: VaultKey, created: Bool) in
+                if let keychain = provider as? KeychainVaultKeyProvider {
+                    return try keychain.loadOrCreateKeyReportingCreation()
+                }
+                return (try provider.loadOrCreateKey(), false)
             }.value
-            let persistence = EncryptedFileVaultPersistence(fileURL: fileURL, key: key)
+            keyWasCreated = loaded.created
+            let persistence = EncryptedFileVaultPersistence(fileURL: fileURL, key: loaded.key)
             let vault = try await LocalVault.open(persistence: persistence)
             state = .ready(vault)
         } catch VaultLoadError.unreadable(let movedTo) {
-            state = .failed(
-                "The vault file could not be read. It was moved aside, not deleted, to:\n\(movedTo.path)"
-            )
+            if keyWasCreated {
+                state = .failed(
+                    "A new vault key was created because none was found in your Keychain, so the existing "
+                        + "vault file couldn't be opened. It was moved to \(movedTo.path)."
+                )
+            } else {
+                state = .failed(
+                    "The vault file could not be read. It was moved aside, not deleted, to:\n\(movedTo.path)"
+                )
+            }
         } catch {
-            state = .failed("The vault could not be opened: \(error)")
+            let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            state = .failed("The vault could not be opened: \(detail)")
         }
     }
 
