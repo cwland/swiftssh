@@ -7,6 +7,7 @@ import CoreModels
 struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
+    let sessions: SessionManager
 
     @State private var showTagFilter = false
     @State private var showNewGroup = false
@@ -26,9 +27,11 @@ struct HostsView: View {
 
             if let hostID = model.selectedHostID, model.selectedHost != nil {
                 Divider()
-                HostDetailsPanel(vault: vault, hostID: hostID) {
+                HostDetailsPanel(vault: vault, hostID: hostID, onClose: {
                     model.selectedHostID = nil
-                }
+                }, onConnect: {
+                    connect(hostID: hostID)
+                })
                 .id(hostID)
                 .transition(.move(edge: .trailing))
             }
@@ -110,10 +113,10 @@ struct HostsView: View {
                     .fill(Theme.searchFieldBackground)
             }
 
-            Button("Connect") {}
+            Button("Connect", action: quickConnect)
                 .controlSize(.large)
                 .disabled(!model.canConnect)
-                .help("SSH sessions arrive in milestone 3")
+                .help("Connect to the user@host typed in the search field")
         }
     }
 
@@ -225,9 +228,14 @@ struct HostsView: View {
                         subtitle: model.subtitle(for: host),
                         isSelected: host.id == model.selectedHostID
                     )
-                    .onTapGesture {
-                        model.selectedHostID = host.id
+                    .onTapGesture(count: 2) {
+                        connect(hostID: host.id)
                     }
+                    // Simultaneous, so selecting doesn't wait for the double-click interval.
+                    .simultaneousGesture(TapGesture().onEnded {
+                        model.selectedHostID = host.id
+                    })
+                    .help("Double-click to connect")
                 }
             }
         }
@@ -258,6 +266,22 @@ struct HostsView: View {
     }
 
     // MARK: Actions
+
+    /// Opens a terminal tab for the host (and shows it). Hosts that can't be planned (no address,
+    /// no username) show why instead.
+    private func connect(hostID: UUID) {
+        do {
+            try sessions.open(hostID: hostID)
+        } catch {
+            present(error)
+        }
+    }
+
+    /// Opens a terminal tab for the `user@host` typed in the search field.
+    private func quickConnect() {
+        guard let target = model.quickConnectTarget else { return }
+        sessions.open(quickConnect: target)
+    }
 
     private func createHost() {
         Task {

@@ -9,13 +9,14 @@ struct HostDetailsPanel: View {
     let vault: LocalVault
     let hostID: UUID
     let onClose: () -> Void
+    let onConnect: () -> Void
 
     @State private var details: HostDetailsViewModel?
 
     var body: some View {
         ZStack {
             if let details {
-                HostDetailsContent(details: details, onClose: onClose)
+                HostDetailsContent(details: details, onClose: onClose, onConnect: onConnect)
             } else {
                 Theme.sidebarBackground
                     .frame(width: Theme.detailsPanelWidth)
@@ -33,6 +34,7 @@ struct HostDetailsPanel: View {
 private struct HostDetailsContent: View {
     @Bindable var details: HostDetailsViewModel
     let onClose: () -> Void
+    let onConnect: () -> Void
 
     /// Tags as typed. Every change is saved at once; the text is normalized on Return and blur.
     @State private var tagsText = ""
@@ -125,6 +127,7 @@ private struct HostDetailsContent: View {
 
     private var connectButton: some View {
         Button {
+            onConnect()
         } label: {
             Text("Connect")
                 .font(.system(size: 15, weight: .semibold))
@@ -138,9 +141,7 @@ private struct HostDetailsContent: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .disabled(true)
-        .opacity(0.6)
-        .help("SSH sessions arrive in milestone 3")
+        .help("Open a terminal session to this host")
     }
 
     // MARK: Cards

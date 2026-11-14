@@ -1,13 +1,19 @@
 import SwiftUI
 import AppCore
 
-/// Top bar over sidebar + content. The top bar extends into the hidden title bar's area.
+/// Top bar over the selected tab: Vaults (sidebar + content) or a terminal session. The top bar
+/// extends into the hidden title bar's area.
 struct RootView: View {
     let environment: AppEnvironment
 
     var body: some View {
         VStack(spacing: 0) {
-            TopBarView(navigation: environment.navigation)
+            TopBarView(
+                navigation: environment.navigation,
+                sessions: environment.sessions,
+                selectVaults: { environment.showVaults() },
+                closeTab: { environment.requestClose(tabID: $0) }
+            )
             Group {
                 switch environment.state {
                 case .loading:
@@ -15,26 +21,91 @@ struct RootView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(Theme.contentBackground)
                 case .ready(let vault):
-                    MainArea(navigation: environment.navigation, vault: vault)
-                case .failed(let message):
-                    VaultErrorView(message: message) {
-                        Task { await environment.load() }
+                    if let sessions = environment.sessions {
+                        ReadyArea(environment: environment, vault: vault, sessions: sessions)
+                    }
+                case .failed(let failure):
+                    VaultErrorView(failure: failure) {
+                        Task { await environment.retry() }
                     }
                 }
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .alert(
+            "Close this session?",
+            isPresented: closeConfirmationShown,
+            presenting: environment.closeConfirmationTabID
+        ) { tabID in
+            Button("Close", role: .destructive) {
+                environment.closeConfirmationTabID = nil
+                environment.sessions?.close(tabID: tabID)
+            }
+            Button("Cancel", role: .cancel) {
+                environment.closeConfirmationTabID = nil
+            }
+        } message: { tabID in
+            if let title = environment.sessions?.tabs.first(where: { $0.id == tabID })?.title, !title.isEmpty {
+                Text("The connection to \u{201C}\(title)\u{201D} will be closed.")
+            }
+        }
+    }
+
+    private var closeConfirmationShown: Binding<Bool> {
+        Binding(
+            get: { environment.closeConfirmationTabID != nil },
+            set: { if !$0 { environment.closeConfirmationTabID = nil } }
+        )
+    }
+}
+
+/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts and Keychain
+/// view models so search, filters and the open group survive switching sidebar items and tabs.
+/// They are built once, on appear, rather than in `init` (which runs on every parent body
+/// evaluation).
+private struct ReadyArea: View {
+    let environment: AppEnvironment
+    let vault: LocalVault
+    let sessions: SessionManager
+
+    @State private var hostsModel: HostsViewModel?
+    @State private var keychainModel: KeychainViewModel?
+
+    var body: some View {
+        Group {
+            if let tab = environment.selectedTab {
+                TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews)
+                    .id(tab.id)
+            } else {
+                MainArea(
+                    navigation: environment.navigation,
+                    vault: vault,
+                    sessions: sessions,
+                    hostsModel: hostsModel,
+                    keychainModel: keychainModel
+                )
+            }
+        }
+        .onAppear {
+            if hostsModel == nil {
+                hostsModel = HostsViewModel(vault: vault)
+            }
+            if keychainModel == nil {
+                keychainModel = KeychainViewModel(vault: vault)
+            }
+        }
+        .onChange(of: sessions.tabs.map(\.id)) { _, openIDs in
+            environment.terminalViews.retain(only: Set(openIDs))
+        }
     }
 }
 
 private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
-    /// Kept here so search, filters and the open group (and the Keychain search) survive
-    /// switching sidebar items. Built once, on appear, rather than in `init` (which runs on
-    /// every parent body evaluation).
-    @State private var hostsModel: HostsViewModel?
-    @State private var keychainModel: KeychainViewModel?
+    let sessions: SessionManager
+    let hostsModel: HostsViewModel?
+    let keychainModel: KeychainViewModel?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -50,14 +121,6 @@ private struct MainArea: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear {
-            if hostsModel == nil {
-                hostsModel = HostsViewModel(vault: vault)
-            }
-            if keychainModel == nil {
-                keychainModel = KeychainViewModel(vault: vault)
-            }
-        }
     }
 
     @ViewBuilder
@@ -65,7 +128,7 @@ private struct MainArea: View {
         switch navigation.sidebar {
         case .hosts:
             if let hostsModel {
-                HostsView(model: hostsModel, vault: vault)
+                HostsView(model: hostsModel, vault: vault, sessions: sessions)
             } else {
                 Theme.contentBackground
             }
@@ -110,7 +173,7 @@ private struct SaveErrorBanner: View {
 }
 
 private struct VaultErrorView: View {
-    let message: String
+    let failure: AppEnvironment.LoadFailure
     let retry: () -> Void
 
     var body: some View {
@@ -120,18 +183,39 @@ private struct VaultErrorView: View {
                 .foregroundStyle(.orange)
             Text("Your vault could not be opened")
                 .font(.system(size: 17, weight: .semibold))
-            Text(message)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .textSelection(.enabled)
-                .frame(maxWidth: 560)
-            Button("Try Again", action: retry)
+            ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+                Text(paragraph)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: 560)
+            }
+            Button(buttonTitle, action: retry)
                 .keyboardShortcut(.defaultAction)
                 .padding(.top, 4)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.contentBackground)
+    }
+
+    private var paragraphs: [String] {
+        switch failure {
+        case .unreadable(let movedTo, let keyWasCreated):
+            let reason = keyWasCreated
+                ? "A new vault key was created because none was found in your Keychain, so the existing vault file couldn't be opened."
+                : "The vault file could not be read."
+            return [reason, "Your old data is kept at \(movedTo). Starting fresh creates a new, empty vault."]
+        case .other(let message):
+            return [message]
+        }
+    }
+
+    private var buttonTitle: String {
+        switch failure {
+        case .unreadable: "Start with an Empty Vault"
+        case .other: "Try Again"
+        }
     }
 }

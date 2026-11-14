@@ -1,8 +1,9 @@
 import AppKit
 import AppCore
 
-/// Waits for queued vault writes before the app quits, so the last edits are on disk. If the
-/// final write fails, asks before quitting so unsaved changes aren't lost silently.
+/// Before the app quits, ends every terminal session (so their connection logs are closed) and
+/// waits for queued vault writes, so the last edits are on disk. If the final write fails, asks
+/// before quitting so unsaved changes aren't lost silently.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by the app at launch.
@@ -13,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
         Task { @MainActor in
+            await environment.sessions?.closeAll()
             await vault.flush()
             var shouldQuit = true
             if let error = vault.lastSaveError {
@@ -25,6 +27,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Asks whether to quit even though the last vault write failed. Cancel is the default.
     private static func confirmQuitDespiteSaveError(_ error: any Error) -> Bool {
+        // The app may be in the background (e.g. quitting from the Dock); bring it forward so
+        // the alert is seen.
+        NSApp.activate()
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Some changes couldn't be saved"

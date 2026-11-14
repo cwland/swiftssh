@@ -1,8 +1,8 @@
 # Termius Reimagined — Mac app
 
-SwiftUI app target for macOS 14+. All logic lives in the `CoreSSH` package
-(`../Packages/CoreSSH`, products `AppCore`, `CoreModels`, `SyncCore`); this folder holds only
-the window, views and platform glue (Keychain).
+SwiftUI app target for macOS 15+. All logic lives in the `CoreSSH` package
+(`../Packages/CoreSSH`, products `AppCore`, `CoreModels`, `SyncCore`, `SSHCore`); this folder
+holds only the window, views and platform glue (Keychain, the SwiftTerm terminal view).
 
 The Xcode project is generated from `project.yml` and is not committed.
 
@@ -11,9 +11,13 @@ The Xcode project is generated from `project.yml` and is not committed.
 ```
 brew install xcodegen
 cd App && xcodegen generate
-xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -destination 'platform=macOS' test
+xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -destination 'platform=macOS' -skipPackagePluginValidation test
 open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
 ```
+
+The terminal view comes from [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm), whose
+package runs a small build-tool plugin (`SwiftTermBuildInfoPlugin`, it writes version info).
+Xcode asks once to "Trust & Enable" it; on the command line pass `-skipPackagePluginValidation`.
 
 If the test target fails with a "missing required module" (or "no such module 'AppCore'")
 error, add the `AppCore` and `SyncCore` package products to the `TermiusReimaginedTests`

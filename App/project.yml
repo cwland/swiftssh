@@ -9,6 +9,9 @@ options:
 packages:
   CoreSSH:
     path: ../Packages/CoreSSH
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    minorVersion: 1.99.3
 
 settings:
   base:
@@ -42,6 +45,10 @@ targets:
         product: CoreModels
       - package: CoreSSH
         product: SyncCore
+      - package: CoreSSH
+        product: SSHCore
+      - package: SwiftTerm
+        product: SwiftTerm
 
   TermiusReimaginedTests:
     type: bundle.unit-test
