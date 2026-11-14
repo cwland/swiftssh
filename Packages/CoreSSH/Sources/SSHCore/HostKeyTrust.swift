@@ -4,8 +4,11 @@ import Foundation
 /// Host key identity and fingerprint formats shared by both SSH engines.
 public enum HostKeyFormat {
     /// OpenSSH `known_hosts` convention: `host` for port 22, otherwise `[host]:port`.
+    /// The host is lowercased and a single trailing dot is removed first.
     public static func hostPort(host: String, port: Int) -> String {
-        port == 22 ? host : "[\(host)]:\(port)"
+        var host = host.lowercased()
+        if host.hasSuffix(".") { host.removeLast() }
+        return port == 22 ? host : "[\(host)]:\(port)"
     }
 
     /// `SHA256:` + unpadded base64 of SHA-256 over the public key wire blob (same as `ssh-keygen -l`).
@@ -36,7 +39,14 @@ public enum HostKeyDecision: Sendable, Equatable {
 }
 
 public enum HostKeyCheck: Sendable, Equatable {
-    case known, unknown, changed(previousFingerprint: String)
+    /// A live record matches this key.
+    case known
+    /// No live records exist for the host at all.
+    case unknown
+    /// The host has live records, but none for this key type (e.g. a possible algorithm downgrade).
+    case newKeyType(knownKeyTypes: [String])
+    /// A live record of the same key type has a different fingerprint.
+    case changed(previousFingerprint: String)
 }
 
 /// Decides whether a presented host key is trusted. Implemented by the app layer; both engines call it.

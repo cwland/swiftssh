@@ -6,6 +6,9 @@ final class HostKeyTrustTests: XCTestCase {
         XCTAssertEqual(HostKeyFormat.hostPort(host: "10.0.0.5", port: 22), "10.0.0.5")
         XCTAssertEqual(HostKeyFormat.hostPort(host: "10.0.0.5", port: 2222), "[10.0.0.5]:2222")
         XCTAssertEqual(HostKeyFormat.hostPort(host: "fe80::1", port: 22), "fe80::1")
+        XCTAssertEqual(HostKeyFormat.hostPort(host: "Host.Local.", port: 22), "host.local")
+        XCTAssertEqual(HostKeyFormat.hostPort(host: "Host.Local.", port: 2222), "[host.local]:2222")
+        XCTAssertEqual(HostKeyFormat.hostPort(host: "a..", port: 22), "a.")
     }
 
     /// Blob and expected value come from `ssh-keygen -l -f k.pub` on a fixed ed25519 key.
