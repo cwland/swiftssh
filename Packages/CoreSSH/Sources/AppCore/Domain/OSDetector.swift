@@ -3,14 +3,18 @@ import Foundation
 
 /// Maps the output of `probeCommand` to an `OSBadge`.
 public enum OSDetector {
-    public static let probeCommand = "uname -s; cat /etc/os-release 2>/dev/null; cat /etc/synoinfo.conf 2>/dev/null | head -1"
+    /// The Synology marker line is printed when /etc/synoinfo.conf exists (DSM has no os-release,
+    /// and the first line of synoinfo.conf is not reliably identifying). `; true` keeps the exit
+    /// status 0 on every other system.
+    public static let synologyMarker = "TR_OS_MARKER=synology"
+    public static let probeCommand = "uname -s; cat /etc/os-release 2>/dev/null; [ -e /etc/synoinfo.conf ] && echo \(synologyMarker); true"
 
     public static func badge(fromProbeOutput output: String) -> OSBadge? {
         let lines = output.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         guard let first = lines.first, !first.isEmpty else { return nil }
 
-        // Synology: synoinfo.conf content (or a synology marker) appears in the output.
-        if lines.contains(where: { $0.lowercased().contains("synology") || $0.hasPrefix("upnpmodelname=") }) {
+        // Synology: the probe printed its explicit marker line.
+        if lines.contains(synologyMarker) {
             return .synology
         }
 

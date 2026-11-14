@@ -26,8 +26,7 @@ final class OSDetectorTests: XCTestCase {
     }
 
     func testDetectsSynologyAndHomeAssistant() {
-        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nPRETTY_NAME=\"Debian\"\nID=debian\nupnpmodelname=\"DS918+\"\nunique=\"synology_apollolake_918+\"\n"), .synology)
-        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nunique=\"synology_x\"\nID=debian\n"), .synology)
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nPRETTY_NAME=\"Debian\"\nID=debian\nTR_OS_MARKER=synology\n"), .synology)
         XCTAssertEqual(OSDetector.badge(fromProbeOutput: linux("ID=\"haos\"\nNAME=\"Home Assistant OS\"\n")), .homeAssistant)
     }
 
@@ -36,5 +35,23 @@ final class OSDetectorTests: XCTestCase {
         XCTAssertEqual(OSDetector.badge(fromProbeOutput: linux("ID=weirdos\n")), .linux)
         XCTAssertNil(OSDetector.badge(fromProbeOutput: ""))
         XCTAssertNil(OSDetector.badge(fromProbeOutput: "SunOS\n"))
+    }
+
+    // DSM 7.4: no /etc/os-release, synoinfo.conf exists but its first line is `AppleTalk="eth0"`.
+    func testSynologyDetectedFromProbeMarker() {
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nTR_OS_MARKER=synology\n"), .synology)
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\r\nTR_OS_MARKER=synology\r\n"), .synology)
+    }
+
+    func testProbeCommandEmitsSynologyMarkerWhenSynoinfoExists() {
+        XCTAssertTrue(OSDetector.probeCommand.contains("[ -e /etc/synoinfo.conf ] && echo TR_OS_MARKER=synology"))
+        XCTAssertFalse(OSDetector.probeCommand.contains("cat /etc/synoinfo.conf"))
+    }
+
+    func testMentionOfSynologyElsewhereIsNotSynology() {
+        let ubuntu = linux("NAME=\"Ubuntu\"\nID=ubuntu\nID_LIKE=debian\nPRETTY_NAME=\"Ubuntu 24.04 (synology backup box)\"\nHOME_URL=\"https://synology.example\"\n")
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: ubuntu), .ubuntu)
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nunique=\"synology_x\"\n"), .linux)
+        XCTAssertEqual(OSDetector.badge(fromProbeOutput: "Linux\nupnpmodelname=\"DS918+\"\n"), .linux)
     }
 }
