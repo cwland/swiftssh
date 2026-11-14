@@ -2,8 +2,8 @@ import SwiftUI
 import SSHCore
 
 /// Sheet asking whether to trust a server's host key: first contact (`unknown`), a key type not
-/// seen before for a known server (`newKeyType`), or a changed key (`changed`, shown as a warning
-/// with Cancel as the default).
+/// seen before for a known server (`newKeyType`, Cancel as the default), or a changed key
+/// (`changed`, shown as a warning with Cancel as the default).
 struct HostKeyPrompt: View {
     let candidate: HostKeyCandidate
     let check: HostKeyCheck
@@ -14,13 +14,12 @@ struct HostKeyPrompt: View {
             switch check {
             case .changed(let previous):
                 changedContent(previousFingerprint: previous)
-            case .newKeyType:
-                trustContent(
-                    title: "New key type for this server",
-                    note: "The server presented a key type not seen before."
-                )
+            case .newKeyType(let knownKeyTypes):
+                trustContent(title: "New key type for this server",
+                             note: Self.newKeyTypeNote(known: knownKeyTypes, new: candidate.keyType),
+                             cancelIsDefault: true)
             case .unknown, .known:
-                trustContent(title: "Trust this server?", note: nil)
+                trustContent(title: "Trust this server?", note: nil, cancelIsDefault: false)
             }
         }
         .padding(20)
@@ -30,7 +29,9 @@ struct HostKeyPrompt: View {
     // MARK: Unknown and new key type
 
     @ViewBuilder
-    private func trustContent(title: String, note: String?) -> some View {
+    /// With `cancelIsDefault` (an unexpected new key type), Return picks Cancel; otherwise Return
+    /// trusts. Escape cancels either way.
+    private func trustContent(title: String, note: String?, cancelIsDefault: Bool) -> some View {
         Text(title)
             .font(.system(size: 17, weight: .semibold))
         if let note {
@@ -41,12 +42,35 @@ struct HostKeyPrompt: View {
         }
         keyDetails(fingerprintRows: [("Fingerprint", candidate.fingerprint)])
         HStack {
+            if cancelIsDefault {
+                // Escape cancels too (Return already picks Cancel, the default button).
+                Button("Cancel (Escape)") { answer(.rejected) }
+                    .keyboardShortcut(.cancelAction)
+                    .opacity(0)
+                    .frame(width: 0, height: 0)
+                    .accessibilityHidden(true)
+            }
             Spacer()
-            Button("Cancel", role: .cancel) { answer(.rejected) }
-                .keyboardShortcut(.cancelAction)
-            Button("Trust and Connect") { answer(.trusted) }
-                .keyboardShortcut(.defaultAction)
+            if cancelIsDefault {
+                Button("Cancel", role: .cancel) { answer(.rejected) }
+                    .keyboardShortcut(.defaultAction)
+                Button("Trust and Connect") { answer(.trusted) }
+            } else {
+                Button("Cancel", role: .cancel) { answer(.rejected) }
+                    .keyboardShortcut(.cancelAction)
+                Button("Trust and Connect") { answer(.trusted) }
+                    .keyboardShortcut(.defaultAction)
+            }
         }
+    }
+
+    /// Names the key types already trusted for this host and the new one, and warns what an
+    /// unexpected change can mean.
+    static func newKeyTypeNote(known: [String], new: String) -> String {
+        let trusted = known.isEmpty ? "other key types" : known.joined(separator: ", ")
+        return "You already trust this server's \(trusted) key\(known.count == 1 ? "" : "s"), but it now "
+            + "presented a new \(new) key. If you didn't expect this change, someone may be intercepting "
+            + "the connection. Only trust the new key if you know why it appeared."
     }
 
     // MARK: Changed

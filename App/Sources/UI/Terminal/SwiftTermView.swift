@@ -78,11 +78,15 @@ final class TerminalViewStore {
         return view
     }
 
-    /// Drops the views of tabs that are no longer open.
+    /// Releases the views of tabs that are no longer open. SwiftTerm requires `updateUiClosed()`
+    /// before a view is let go; when it returns false (GPU work still in flight) the entry is kept
+    /// and released on a later call.
     func retain(only openTabIDs: Set<UUID>) {
         let closed = entries.keys.filter { !openTabIDs.contains($0) }
         for id in closed {
-            entries.removeValue(forKey: id)?.view.terminalDelegate = nil
+            guard let entry = entries[id], entry.view.updateUiClosed() else { continue }
+            entry.view.terminalDelegate = nil
+            entries.removeValue(forKey: id)
         }
     }
 }

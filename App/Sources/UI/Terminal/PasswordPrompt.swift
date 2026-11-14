@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// Sheet asking for a password: secure field, "Save password", Connect / Cancel.
+/// Sheet asking for a password: secure field, "Save password" (when it can be saved),
+/// Connect / Cancel.
 struct PasswordPrompt: View {
     /// e.g. "Password for root@example.com".
     let prompt: String
+    /// False when there is nowhere to save the password (quick connect): the checkbox is hidden.
+    let canSave: Bool
     let connect: (_ password: String, _ save: Bool) -> Void
     let cancel: () -> Void
 
@@ -20,8 +23,10 @@ struct PasswordPrompt: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($fieldFocused)
                 .onSubmit(submit)
-            Toggle("Save password", isOn: $save)
-                .toggleStyle(.checkbox)
+            if canSave {
+                Toggle("Save password", isOn: $save)
+                    .toggleStyle(.checkbox)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel, action: cancel)
@@ -38,6 +43,6 @@ struct PasswordPrompt: View {
 
     private func submit() {
         guard !password.isEmpty else { return }
-        connect(password, save)
+        connect(password, canSave && save)
     }
 }

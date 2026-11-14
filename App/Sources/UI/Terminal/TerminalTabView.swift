@@ -49,7 +49,7 @@ struct TerminalTabView: View {
                 sessions.answerHostKey(tabID: tab.id, decision)
             }
         case .password(let text):
-            PasswordPrompt(prompt: text) { password, save in
+            PasswordPrompt(prompt: text, canSave: tab.canSavePassword) { password, save in
                 sessions.providePassword(tabID: tab.id, password, save: save)
             } cancel: {
                 sessions.cancelPasswordPrompt(tabID: tab.id)
