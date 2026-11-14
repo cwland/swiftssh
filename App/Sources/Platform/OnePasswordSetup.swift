@@ -74,21 +74,18 @@ final class OnePasswordSetup {
 
     // MARK: Lookups (also used by SessionManager at connect time)
 
-    /// The 1Password SSH agent socket: the override if it exists, else the first standard path that does.
+    /// The 1Password SSH agent socket: the override, else the first standard path, that exists or that
+    /// macOS blocks (EPERM/EACCES from stat). A blocked socket is still handed to ssh, since macOS may
+    /// allow the access when ssh connects; `FileManager.fileExists` would report it as missing.
     func agentSocket() -> String? {
         OnePasswordPaths.agentSocket(home: NSHomeDirectory(), override: Self.nonEmpty(settings.agentSocketOverride),
-                                     fileExists: { FileManager.default.fileExists(atPath: $0) })
+                                     probe: OnePasswordPaths.probe)
     }
 
-    /// Like `agentSocket()`, but tells a socket macOS blocks (EPERM/EACCES from stat) apart.
+    /// Like `agentSocket()`, but tells a socket macOS blocks apart.
     func currentAgentSocketStatus() -> AgentSocketStatus {
         OnePasswordPaths.agentSocketStatus(home: NSHomeDirectory(), override: Self.nonEmpty(settings.agentSocketOverride),
-                                           probe: { path in
-                                               var info = stat()
-                                               if stat(path, &info) == 0 { return .exists }
-                                               let code = errno
-                                               return code == EPERM || code == EACCES ? .denied : .missing
-                                           })
+                                           probe: OnePasswordPaths.probe)
     }
 
     /// `op`: the override if it is executable, else the first standard path that is.
