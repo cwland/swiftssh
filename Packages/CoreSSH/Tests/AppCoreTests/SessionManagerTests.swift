@@ -104,10 +104,15 @@ final class SessionManagerTests: XCTestCase {
         vault = try await LocalVault.open(persistence: InMemoryVaultPersistence(), newDeviceID: { "dev" })
         store = KnownHostsStore(vault: vault)
         factory = FakeFactory()
+        manager = makeManager(initialSizeTimeout: .zero)
+    }
+
+    private func makeManager(initialSizeTimeout: Duration) -> SessionManager {
         let factory = factory!
-        manager = SessionManager(vault: vault, knownHosts: store,
-                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
-                                 deviceName: "Test Mac", defaultUsername: "me")
+        return SessionManager(vault: vault, knownHosts: store,
+                              makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                              deviceName: "Test Mac", defaultUsername: "me",
+                              initialSizeTimeout: initialSizeTimeout)
     }
 
     // MARK: Helpers
@@ -161,6 +166,44 @@ final class SessionManagerTests: XCTestCase {
     func testOpenUnknownHostThrows() async {
         XCTAssertThrowsError(try manager.open(hostID: UUID()))
         XCTAssertTrue(manager.tabs.isEmpty)
+    }
+
+    func testStartWaitsForViewSize() async throws {
+        manager = makeManager(initialSizeTimeout: .seconds(60))
+        let tab = try manager.open(hostID: passwordHost().id)
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 1)
+        XCTAssertNil(factory.sessions[0].recorded.started, "no start before the view's size")
+        manager.resize(tabID: tab.id, cols: 132, rows: 43)
+        await waitUntil("connected") { tab.state == .connected }
+        let started = try XCTUnwrap(factory.sessions[0].recorded.started)
+        XCTAssertEqual(started.cols, 132)
+        XCTAssertEqual(started.rows, 43)
+    }
+
+    func testStartFallsBackToDefaultSizeAfterTimeout() async throws {
+        manager = makeManager(initialSizeTimeout: .milliseconds(50))
+        let tab = try manager.open(hostID: passwordHost().id)
+        await Task.yield()
+        XCTAssertNil(factory.sessions[0].recorded.started)
+        await waitUntil("connected") { tab.state == .connected }
+        let started = try XCTUnwrap(factory.sessions[0].recorded.started)
+        XCTAssertEqual(started.cols, 80)
+        XCTAssertEqual(started.rows, 24)
+    }
+
+    func testReconnectStartsImmediatelyWithCurrentSize() async throws {
+        manager = makeManager(initialSizeTimeout: .seconds(60))
+        let tab = try manager.open(hostID: passwordHost().id)
+        manager.resize(tabID: tab.id, cols: 100, rows: 30)
+        await waitUntil("connected") { tab.state == .connected }
+        manager.resize(tabID: tab.id, cols: 90, rows: 20)
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second start") { self.factory.sessions.count == 2 && self.factory.sessions[1].recorded.started != nil }
+        let started = try XCTUnwrap(factory.sessions[1].recorded.started)
+        XCTAssertEqual(started.cols, 90)
+        XCTAssertEqual(started.rows, 20)
+        await waitUntil("reconnected") { tab.state == .connected }
     }
 
     func testOutputIsBufferedUntilSinkThenInOrder() async throws {

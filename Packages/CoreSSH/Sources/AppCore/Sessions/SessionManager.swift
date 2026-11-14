@@ -41,6 +41,11 @@ public final class TerminalTab: Identifiable {
     /// A password typed for this tab, used instead of the stored one until the server rejects it.
     @ObservationIgnored fileprivate var enteredPassword: String?
     @ObservationIgnored fileprivate var size = (cols: 80, rows: 24)
+    /// True once the view sent a size or the first start stopped waiting for one; later starts
+    /// (reconnects) use `size` at once.
+    @ObservationIgnored fileprivate var sizeSettled = false
+    /// Wakes a start that is waiting for the view's first size.
+    @ObservationIgnored fileprivate var sizeWaiter: ResumeOnce?
     @ObservationIgnored fileprivate var hostKeyAnswer: CheckedContinuation<HostKeyDecision, Never>?
     @ObservationIgnored private var pendingOutput: [[UInt8]] = []
     @ObservationIgnored private var pendingBytes = 0
@@ -128,6 +133,9 @@ public final class SessionManager {
 
     /// How long `closeAll()` waits for sessions to end.
     @ObservationIgnored var closeAllTimeout: Duration = .seconds(3)
+    /// How long a tab's first session start waits for the view's first `resize` before using the
+    /// default size.
+    @ObservationIgnored private let initialSizeTimeout: Duration
 
     @ObservationIgnored private let vault: LocalVault
     @ObservationIgnored private let knownHosts: KnownHostsStore
@@ -141,7 +149,9 @@ public final class SessionManager {
 
     public init(vault: LocalVault, knownHosts: KnownHostsStore,
                 makeSession: @escaping @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession,
-                deviceName: String, defaultUsername: String) {
+                deviceName: String, defaultUsername: String,
+                initialSizeTimeout: Duration = .milliseconds(500)) {
+        self.initialSizeTimeout = initialSizeTimeout
         self.vault = vault
         self.knownHosts = knownHosts
         self.makeSession = makeSession
@@ -262,6 +272,11 @@ public final class SessionManager {
     public func resize(tabID: UUID, cols: Int, rows: Int) {
         guard let tab = tab(tabID) else { return }
         tab.size = (cols, rows)
+        tab.sizeSettled = true
+        if let waiter = tab.sizeWaiter {
+            tab.sizeWaiter = nil
+            waiter.resume()
+        }
         tab.attempt?.inputs.yield(.resize(cols: cols, rows: rows))
     }
 
@@ -282,6 +297,10 @@ public final class SessionManager {
         if let answer = tab.hostKeyAnswer {
             tab.hostKeyAnswer = nil
             answer.resume(returning: .rejected)
+        }
+        if let waiter = tab.sizeWaiter {
+            tab.sizeWaiter = nil
+            waiter.resume()
         }
         guard let attempt = tab.attempt else { return nil }
         tab.attempt = nil
@@ -336,10 +355,13 @@ public final class SessionManager {
         tab.attempt = attempt
         liveAttempts[ObjectIdentifier(attempt)] = attempt
 
-        let size = tab.size
-        // Start, then forward input in call order. Runs off the main actor while awaiting the session.
-        Task {
-            await session.start(cols: size.cols, rows: size.rows)
+        // Start (once the view's size is known), then forward input in call order. Awaiting the
+        // session runs off the main actor.
+        Task { [weak self, weak tab] in
+            if let self, let tab, !tab.sizeSettled { await self.waitForViewSize(tab) }
+            // Read the size when starting; skip the start when the attempt was replaced or closed meanwhile.
+            guard let tab, tab.attempt === attempt else { return }
+            await session.start(cols: tab.size.cols, rows: tab.size.rows)
             for await input in inputs {
                 switch input {
                 case .bytes(let bytes): await session.send(bytes)
@@ -353,6 +375,27 @@ public final class SessionManager {
                 self.handle(event, attempt: attempt, tab: tab)
             }
             self?.liveAttempts[ObjectIdentifier(attempt)] = nil
+        }
+    }
+
+    /// Waits until the view's first `resize`, the timeout, or the attempt ends, whichever is first.
+    private func waitForViewSize(_ tab: TerminalTab) async {
+        let timeout = initialSizeTimeout
+        var installed: ResumeOnce?
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let waiter = ResumeOnce(continuation)
+            installed = waiter
+            tab.sizeWaiter = waiter
+            Task {
+                try? await Task.sleep(for: timeout)
+                waiter.resume()
+            }
+        }
+        // Still installed means the timeout fired: stop waiting for this tab from now on. A resize
+        // already settled the size; a detached attempt leaves it unsettled for the next start.
+        if let installed, tab.sizeWaiter === installed {
+            tab.sizeWaiter = nil
+            tab.sizeSettled = true
         }
     }
 
