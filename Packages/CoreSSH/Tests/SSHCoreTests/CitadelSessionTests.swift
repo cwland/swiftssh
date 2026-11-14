@@ -356,6 +356,27 @@ final class CitadelSessionTests: XCTestCase {
         await session.close()
     }
 
+    /// The server's side of the session vanishes without a goodbye (killed): a dropped connection, not a
+    /// normal end of session. Keep-alive is off, so only the socket itself tells.
+    func testKilledServerSessionIsConnectionFailed() async throws {
+        #if !os(Linux)
+        throw XCTSkip("killSessions() reads /proc (Linux only)")
+        #endif
+        let session = CitadelSession(plan: plan(.password(server.password), keepAlive: .off),
+                                     hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("echo up-$((2+2))\n".utf8))
+        try await recorder.waitForOutput(containing: "up-4")
+        server.killSessions()
+        try await recorder.waitForFinish()
+        let events = recorder.nonOutputEvents
+        XCTAssertEqual(Array(events.prefix(2)), [.connected, .ready])
+        guard case .closed(.failed(.connectionFailed)) = events.last else {
+            return XCTFail("expected a connection failure, got \(events)")
+        }
+    }
+
     func testCloseByUserEndsWithUserClosed() async throws {
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
         let recorder = EventRecorder(session.events)

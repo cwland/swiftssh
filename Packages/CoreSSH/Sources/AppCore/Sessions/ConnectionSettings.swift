@@ -38,6 +38,7 @@ public enum DroppedConnectionDetection: String, CaseIterable, Codable, Sendable 
 @MainActor @Observable
 public final class ConnectionSettings {
     static let detectionKey = "connection.droppedConnectionDetection"
+    static let autoReconnectKey = "connection.autoReconnect"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -45,9 +46,15 @@ public final class ConnectionSettings {
         didSet { defaults.set(detection.rawValue, forKey: Self.detectionKey) }
     }
 
-    /// A missing or unknown stored value is `.normal`.
+    /// "Reconnect automatically": after a dropped connection, try again on the `ReconnectSchedule`.
+    public var autoReconnect: Bool {
+        didSet { defaults.set(autoReconnect, forKey: Self.autoReconnectKey) }
+    }
+
+    /// A missing or unknown stored detection is `.normal`; a missing auto-reconnect choice is on.
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         detection = defaults.string(forKey: Self.detectionKey).flatMap(DroppedConnectionDetection.init(rawValue:)) ?? .normal
+        autoReconnect = defaults.object(forKey: Self.autoReconnectKey) as? Bool ?? true
     }
 }

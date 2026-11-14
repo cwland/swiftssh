@@ -21,6 +21,8 @@ public final class CitadelSession: TerminalSession {
     static let terminalType = "xterm-256color"
     static let commandOutputLimit = 1_048_576
     static let unresponsiveMessage = "The server stopped responding."
+    /// The connection ended underneath the terminal (socket closed or reset) without the shell exiting.
+    static let connectionLostMessage = "The connection to the server was lost."
 
     private let plan: ConnectionPlan
     private let hostKeys: any HostKeyEvaluator
@@ -379,6 +381,9 @@ public final class CitadelSession: TerminalSession {
             terminalModes: SSHTerminalModes([:])
         )
         var reason = SessionEndReason.remoteClosed
+        // Why the terminal's output ended. Citadel closes the channel on the way out and that close can throw
+        // ("Already closed"), hiding the original error; this keeps it.
+        let outputError = LockedBox<Error?>(nil)
         do {
             try await connection.client.withPTY(request) { inbound, outbound in
                 let writer = UncheckedSendable(value: outbound)
@@ -412,15 +417,20 @@ public final class CitadelSession: TerminalSession {
                     }
                 }
                 defer { keepAliveTask?.cancel() }
-                for try await chunk in inbound {
-                    switch chunk {
-                    case .stdout(let buffer), .stderr(let buffer):
-                        self.emit(.output(Array(buffer.readableBytesView)))
+                do {
+                    for try await chunk in inbound {
+                        switch chunk {
+                        case .stdout(let buffer), .stderr(let buffer):
+                            self.emit(.output(Array(buffer.readableBytesView)))
+                        }
                     }
+                } catch {
+                    outputError.withLock { $0 = error }
+                    throw error
                 }
             }
         } catch {
-            reason = endReason(for: error)
+            reason = endReason(for: outputError.withLock { $0 } ?? error)
         }
         finish(reason)
         opening.resolve(.failedOrClosed)
@@ -638,6 +648,10 @@ public final class CitadelSession: TerminalSession {
             default:
                 break
             }
+        case let error as NIOSSHError where error.type == .tcpShutdown:
+            // The TCP connection closed while the terminal's channel was still open: no exit status, no
+            // channel close from the server. A dropped connection, not the end of the session.
+            return .failed(.connectionFailed(Self.connectionLostMessage))
         case is SSHClient.CommandFailed:
             // The remote shell exited with a non-zero status: still a normal end of session.
             return .remoteClosed
