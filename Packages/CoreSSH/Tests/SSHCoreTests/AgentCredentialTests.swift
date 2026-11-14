@@ -69,6 +69,22 @@ final class AgentCredentialTests: XCTestCase {
         XCTAssertEqual(args(.agent(socket: socket, publicKeyFile: nil)),
                        Array(common) + ["-o", "IdentityAgent=\"\(socket)\"", "-o", "IdentityFile=none"]
                            + publicKeyOnly + tail)
+        // ssh expands `%` tokens in IdentityAgent: a literal `%` is written as `%%`.
+        XCTAssertEqual(args(.agent(socket: "/tmp/100%/a%h.sock", publicKeyFile: nil)),
+                       Array(common) + ["-o", "IdentityAgent=\"/tmp/100%%/a%%h.sock\"", "-o", "IdentityFile=none"]
+                           + publicKeyOnly + tail)
+    }
+
+    func testAgentSocketPathsSSHCantUse() {
+        let problem = "The 1Password agent path contains characters ssh can't use."
+        for good in ["/tmp/a.sock", "/Users/c/Library/Group Containers/x/t/agent.sock", "/tmp/100%/a.sock",
+                     "/tmp/caf\u{E9}/a.sock", "/tmp/$x/a.sock"] {
+            XCTAssertNil(SystemSSHSession.agentSocketProblem(good), good)
+        }
+        for bad in ["/tmp/a\".sock", "/tmp/a\\b.sock", "/tmp/a\nb.sock", "/tmp/a\rb.sock", "/tmp/a\tb.sock",
+                    "/tmp/a\u{0}b.sock", "/tmp/a\u{7F}.sock", "/tmp/a\u{9B}.sock", "/tmp/${HOME}/a.sock"] {
+            XCTAssertEqual(SystemSSHSession.agentSocketProblem(bad), problem, bad.debugDescription)
+        }
     }
 
     func testPinnedKeyFileHoldsOnlyTypeAndKey() throws {

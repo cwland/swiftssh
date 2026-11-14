@@ -131,16 +131,20 @@ fileprivate final class SessionAttempt {
     let plan: ConnectionPlan
     let session: any TerminalSession
     let inputs: AsyncStream<SessionInput>.Continuation
-    let usedEnteredPassword: Bool
+    /// The password as the user typed it, when this attempt uses one. It may be a 1Password reference
+    /// whose value is in `plan`: only this text is ever saved.
+    let enteredPassword: String?
     var logID: UUID?
     var eventLoop: Task<Void, Never>?
 
+    var usedEnteredPassword: Bool { enteredPassword != nil }
+
     init(plan: ConnectionPlan, session: any TerminalSession,
-         inputs: AsyncStream<SessionInput>.Continuation, usedEnteredPassword: Bool) {
+         inputs: AsyncStream<SessionInput>.Continuation, enteredPassword: String?) {
         self.plan = plan
         self.session = session
         self.inputs = inputs
-        self.usedEnteredPassword = usedEnteredPassword
+        self.enteredPassword = enteredPassword
     }
 }
 
@@ -156,11 +160,14 @@ fileprivate final class SessionAttempt {
 ///
 /// 1Password agent keys: a plan with `agentKey` gets its socket from `agentSocket()` at every attempt and
 /// connects with `.agent(socketPath:publicKey:)` through system ssh. Without a socket no session starts:
-/// the tab is disconnected with a setup hint and `suggestedAction = .openOnePasswordSetup`.
+/// the tab is disconnected with a setup hint and `suggestedAction = .openOnePasswordSetup`. An attempt
+/// that ends with `.agentUnavailable`, or an agent attempt whose key the server rejects
+/// (`.authenticationFailed`), also suggests the setup; auto-reconnect retries neither.
 ///
 /// 1Password references: a password or key passphrase that is an `op://` reference is read with
 /// `opClient()` before each attempt starts (after the agent check; agent plans never read). The value is
-/// used for that attempt only and never stored.
+/// used for that attempt only and never stored. A typed password that is a reference is read the same
+/// way; with "save", the reference as typed is stored, never its value.
 @MainActor @Observable
 public final class SessionManager {
     public private(set) var tabs: [TerminalTab] = []
@@ -517,12 +524,12 @@ public final class SessionManager {
             plan.credential = .agent(socketPath: socket, publicKey: agentKey.publicKey) // also selects system ssh
         }
 
-        var usedEnteredPassword = false
+        var enteredPassword: String? // as typed (maybe a 1Password reference)
         if let entered = tab.enteredPassword {
             switch plan.credential {
             case .password, .none:
                 plan.credential = .password(entered)
-                usedEnteredPassword = true
+                enteredPassword = entered
             case .privateKey, .agent:
                 break
             }
@@ -534,10 +541,10 @@ public final class SessionManager {
 
         tab.state = .connecting
         if Self.secretReferences(in: plan.credential) {
-            resolveSecrets(of: plan, usedEnteredPassword: usedEnteredPassword, tab: tab)
+            resolveSecrets(of: plan, enteredPassword: enteredPassword, tab: tab)
             return
         }
-        startAttempt(tab, plan: plan, usedEnteredPassword: usedEnteredPassword)
+        startAttempt(tab, plan: plan, enteredPassword: enteredPassword)
     }
 
     // MARK: Secrets from 1Password
@@ -553,8 +560,10 @@ public final class SessionManager {
 
     /// Reads the plan's referenced secret with `op read`, then starts the attempt with the value. The value
     /// lives only in that attempt's plan: it is never stored, and every attempt (including each automatic
-    /// try) reads it again. A failure ends the attempt (and auto-reconnect) with the error's message.
-    private func resolveSecrets(of plan: ConnectionPlan, usedEnteredPassword: Bool, tab: TerminalTab) {
+    /// try) reads it again. A typed reference is resolved the same way; saving it stores the reference
+    /// (`enteredPassword`), never the value. A failure ends the attempt (and auto-reconnect) with the
+    /// error's message.
+    private func resolveSecrets(of plan: ConnectionPlan, enteredPassword: String?, tab: TerminalTab) {
         let generation = tab.generation
         guard let client = opClient() else {
             failResolving(tab, .cliNotFound)
@@ -574,7 +583,7 @@ public final class SessionManager {
             case .success(let resolved):
                 var plan = plan
                 plan.credential = resolved
-                self.startAttempt(tab, plan: plan, usedEnteredPassword: usedEnteredPassword)
+                self.startAttempt(tab, plan: plan, enteredPassword: enteredPassword)
             case .failure(let error):
                 self.failResolving(tab, error)
             }
@@ -611,7 +620,7 @@ public final class SessionManager {
     }
 
     /// Makes the attempt's session and starts it.
-    private func startAttempt(_ tab: TerminalTab, plan: ConnectionPlan, usedEnteredPassword: Bool) {
+    private func startAttempt(_ tab: TerminalTab, plan: ConnectionPlan, enteredPassword: String?) {
         let generation = tab.generation
         let evaluator = PromptingHostKeyEvaluator(store: knownHosts) { [weak self, weak tab] candidate, check in
             guard let self, let tab else { return .rejected }
@@ -620,7 +629,7 @@ public final class SessionManager {
         let session = makeSession(plan, evaluator)
         let (inputs, inputContinuation) = AsyncStream<SessionInput>.makeStream()
         let attempt = SessionAttempt(plan: plan, session: session, inputs: inputContinuation,
-                                     usedEnteredPassword: usedEnteredPassword)
+                                     enteredPassword: enteredPassword)
         tab.attempt = attempt
         liveAttempts[ObjectIdentifier(attempt)] = attempt
 
@@ -733,10 +742,11 @@ public final class SessionManager {
         let log = vault.saveNow(ConnectionLog(hostID: plan.hostID, hostLabel: plan.label, username: plan.username,
                                               deviceName: deviceName, startedAt: Date()))
         attempt.logID = log.id
-        // The server accepted the typed password: now it may be saved (where the existing rule says).
-        if attempt.usedEnteredPassword, tab.saveEnteredPassword, let hostID = tab.hostID,
-           case .password(let accepted) = plan.credential {
-            storePassword(accepted, hostID: hostID)
+        // The server accepted the typed password: now it may be saved (where the existing rule says), as
+        // typed: a 1Password reference stays a reference, its value is never stored.
+        if let entered = attempt.enteredPassword, tab.saveEnteredPassword, let hostID = tab.hostID,
+           case .password = plan.credential {
+            storePassword(entered, hostID: hostID)
         }
         // From now on the vault (or a new prompt) decides, so later vault edits are not shadowed.
         tab.enteredPassword = nil
@@ -805,11 +815,14 @@ public final class SessionManager {
             case .privateKey:
                 return .disconnected("The server rejected the key for \(who).")
             case .agent:
+                // 1Password may hold another key, be locked, or not have been allowed to sign.
+                tab.suggestedAction = .openOnePasswordSetup
                 return .disconnected("The server didn't accept the key from 1Password's SSH agent for \(who).")
             case .none:
                 return .disconnected(SessionError.authenticationFailed.localizedDescription)
             }
         case .failed(let error):
+            if case .agentUnavailable = error { tab.suggestedAction = .openOnePasswordSetup }
             return .disconnected(error.localizedDescription)
         }
     }

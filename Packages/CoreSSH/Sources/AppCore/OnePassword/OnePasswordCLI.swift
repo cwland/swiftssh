@@ -74,15 +74,36 @@ public struct OnePasswordField: Equatable, Sendable, Identifiable {
         self.isSecret = isSecret
     }
 
+    /// What a field is picked for.
+    public enum Purpose: Equatable, Sendable {
+        /// Every standard field of the item.
+        case any
+        /// A password or key passphrase: only the "password" field of Login, Password, Server and
+        /// Database items. Other items (an SSH key's "private key"/"public key" included) offer none;
+        /// an SSH key belongs with the 1Password SSH agent instead.
+        case password
+    }
+
+    /// The categories whose "password" field may be offered for `.password`.
+    static let passwordCategories: Set<String> = ["LOGIN", "PASSWORD", "SERVER", "DATABASE"]
+
     /// The standard fields of an item of `category`, as references built locally. `op item get --format json`
-    /// returns concealed values in plain text, so the picker never asks `op` for an item's fields: an SSH key
-    /// offers "private key" and "public key"; anything else "password" and "username". The item is named by
-    /// its ID; the vault by `vault` when that name may appear in a reference, otherwise by `vaultID`.
-    public static func standardFields(itemID: String, vault: String, vaultID: String?, category: String?) -> [OnePasswordField] {
+    /// returns concealed values in plain text, so the picker never asks `op` for an item's fields. For
+    /// `.any`, an SSH key offers "private key" and "public key"; anything else "password" and "username".
+    /// For `.password`, see `Purpose.password`. The item is named by its ID; the vault by `vault` when that
+    /// name may appear in a reference, otherwise by `vaultID`.
+    public static func standardFields(itemID: String, vault: String, vaultID: String?, category: String?,
+                                      purpose: Purpose = .any) -> [OnePasswordField] {
         let vaultPart = SecretReference.isSafeName(vault) ? vault : (vaultID ?? vault)
-        let standard: [(label: String, secret: Bool)] = category == "SSH_KEY"
-            ? [("private key", true), ("public key", false)]
-            : [("password", true), ("username", false)]
+        let standard: [(label: String, secret: Bool)]
+        switch purpose {
+        case .any:
+            standard = category == "SSH_KEY"
+                ? [("private key", true), ("public key", false)]
+                : [("password", true), ("username", false)]
+        case .password:
+            standard = category.map(passwordCategories.contains) == true ? [("password", true)] : []
+        }
         return standard.map { field in
             OnePasswordField(id: field.label, label: field.label,
                              reference: "op://\(vaultPart)/\(itemID)/\(field.label)", isSecret: field.secret)

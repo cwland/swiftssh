@@ -4,6 +4,7 @@ import Darwin
 import Glibc
 #endif
 import Foundation
+import SSHCore
 
 /// What was found where 1Password's SSH agent socket should be.
 public enum AgentSocketStatus: Equatable, Sendable {
@@ -89,6 +90,15 @@ public enum OnePasswordPaths {
         if path == "~" { return base }
         if path.hasPrefix("~/") { return base + path.dropFirst() }
         return path
+    }
+
+    /// Whether a socket path override can be handed to ssh (`IdentityAgent="…"`): nil when it can (a blank
+    /// one, meaning no override, included), otherwise the message to show. Rejects `"`, `\`, control
+    /// characters and `${` (ssh would expand it from the environment); `%` is fine. The same check runs
+    /// again before ssh starts.
+    public static func validateSocketOverride(_ path: String) -> String? {
+        guard let path = nonBlank(path) else { return nil }
+        return SystemSSHSession.agentSocketProblem(path)
     }
 
     static func nonBlank(_ text: String?) -> String? {

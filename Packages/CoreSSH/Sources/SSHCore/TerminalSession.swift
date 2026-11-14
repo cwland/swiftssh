@@ -124,6 +124,8 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
     case connectionFailed(String)
     case unsupportedKey(String)
     case timedOut
+    /// The SSH agent (1Password) couldn't be reached or refused to sign; the payload is the message shown.
+    case agentUnavailable(String)
 
     public var errorDescription: String? {
         switch self {
@@ -141,6 +143,8 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
             "The built-in SSH engine does not support \(type) keys."
         case .timedOut:
             "The connection timed out."
+        case .agentUnavailable(let message):
+            message
         }
     }
 }

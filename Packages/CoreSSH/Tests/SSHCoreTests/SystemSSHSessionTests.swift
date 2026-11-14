@@ -307,6 +307,48 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(classify(""), .connectionFailed("ssh exited before the session started"))
     }
 
+    /// ssh's messages (OpenSSH 9.6) when the agent can't be reached or won't sign, for an `.agent` attempt.
+    func testAgentFailureClassification() {
+        let unavailable = SessionError.agentUnavailable(
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+        func classify(_ s: String, agent: Bool = true) -> SessionError {
+            SystemSSHSession.classifyFailure(Array(s.utf8), secrets: [], agent: agent)
+        }
+        let denied = "root@127.0.0.1: Permission denied (publickey,password,keyboard-interactive).\r\n"
+        XCTAssertEqual(classify("sign_and_send_pubkey: signing failed for ED25519 \"/r/run/8F2C.pub\" from agent: "
+                                + "agent refused operation\r\n" + denied), unavailable)
+        XCTAssertEqual(classify("sign_and_send_pubkey: signing failed for ED25519 \"/r/run/8F2C.pub\" from agent: "
+                                + "communication with agent failed\r\n" + denied), unavailable)
+        XCTAssertEqual(classify("Error connecting to agent: No such file or directory\r\n" + denied), unavailable)
+        XCTAssertEqual(classify("Error connecting to agent: Connection refused\r\n" + denied), unavailable)
+        XCTAssertEqual(classify("Could not open a connection to your authentication agent.\r\n" + denied), unavailable)
+        XCTAssertEqual(unavailable.errorDescription,
+                       "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+
+        // A missing socket makes OpenSSH 9.6 print only the refusal: the key was not accepted.
+        XCTAssertEqual(classify(denied), .authenticationFailed)
+        // A pinned key's .pub that ssh fails to load (no agent to match it) is not an unreadable private key.
+        XCTAssertEqual(classify("Load key \"/r/run/8F2C.pub\": error in libcrypto\r\n" + denied), .authenticationFailed)
+        XCTAssertEqual(classify("Load key \"/r/run/8F2C.pub\": invalid format\r\n" + denied), .authenticationFailed)
+        // Other failures are classified as before.
+        XCTAssertEqual(classify("ssh: connect to host h port 22: Connection refused\r\n"),
+                       .connectionFailed("ssh: connect to host h port 22: Connection refused"))
+        // Only an agent attempt has an agent to blame.
+        XCTAssertEqual(classify("sign_and_send_pubkey: signing failed for ED25519 \"k\" from agent: agent refused operation\r\n"
+                                + denied, agent: false), .authenticationFailed)
+    }
+
+    func testAgentPathSSHCantUseFailsBeforeSSHRuns() async throws {
+        let session = makeSession(.agent(socketPath: "/tmp/bad\"path.sock", publicKey: nil))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.closed(.failed(.agentUnavailable("The 1Password agent path contains characters ssh can't use.")))])
+        XCTAssertFalse(server.log().contains("Connection from"), "ssh never ran:\n\(server.log())")
+        XCTAssertEqual(secretFiles(), [])
+    }
+
     /// How ssh's exit is classified, with realistic exit codes and the tail of its terminal output.
     func testExitClassification() async {
         let secrets = ["hunter2"]
