@@ -307,6 +307,77 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(classify(""), .connectionFailed("ssh exited before the session started"))
     }
 
+    /// How ssh's exit is classified, with realistic exit codes and the tail of its terminal output.
+    func testExitClassification() async {
+        let secrets = ["hunter2"]
+        let lost = SessionError.connectionFailed(SystemSSHSession.connectionLostMessage)
+        let checks = TestCounter()
+        func classify(_ status: Int32?, started: Bool = true, _ tail: String,
+                      masterAlive: Bool = false) async -> SessionEndReason {
+            await SystemSSHSession.classifyExit(status: status, sessionStarted: started, output: Array(tail.utf8),
+                                                secrets: secrets,
+                                                controlMasterAlive: { checks.increment(); return masterAlive })
+        }
+
+        // A clean shell exit, whatever the shell's status (ssh passes it through), is a normal end.
+        let cleanShared = "exit\r\n\u{1B}[?2004l\rlogout\r\nShared connection to h closed.\r\r\n"
+        var result = await classify(0, cleanShared)
+        XCTAssertEqual(result, .remoteClosed)
+        result = await classify(3, cleanShared)
+        XCTAssertEqual(result, .remoteClosed)
+        result = await classify(nil, "")
+        XCTAssertEqual(result, .remoteClosed, "killed by a signal")
+        XCTAssertEqual(checks.value, 0, "no control master check unless ssh says 255")
+        // Without a control master (direct connection), ssh's own clean goodbye.
+        result = await classify(255, "logout\r\nConnection to h closed.\r\r\n")
+        XCTAssertEqual(result, .remoteClosed, "`exit 255` in the shell")
+
+        // Dropped connections, ssh's message kept (direct connection: ssh prints it itself).
+        let drops = [
+            "Timeout, server h not responding.",
+            "client_loop: send disconnect: Broken pipe",
+            "Read from remote host h: Connection reset by peer",
+            "Connection to h closed by remote host.",
+            "packet_write_wait: Connection to 10.0.0.5 port 22: Broken pipe",
+            "ssh_dispatch_run_fatal: Connection to 10.0.0.5 port 22: Connection timed out",
+            "client_loop: send disconnect: Network is unreachable",
+        ]
+        for line in drops {
+            result = await classify(255, "user@h:~$ \r\n\u{1B}[1m\(line)\u{1B}[0m\r\r\n")
+            XCTAssertEqual(result, .failed(.connectionFailed(line)), line)
+        }
+        result = await classify(255, "Timeout, server hunter2 not responding.\r\n")
+        XCTAssertEqual(result, .failed(.connectionFailed("Timeout, server <redacted> not responding.")))
+
+        // Through the control master (the usual case: ControlPersist makes ssh a mux client, and the master's
+        // messages go nowhere): "Shared connection … closed." with 255 is a drop when the master is gone,
+        // a shell's `exit 255` when it still runs.
+        let shared = "Shared connection to h closed.\r\r\n"
+        result = await classify(255, shared, masterAlive: false)
+        XCTAssertEqual(result, .failed(lost))
+        result = await classify(255, "logout\r\n" + shared, masterAlive: true)
+        XCTAssertEqual(result, .remoteClosed)
+        // Anything else with 255: the master decides.
+        result = await classify(255, "user@h:~$ ", masterAlive: false)
+        XCTAssertEqual(result, .failed(lost))
+        result = await classify(255, "user@h:~$ ", masterAlive: true)
+        XCTAssertEqual(result, .remoteClosed)
+        result = await classify(255, "", masterAlive: false)
+        XCTAssertEqual(result, .failed(lost))
+
+        // Before the session started, 255 is ssh's own failure (existing rules); anything else ended normally.
+        checks.reset()
+        result = await classify(255, started: false, "u@h: Permission denied (publickey,password).\r\n")
+        XCTAssertEqual(result, .failed(.authenticationFailed))
+        result = await classify(255, started: false, "Host key verification failed.\r\n")
+        XCTAssertEqual(result, .failed(.hostKeyRejected))
+        result = await classify(255, started: false, "ssh: connect to host h port 22: Connection refused\r\n")
+        XCTAssertEqual(result, .failed(.connectionFailed("ssh: connect to host h port 22: Connection refused")))
+        result = await classify(0, started: false, "")
+        XCTAssertEqual(result, .remoteClosed)
+        XCTAssertEqual(checks.value, 0)
+    }
+
     // MARK: Connecting
 
     func testPasswordLoginThroughAskpass() async throws {
@@ -577,7 +648,8 @@ final class SystemSSHSessionTests: XCTestCase {
     }
 
     func testRemoteExitIsRemoteClosed() async throws {
-        for script in ["exit\n", "false; exit 3\n"] {
+        // `exit 255` makes ssh exit with 255 too, yet it is a clean end, not a dropped connection.
+        for script in ["exit\n", "false; exit 3\n", "exit 255\n"] {
             let session = makeSession(.password(server.password))
             let recorder = EventRecorder(session.events)
             await session.start(cols: 80, rows: 24)
@@ -586,6 +658,50 @@ final class SystemSSHSessionTests: XCTestCase {
             XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)], script)
             await session.close() // after the end: does nothing
             XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready, .closed(.remoteClosed)])
+        }
+    }
+
+    /// The server's side of the session vanishes without a goodbye (killed): a dropped connection,
+    /// reported with ssh's own message, not a normal end of session.
+    func testKilledServerSessionIsConnectionFailed() async throws {
+        #if !os(Linux)
+        throw XCTSkip("killSessions() reads /proc (Linux only)")
+        #endif
+        let session = makeSession(.password(server.password))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("echo up-$((2+2))\n".utf8))
+        try await recorder.waitForOutput(containing: "up-4")
+        server.killSessions()
+        try await recorder.waitForFinish()
+        let events = recorder.nonOutputEvents
+        XCTAssertEqual(Array(events.prefix(2)), [.connected, .ready])
+        guard case .closed(.failed(.connectionFailed(let message))) = events.last else {
+            return XCTFail("expected a connection failure, got \(events); output: \(recorder.outputText.suffix(500))")
+        }
+        XCTAssertFalse(message.isEmpty)
+        XCTAssertFalse(message.contains(server.password))
+    }
+
+    /// A server that stops answering is detected by ssh's keep-alive and reported as a dropped connection.
+    func testFrozenServerIsConnectionFailed() async throws {
+        #if !os(Linux)
+        throw XCTSkip("suspendSessions() reads /proc (Linux only)")
+        #endif
+        let session = SystemSSHSession(plan: plan(.password(server.password),
+                                                  keepAlive: KeepAlivePolicy(interval: .seconds(1), maxUnanswered: 1)),
+                                       hostKeys: TestEvaluator(decision: .trusted), knownHostsLines: { [] },
+                                       runtime: runtime)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("echo up-$((3+3))\n".utf8))
+        try await recorder.waitForOutput(containing: "up-6")
+        server.suspendSessions()
+        try await recorder.waitForFinish(timeout: 15)
+        let events = recorder.nonOutputEvents
+        XCTAssertEqual(Array(events.prefix(2)), [.connected, .ready])
+        guard case .closed(.failed(.connectionFailed)) = events.last else {
+            return XCTFail("expected a connection failure, got \(events)")
         }
     }
 
@@ -833,9 +949,10 @@ final class SystemSSHSessionTests: XCTestCase {
         return KnownHostsStore(vault: vault)
     }
 
-    private func plan(_ credential: SSHCredential) -> ConnectionPlan {
+    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {
         ConnectionPlan(hostID: nil, label: "test", host: server.host, port: server.port,
-                       username: server.username, credential: credential, engine: .systemSSH, startupScript: nil)
+                       username: server.username, credential: credential, engine: .systemSSH, startupScript: nil,
+                       keepAlive: keepAlive)
     }
 
     private func makeSession(_ credential: SSHCredential,
@@ -909,6 +1026,14 @@ final class SystemSSHSessionTests: XCTestCase {
         false
         #endif
     }
+}
+
+final class TestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.withLock { count += 1 } }
+    func reset() { lock.withLock { count = 0 } }
+    var value: Int { lock.withLock { count } }
 }
 
 final class CheckRecorder: @unchecked Sendable {

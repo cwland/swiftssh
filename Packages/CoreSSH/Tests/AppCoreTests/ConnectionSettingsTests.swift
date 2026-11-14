@@ -55,4 +55,19 @@ final class ConnectionSettingsTests: XCTestCase {
         settings.detection = .off
         XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .off)
     }
+
+    func testAutoReconnectDefaultsToOnWhenNothingStored() async {
+        XCTAssertNil(defaults.object(forKey: "connection.autoReconnect"))
+        XCTAssertTrue(ConnectionSettings(defaults: defaults).autoReconnect)
+    }
+
+    func testAutoReconnectChangesPersist() async {
+        let settings = ConnectionSettings(defaults: defaults)
+        settings.autoReconnect = false
+        XCTAssertEqual(defaults.object(forKey: "connection.autoReconnect") as? Bool, false)
+        XCTAssertFalse(ConnectionSettings(defaults: defaults).autoReconnect)
+        settings.autoReconnect = true
+        XCTAssertEqual(defaults.object(forKey: "connection.autoReconnect") as? Bool, true)
+        XCTAssertTrue(ConnectionSettings(defaults: defaults).autoReconnect)
+    }
 }

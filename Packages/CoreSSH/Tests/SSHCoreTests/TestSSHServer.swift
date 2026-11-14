@@ -164,6 +164,16 @@ final class TestSSHServer: @unchecked Sendable {
         for child in pids { kill(child, SIGSTOP) }
     }
 
+    /// Kills (SIGKILL) every per-connection sshd process and its children, without letting them say
+    /// goodbye: they are frozen first, so no channel close or exit status reaches the client, then killed.
+    /// The kernel closes their sockets — like a server that crashed or a connection that was cut.
+    /// Linux only (reads /proc). The listening server keeps running.
+    func killSessions() {
+        let pids = descendants(of: pid)
+        for child in pids { kill(child, SIGSTOP) }
+        for child in pids { kill(child, SIGKILL) }
+    }
+
     private func resumeSessions() {
         let pids = suspended.withLock { () -> Set<pid_t> in
             defer { suspendedPIDs = [] }

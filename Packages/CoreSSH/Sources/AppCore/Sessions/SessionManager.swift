@@ -27,6 +27,8 @@ public final class TerminalTab: Identifiable {
     public fileprivate(set) var title: String
     public fileprivate(set) var badge: OSBadge?
     public fileprivate(set) var state: State = .connecting
+    /// nil = not auto-reconnecting. See `SessionManager` for when it starts and ends.
+    public fileprivate(set) var autoReconnect: AutoReconnectState?
 
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
@@ -50,6 +52,13 @@ public final class TerminalTab: Identifiable {
     /// Wakes a start that is waiting for the view's first size.
     @ObservationIgnored fileprivate var sizeWaiter: ResumeOnce?
     @ObservationIgnored fileprivate var hostKeyAnswer: CheckedContinuation<HostKeyDecision, Never>?
+    /// The countdown to the next automatic try, while `autoReconnect` is `.waiting`.
+    @ObservationIgnored fileprivate var countdown: Task<Void, Never>?
+    /// Bumped whenever a countdown is started or cancelled; a countdown acts only while its token is current
+    /// (a cancelled sleep may still return).
+    @ObservationIgnored fileprivate var countdownToken = 0
+    /// The message of the latest dropped connection or failed try, shown again when the user stops a try.
+    @ObservationIgnored fileprivate var dropMessage: String?
     @ObservationIgnored private var pendingOutput: [[UInt8]] = []
     @ObservationIgnored private var pendingBytes = 0
     @ObservationIgnored private var pendingTruncated = false
@@ -131,7 +140,14 @@ fileprivate final class SessionAttempt {
 }
 
 /// Drives terminal sessions for the UI: host key and password prompts, connection logs, OS
-/// detection, startup scripts, reconnect and close-all at quit.
+/// detection, startup scripts, reconnect, auto-reconnect and close-all at quit.
+///
+/// Auto-reconnect: when the session of a tab that had become ready ends with `.connectionFailed` or
+/// `.timedOut` (a dropped connection) and `autoReconnectEnabled()` is true, the tab counts down
+/// (`.waiting`) and then tries again (`.reconnecting`) the way `reconnect(tabID:)` does, on the
+/// `ReconnectSchedule`. A try that drops the same way, before or after it connected, leads to the next
+/// countdown, or to `.gaveUp` after the last; a try that becomes ready, fails any other way, or needs a
+/// password typed ends auto-reconnect (`nil`) and the tab shows what it would after `reconnect`.
 @MainActor @Observable
 public final class SessionManager {
     public private(set) var tabs: [TerminalTab] = []
@@ -149,6 +165,9 @@ public final class SessionManager {
     @ObservationIgnored private let deviceName: String
     @ObservationIgnored private let defaultUsername: String
     @ObservationIgnored private let keepAlivePolicy: @MainActor () -> KeepAlivePolicy
+    @ObservationIgnored private let autoReconnectEnabled: @MainActor () -> Bool
+    @ObservationIgnored private let now: @Sendable () -> Date
+    @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     /// Every attempt whose session has not ended yet, including ones being closed.
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
@@ -158,8 +177,14 @@ public final class SessionManager {
                 makeSession: @escaping @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession,
                 deviceName: String, defaultUsername: String,
                 initialSizeTimeout: Duration = .milliseconds(500),
-                keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .normal }) {
+                keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .normal },
+                autoReconnectEnabled: @escaping @MainActor () -> Bool = { true },
+                now: @escaping @Sendable () -> Date = { Date() },
+                sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.keepAlivePolicy = keepAlivePolicy
+        self.autoReconnectEnabled = autoReconnectEnabled
+        self.now = now
+        self.sleep = sleep
         self.initialSizeTimeout = initialSizeTimeout
         self.vault = vault
         self.knownHosts = knownHosts
@@ -196,6 +221,7 @@ public final class SessionManager {
     public func close(tabID: UUID) {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs.remove(at: index)
+        endAutoReconnect(of: tab)
         if selectedTabID == tabID {
             selectedTabID = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)].id
         }
@@ -205,9 +231,11 @@ public final class SessionManager {
         }
     }
 
-    /// Starts a new session (with a new log) in the same tab, ending the current one first.
+    /// Starts a new session (with a new log) in the same tab, ending the current one first. Ends
+    /// auto-reconnect for the tab.
     public func reconnect(tabID: UUID) {
         guard let tab = tab(tabID) else { return }
+        endAutoReconnect(of: tab)
         connect(tab, plan: nil)
     }
 
@@ -217,7 +245,10 @@ public final class SessionManager {
         let open = tabs
         tabs = []
         selectedTabID = nil
-        for tab in open { _ = detachAttempt(of: tab) }
+        for tab in open {
+            endAutoReconnect(of: tab)
+            _ = detachAttempt(of: tab)
+        }
         let work = liveAttempts.values.map { ($0.session, $0.eventLoop) }
         guard !work.isEmpty else { return }
         let timeout = closeAllTimeout
@@ -241,6 +272,106 @@ public final class SessionManager {
         }
     }
 
+    // MARK: Auto-reconnect
+
+    /// Tabs counting down to a try or trying now (`.waiting` or `.reconnecting`).
+    public var waitingForReconnectCount: Int {
+        tabs.filter { tab in
+            switch tab.autoReconnect {
+            case .waiting, .reconnecting: true
+            case .gaveUp, nil: false
+            }
+        }.count
+    }
+
+    /// Every tab that is counting down starts its try now.
+    public func reconnectWaitingNow() {
+        for tab in tabs {
+            if case .waiting(let attempt, _, _) = tab.autoReconnect { startTry(tab, attempt: attempt) }
+        }
+    }
+
+    /// Stops auto-reconnect for the tab: a countdown is cancelled, a try that is connecting is ended, and
+    /// the tab stays (or becomes) disconnected with the last drop's message. Ignored when not auto-reconnecting.
+    public func stopAutoReconnect(tabID: UUID) {
+        guard let tab = tab(tabID), let current = tab.autoReconnect else { return }
+        endAutoReconnect(of: tab)
+        if case .reconnecting = current {
+            if let attempt = detachAttempt(of: tab) {
+                let session = attempt.session
+                Task { await session.close() }
+            }
+            tab.state = .disconnected(tab.dropMessage)
+        }
+    }
+
+    private func cancelCountdown(of tab: TerminalTab) {
+        tab.countdownToken += 1
+        tab.countdown?.cancel()
+        tab.countdown = nil
+    }
+
+    private func endAutoReconnect(of tab: TerminalTab) {
+        cancelCountdown(of: tab)
+        tab.autoReconnect = nil
+    }
+
+    /// Counts down to try `attempt`, then starts it.
+    private func scheduleTry(_ tab: TerminalTab, attempt: Int) {
+        cancelCountdown(of: tab)
+        guard let delay = ReconnectSchedule.delay(beforeAttempt: attempt) else {
+            tab.autoReconnect = nil
+            return
+        }
+        tab.autoReconnect = .waiting(attempt: attempt, deadline: now().addingTimeInterval(delay), delay: delay)
+        let token = tab.countdownToken
+        let sleep = sleep
+        tab.countdown = Task { [weak self, weak tab] in
+            do { try await sleep(.seconds(delay)) } catch { return }
+            guard let self, let tab, tab.countdownToken == token, self.isOpen(tab) else { return }
+            self.startTry(tab, attempt: attempt)
+        }
+    }
+
+    /// Starts try `attempt` the way `reconnect(tabID:)` does. A try that can't start a session (a password
+    /// must be typed, or the host can't be planned any more) ends auto-reconnect; the tab shows why.
+    private func startTry(_ tab: TerminalTab, attempt: Int) {
+        cancelCountdown(of: tab)
+        tab.autoReconnect = .reconnecting(attempt: attempt)
+        connect(tab, plan: nil)
+        if tab.attempt == nil { tab.autoReconnect = nil }
+    }
+
+    /// After the tab's current attempt ended with `reason` (its state already updated).
+    private func continueAutoReconnect(after reason: SessionEndReason, attempt: SessionAttempt, tab: TerminalTab) {
+        var dropped: SessionError?
+        if case .failed(let error) = reason {
+            switch error {
+            case .connectionFailed, .timedOut: dropped = error
+            default: break
+            }
+        }
+        if case .reconnecting(let tried) = tab.autoReconnect {
+            guard let dropped else {
+                tab.autoReconnect = nil
+                return
+            }
+            tab.dropMessage = dropped.localizedDescription
+            if tried >= ReconnectSchedule.maxAttempts {
+                cancelCountdown(of: tab)
+                tab.autoReconnect = .gaveUp(attempts: tried)
+            } else if autoReconnectEnabled() {
+                scheduleTry(tab, attempt: tried + 1)
+            } else {
+                endAutoReconnect(of: tab)
+            }
+        } else if let dropped, attempt.logID != nil, autoReconnectEnabled() {
+            // The attempt had become ready: a session that was running dropped.
+            tab.dropMessage = dropped.localizedDescription
+            scheduleTry(tab, attempt: 1)
+        }
+    }
+
     // MARK: Prompts
 
     /// Answers the tab's pending host key prompt. Ignored when the tab is gone or not asking.
@@ -256,6 +387,7 @@ public final class SessionManager {
     /// never replaces a good saved one.
     public func providePassword(tabID: UUID, _ password: String, save: Bool) {
         guard let tab = tab(tabID), case .awaitingPassword = tab.state else { return }
+        endAutoReconnect(of: tab)
         tab.enteredPassword = password
         tab.saveEnteredPassword = save && tab.canSavePassword
         connect(tab, plan: nil)
@@ -458,8 +590,14 @@ public final class SessionManager {
         switch event {
         case .connected:
             current?.state = .connected
+            // ssh asks in the terminal (no stored secret): the user may have to type a password, so this
+            // try is no longer automatic.
+            if let current, case .reconnecting = current.autoReconnect, case .none = attempt.plan.credential {
+                endAutoReconnect(of: current)
+            }
         case .ready:
             guard let current, attempt.logID == nil else { return }
+            endAutoReconnect(of: current)
             sessionBecameReady(attempt, tab: current)
         case .output(let bytes):
             current?.deliver(bytes)
@@ -476,6 +614,7 @@ public final class SessionManager {
                 return
             }
             current.state = state(after: reason, attempt: attempt, tab: current)
+            continueAutoReconnect(after: reason, attempt: attempt, tab: current)
         }
     }
 

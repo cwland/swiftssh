@@ -28,6 +28,10 @@ public final class SystemSSHSession: TerminalSession {
     static let commandOutputLimit = 1_048_576
     /// Output kept from before the session started (for the error message and to show once connected).
     static let heldOutputLimit = 262_144
+    /// Output kept from the end of a running session, for ssh's message when it exits.
+    static let recentOutputLimit = 4_096
+    /// The message for a connection that ended without a goodbye and without a message from ssh.
+    static let connectionLostMessage = "The connection to the server was lost."
     static let keyscanTimeout: Duration = .seconds(30)
     static let controlExitTimeout: Duration = .seconds(2)
     /// Host key types in order of preference.
@@ -65,6 +69,8 @@ public final class SystemSSHSession: TerminalSession {
         var heldOutput: [UInt8] = []
         /// Output before the session started, for the error message.
         var preSessionOutput: [UInt8] = []
+        /// The last output of the running session, for ssh's message when it exits.
+        var recentOutput: [UInt8] = []
         /// Input sent before ssh was launched.
         var backlog: [[UInt8]] = []
         var cols = 80
@@ -345,7 +351,7 @@ public final class SystemSSHSession: TerminalSession {
 
         Task { await self.watchForSessionStart(ssh, secretFile: secretFile) }
         for await chunk in ssh.output { received(chunk) }
-        sshExited(status: ssh.exitStatus)
+        await sshExited(status: ssh.exitStatus)
     }
 
     /// Runs ssh-keyscan and returns the preferred key, or ends the session.
@@ -455,7 +461,9 @@ public final class SystemSSHSession: TerminalSession {
         state.withLock { state in
             guard !state.ended else { return }
             state.outputChunks += 1
-            if !state.sessionStarted {
+            if state.sessionStarted {
+                state.recentOutput = Self.appendingTail(state.recentOutput, chunk, limit: Self.recentOutputLimit)
+            } else {
                 state.preSessionOutput = Self.appendingTail(state.preSessionOutput, chunk)
             }
             if state.connectedEmitted {
@@ -466,20 +474,21 @@ public final class SystemSSHSession: TerminalSession {
         }
     }
 
-    private func sshExited(status: Int32?) {
+    private func sshExited(status: Int32?) async {
+        let (started, output) = state.withLock { state in
+            (state.sessionStarted, state.sessionStarted ? state.recentOutput : state.preSessionOutput)
+        }
+        let reason = await Self.classifyExit(status: status, sessionStarted: started, output: output, secrets: secrets,
+                                             controlMasterAlive: { await self.controlMasterIsRunning() })
         let taken = state.withLock { state in
             if !state.ended {
-                let reason: SessionEndReason
-                if !state.sessionStarted && status == 255 {
-                    reason = .failed(Self.classifyFailure(state.preSessionOutput, secrets: secrets))
-                } else {
+                if reason == .remoteClosed {
                     // Ended normally; if the session was too short to notice its start, show it anyway.
                     if !state.connectedEmitted {
                         state.connectedEmitted = true
                         eventContinuation.yield(.connected)
                         if !state.heldOutput.isEmpty { eventContinuation.yield(.output(state.heldOutput)) }
                     }
-                    reason = .remoteClosed
                 }
                 state.ended = true
                 eventContinuation.yield(.closed(reason))
@@ -532,12 +541,22 @@ public final class SystemSSHSession: TerminalSession {
 
     /// `ssh -O exit` for this host's control socket, bounded.
     private func stopControlMaster() async {
+        _ = await controlCommand("exit")
+    }
+
+    /// `ssh -O check` for this host's control socket, bounded: whether its control master still runs.
+    private func controlMasterIsRunning() async -> Bool {
+        if case .finished(_, 0) = await controlCommand("check") { return true }
+        return false
+    }
+
+    private func controlCommand(_ operation: String) async -> CollectResult? {
         let arguments = ["-F", "/dev/null", "-p", String(plan.port), "-l", plan.username,
                          "-o", "ControlPath=\(Self.controlPath(runtime))",
-                         "-O", "exit", "--", host]
+                         "-O", operation, "--", host]
         guard let process = try? PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
-                                            cols: 80, rows: 24, rawMode: true) else { return }
-        _ = await Self.collect(process, limit: 65_536, timeout: Self.controlExitTimeout)
+                                            cols: 80, rows: 24, rawMode: true) else { return nil }
+        return await Self.collect(process, limit: 65_536, timeout: Self.controlExitTimeout)
     }
 
     // MARK: Command line
@@ -716,6 +735,45 @@ public final class SystemSSHSession: TerminalSession {
         return .connectionFailed(message)
     }
 
+    /// Why ssh exited, from its exit status and the tail of its terminal output.
+    ///
+    /// - Before the session started: status 255 is ssh's own failure (`classifyFailure`); anything else
+    ///   ended normally.
+    /// - After it started, any status but 255 is the remote shell's own: a normal end (`.remoteClosed`).
+    ///   With 255 (ssh's error status, but also a shell's `exit 255`), the last line of output decides:
+    ///   ssh's message for a dropped connection ("Timeout, server … not responding.", "… Broken pipe",
+    ///   "… Connection reset …", "Connection to … closed by remote host.", …) is `.connectionFailed` with that
+    ///   message; ssh's clean "Connection to … closed." is `.remoteClosed`. Anything else, including
+    ///   "Shared connection to … closed." (with `ControlPersist` this ssh is a client of a background
+    ///   control master, whose own messages go nowhere), asks `controlMasterAlive`: a master that still
+    ///   runs means the shell exited with 255; a master that is gone means the connection was lost
+    ///   (`connectionLostMessage`).
+    static func classifyExit(status: Int32?, sessionStarted: Bool, output: [UInt8], secrets: [String],
+                             controlMasterAlive: @Sendable () async -> Bool) async -> SessionEndReason {
+        guard status == 255 else { return .remoteClosed }
+        guard sessionStarted else { return .failed(classifyFailure(output, secrets: secrets)) }
+        let last = stripTerminalSequences(String(decoding: output, as: UTF8.self))
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .last { !$0.isEmpty } ?? ""
+        if dropMessageMarkers.contains(where: { last.contains($0) }) {
+            return .failed(.connectionFailed(redact(last, secrets: secrets)))
+        }
+        if last.hasPrefix("Connection to ") && last.hasSuffix(" closed.") { return .remoteClosed }
+        return await controlMasterAlive() ? .remoteClosed : .failed(.connectionFailed(connectionLostMessage))
+    }
+
+    /// Parts of ssh's messages for a connection that broke (as opposed to one the server ended cleanly).
+    static let dropMessageMarkers = [
+        "not responding", "Broken pipe", "Connection reset", "closed by remote host", "Connection timed out",
+        "Network is unreachable", "No route to host", "Software caused connection abort", "Connection abort",
+        "Host is down", "packet_write_wait", "ssh_dispatch_run_fatal", "Corrupted MAC",
+    ]
+
+    private static func redact(_ text: String, secrets: [String]) -> String {
+        secrets.filter { !$0.isEmpty }.reduce(text) { $0.replacingOccurrences(of: $1, with: "<redacted>") }
+    }
+
     /// Removes escape sequences (CSI, OSC and two-byte ones) and control characters other than line breaks.
     static func stripTerminalSequences(_ text: String) -> String {
         var result = String.UnicodeScalarView()
@@ -743,9 +801,10 @@ public final class SystemSSHSession: TerminalSession {
 
     // MARK: Helpers
 
-    private static func appendingTail(_ buffer: [UInt8], _ chunk: [UInt8]) -> [UInt8] {
+    private static func appendingTail(_ buffer: [UInt8], _ chunk: [UInt8], limit: Int = heldOutputLimit) -> [UInt8] {
+        if chunk.count >= limit { return Array(chunk.suffix(limit)) }
         var buffer = buffer + chunk
-        if buffer.count > heldOutputLimit { buffer.removeFirst(buffer.count - heldOutputLimit) }
+        if buffer.count > limit { buffer.removeFirst(buffer.count - limit) }
         return buffer
     }
 
