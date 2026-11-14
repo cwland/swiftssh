@@ -117,26 +117,28 @@ private struct SessionTabPill: View {
             leadingSlot
                 .frame(width: Self.slotSize, height: Self.slotSize)
 
-            Button(action: select) {
-                Text(tab.title.isEmpty ? "Untitled host" : tab.title)
-                    .font(.system(size: Theme.tabFontSize))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            Text(tab.title.isEmpty ? "Untitled host" : tab.title)
+                .font(.system(size: Theme.tabFontSize))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default, select)
         }
         .foregroundStyle(Theme.topBarForeground)
         .padding(.leading, 7)
         .padding(.trailing, 12)
-        .frame(minWidth: 70, maxWidth: 220, alignment: .leading)
+        // Only a maximum: the pill hugs its content up to 220 pt (the title truncates beyond that)
+        // and shrinks when the bar is crowded.
+        .frame(maxWidth: 220, alignment: .leading)
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
                 .fill(isSelected ? Theme.tabBackground : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
+        // A click anywhere on the pill selects the tab; the close button in the leading slot
+        // handles its own clicks first.
+        .onTapGesture(perform: select)
         .onHover { isHovering = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Close tab", close)
@@ -161,7 +163,6 @@ private struct SessionTabPill: View {
         } else {
             BadgeView(badge: tab.badge, size: Self.slotSize)
                 .opacity(isLive ? 1 : 0.5)
-                .onTapGesture(perform: select)
         }
     }
 
