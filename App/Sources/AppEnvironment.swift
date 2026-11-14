@@ -26,8 +26,6 @@ final class AppEnvironment {
     let navigation: AppNavigation
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
-    /// The tab waiting for the user to confirm "Close this session?".
-    var closeConfirmationTabID: UUID?
     /// One SwiftTerm view per open tab, so switching tabs and reconnecting keep scrollback.
     @ObservationIgnored let terminalViews = TerminalViewStore()
 
@@ -137,20 +135,15 @@ final class AppEnvironment {
         return sessions.tabs.first { $0.id == id }
     }
 
-    /// Closes the tab, asking first ("Close this session?") while it is connected.
-    func requestClose(tabID: UUID) {
-        guard let sessions, let tab = sessions.tabs.first(where: { $0.id == tabID }) else { return }
-        if tab.state == .connected {
-            closeConfirmationTabID = tabID
-        } else {
-            sessions.close(tabID: tabID)
-        }
+    /// Closes the tab at once, connected or not (no confirmation).
+    func closeTab(tabID: UUID) {
+        sessions?.close(tabID: tabID)
     }
 
     /// Cmd+W: closes the selected terminal tab; with Vaults selected, closes the window.
     func closeSelectedTabOrWindow() {
         if let tab = selectedTab {
-            requestClose(tabID: tab.id)
+            closeTab(tabID: tab.id)
         } else {
             NSApp.keyWindow?.performClose(nil)
         }

@@ -12,7 +12,7 @@ struct RootView: View {
                 navigation: environment.navigation,
                 sessions: environment.sessions,
                 selectVaults: { environment.showVaults() },
-                closeTab: { environment.requestClose(tabID: $0) }
+                closeTab: { environment.closeTab(tabID: $0) }
             )
             Group {
                 switch environment.state {
@@ -32,30 +32,6 @@ struct RootView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
-        .alert(
-            "Close this session?",
-            isPresented: closeConfirmationShown,
-            presenting: environment.closeConfirmationTabID
-        ) { tabID in
-            Button("Close", role: .destructive) {
-                environment.closeConfirmationTabID = nil
-                environment.sessions?.close(tabID: tabID)
-            }
-            Button("Cancel", role: .cancel) {
-                environment.closeConfirmationTabID = nil
-            }
-        } message: { tabID in
-            if let title = environment.sessions?.tabs.first(where: { $0.id == tabID })?.title, !title.isEmpty {
-                Text("The connection to \u{201C}\(title)\u{201D} will be closed.")
-            }
-        }
-    }
-
-    private var closeConfirmationShown: Binding<Bool> {
-        Binding(
-            get: { environment.closeConfirmationTabID != nil },
-            set: { if !$0 { environment.closeConfirmationTabID = nil } }
-        )
     }
 }
 

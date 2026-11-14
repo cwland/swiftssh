@@ -99,48 +99,70 @@ private struct TopTabPill: View {
     }
 }
 
-/// A terminal session tab: OS badge, host label and a close button. Titles shrink (truncating)
-/// when many tabs are open.
+/// A terminal session tab, Termius layout: a leading slot, then the host label. The slot shows the
+/// OS badge; on the selected tab and while the pointer is over the tab it shows the close button
+/// instead (closing never asks). Titles shrink (truncating) when many tabs are open.
 private struct SessionTabPill: View {
     let tab: TerminalTab
     let isSelected: Bool
     let select: () -> Void
     let close: () -> Void
 
-    var body: some View {
-        HStack(spacing: 6) {
-            Button(action: select) {
-                HStack(spacing: 8) {
-                    BadgeView(badge: tab.badge, size: 20)
-                        .opacity(isLive ? 1 : 0.5)
-                    Text(tab.title.isEmpty ? "Untitled host" : tab.title)
-                        .font(.system(size: Theme.tabFontSize))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+    @State private var isHovering = false
 
-            Button(action: close) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .frame(width: 18, height: 18)
+    private static let slotSize: CGFloat = 20
+
+    var body: some View {
+        HStack(spacing: 8) {
+            leadingSlot
+                .frame(width: Self.slotSize, height: Self.slotSize)
+
+            Button(action: select) {
+                Text(tab.title.isEmpty ? "Untitled host" : tab.title)
+                    .font(.system(size: Theme.tabFontSize))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .opacity(0.8)
-            .help("Close (\u{2318}W)")
         }
         .foregroundStyle(Theme.topBarForeground)
-        .padding(.leading, 10)
-        .padding(.trailing, 6)
+        .padding(.leading, 7)
+        .padding(.trailing, 12)
         .frame(minWidth: 70, maxWidth: 220, alignment: .leading)
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
                 .fill(isSelected ? Theme.tabBackground : Color.clear)
         )
+        .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
+        .onHover { isHovering = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Close tab", close)
+    }
+
+    @ViewBuilder
+    private var leadingSlot: some View {
+        if isSelected || isHovering {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: Self.slotSize, height: Self.slotSize)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.14))
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close (\u{2318}W)")
+            .accessibilityLabel("Close tab")
+        } else {
+            BadgeView(badge: tab.badge, size: Self.slotSize)
+                .opacity(isLive ? 1 : 0.5)
+                .onTapGesture(perform: select)
+        }
     }
 
     /// Dims the badge while the tab has no live session.
