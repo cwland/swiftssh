@@ -85,7 +85,21 @@ public final class LocalVault {
     }
 
     /// Waits until every persist queued so far, including ones queued while waiting, is done.
+    /// If the last completed write failed, tries once more; the outcome is in `lastSaveError`.
     public func flush() async {
+        await drainQueuedPersists()
+        if lastSaveError != nil {
+            _ = await enqueuePersist().result
+            await drainQueuedPersists()
+        }
+    }
+
+    /// Persists the current state, behind any queued persists, and throws if that write fails.
+    public func persistNow() async throws {
+        try await enqueuePersist().value
+    }
+
+    private func drainQueuedPersists() async {
         while let task = queuedPersists.values.first {
             _ = await task.result
         }

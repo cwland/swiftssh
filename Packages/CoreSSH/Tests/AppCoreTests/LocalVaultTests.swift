@@ -174,6 +174,41 @@ final class LocalVaultTests: XCTestCase {
         XCTAssertNil(vault.lastSaveError)
     }
 
+    func testPersistNowThrowsOnFailureAndPersistsOnSuccess() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        let host = vault.saveNow(Host(label: "a", address: "a.example"))
+        await p.setFailing(true)
+        do {
+            try await vault.persistNow()
+            XCTFail("expected throw")
+        } catch {
+            XCTAssertTrue(error is InMemoryPersistenceError)
+        }
+        XCTAssertNotNil(vault.lastSaveError)
+        await p.setFailing(false)
+        try await vault.persistNow()
+        XCTAssertNil(vault.lastSaveError)
+        let contents = await p.contents
+        XCTAssertEqual(contents?.records.compactMap { try? $0.decode(Host.self) }, [host])
+    }
+
+    func testFlushRetriesAfterAFailedWrite() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        await p.setFailing(true)
+        let host = vault.saveNow(Host(label: "a", address: "a.example"))
+        await vault.flush()
+        XCTAssertNotNil(vault.lastSaveError)
+        let failedContents = await p.contents
+        XCTAssertNil(failedContents)
+        await p.setFailing(false)
+        await vault.flush()
+        XCTAssertNil(vault.lastSaveError)
+        let contents = await p.contents
+        XCTAssertEqual(contents?.records.compactMap { try? $0.decode(Host.self) }, [host])
+    }
+
     func testFlushWithNothingQueuedReturns() async throws {
         let vault = try await open()
         await vault.flush()

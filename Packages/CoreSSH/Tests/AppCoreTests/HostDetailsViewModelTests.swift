@@ -196,6 +196,129 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.identityID, identity.id)
     }
 
+    func testCreateIdentityIsAtomicInMemoryWhenPersistFails() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let hosts = [
+            try await vault.save(SavedHost(label: "a", address: "a.example", username: "cory", password: "pw")),
+            try await vault.save(SavedHost(label: "b", address: "b.example", username: "cory", password: "pw")),
+            try await vault.save(SavedHost(label: "c", address: "c.example", username: "cory", password: "pw")),
+        ]
+        let vm = HostDetailsViewModel(vault: vault, hostID: hosts[0].id)
+        await p.setFailing(true)
+        do {
+            _ = try await vm.createIdentityFromReusedCredentials()
+            XCTFail("expected throw")
+        } catch {
+            XCTAssertTrue(error is InMemoryPersistenceError)
+        }
+        XCTAssertNotNil(vault.lastSaveError)
+        let identities = vault.all(Identity.self)
+        XCTAssertEqual(identities.count, 1)
+        let identity = try XCTUnwrap(identities.first)
+        for host in hosts {
+            let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+            XCTAssertEqual(stored.identityID, identity.id)
+            XCTAssertNil(stored.username)
+            XCTAssertNil(stored.password)
+        }
+        await p.setFailing(false)
+        await vault.flush()
+        XCTAssertNil(vault.lastSaveError)
+        for host in hosts {
+            let stored = try await persistedHost(p, id: host.id)
+            XCTAssertEqual(stored.identityID, identity.id)
+            XCTAssertNil(stored.username)
+        }
+        let contents = await p.contents
+        XCTAssertNotNil(contents?.records.first { $0.id == identity.id })
+    }
+
+    func testCredentialModeFollowsStoredHost() async throws {
+        let vault = try await makeVault()
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+        let identity = try await vault.save(Identity(label: "cory", username: "cory"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+
+        // Picked identity but none chosen yet: stays in identity mode.
+        vm.credentialMode = .identity
+        XCTAssertEqual(vm.credentialMode, .identity)
+
+        // Choosing an identity elsewhere and then unlinking it elsewhere: mode follows storage.
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        stored.identityID = identity.id
+        try await vault.save(stored)
+        XCTAssertEqual(vm.credentialMode, .identity)
+        try await vault.deleteIdentity(id: identity.id)
+        XCTAssertEqual(vm.credentialMode, .identity, "user picked identity mode and has no identity yet")
+        vm.credentialMode = .direct
+        XCTAssertEqual(vm.credentialMode, .direct)
+
+        // Linked externally while the VM thinks direct: derived from storage.
+        let other = try await vault.save(Identity(label: "o", username: "o"))
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        stored.identityID = other.id
+        try await vault.save(stored)
+        XCTAssertEqual(vm.credentialMode, .identity)
+
+        // Setting a direct field while an identity is linked clears the identity.
+        vm.sshKeyID = key.id
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.sshKeyID, key.id)
+        XCTAssertEqual(vm.credentialMode, .direct)
+        vm.username = "root"
+        vm.password = "pw"
+
+        // Setting an identity clears the direct fields.
+        vm.identityID = other.id
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.identityID, other.id)
+        XCTAssertNil(stored.username)
+        XCTAssertNil(stored.password)
+        XCTAssertNil(stored.sshKeyID)
+        XCTAssertEqual(vm.credentialMode, .identity)
+
+        vm.password = "secret"
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.password, "secret")
+        XCTAssertEqual(vm.credentialMode, .direct)
+    }
+
+    func testNonCanonicalPortTextSavesPortAndKeepsRawText() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        for text in ["022", " 22", "22 "] {
+            vm.portText = text
+            XCTAssertEqual(vm.portText, text)
+            XCTAssertNil(vm.portError)
+            XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.port, 22)
+        }
+        vm.portText = "2222"
+        XCTAssertEqual(vm.portText, "2222")
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.port, 2222)
+
+        vm.portText = "+22"
+        XCTAssertEqual(vm.portText, "+22")
+        XCTAssertEqual(vm.portError, "Port must be 1–65535")
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.port, 2222)
+        vm.portText = "-22"
+        XCTAssertEqual(vm.portError, "Port must be 1–65535")
+        vm.portText = "99999999999999999999999"
+        XCTAssertEqual(vm.portError, "Port must be 1–65535")
+
+        // Raw text is dropped once the stored port changes elsewhere.
+        vm.portText = "0080"
+        XCTAssertEqual(vm.portText, "0080")
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        stored.port = 443
+        try await vault.save(stored)
+        XCTAssertEqual(vm.portText, "443")
+    }
+
     func testCreateIdentityWithoutReuseGroupThrows() async throws {
         let vault = try await makeVault()
         let host = try await vault.save(SavedHost(label: "a", address: "a.example", username: "cory", password: "pw"))
