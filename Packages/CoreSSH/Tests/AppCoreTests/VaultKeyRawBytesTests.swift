@@ -24,6 +24,14 @@ final class VaultKeyRawBytesTests: XCTestCase {
         }
     }
 
+    func testWrongLengthHasReadableDescription() {
+        let error: Error = VaultKeyBytesError.wrongLength(16)
+        XCTAssertEqual(
+            error.localizedDescription,
+            "The saved vault key is invalid: it is 16 bytes long, but a vault key must be 32 bytes."
+        )
+    }
+
     func testRawBytesOfGeneratedKeyAreThirtyTwoBytes() {
         XCTAssertEqual(VaultKey(VaultCrypto.newVaultKey()).rawBytes.count, 32)
     }

@@ -3,8 +3,17 @@ import Observation
 import CoreModels
 import SyncCore
 
-public enum LocalVaultError: Error, Equatable, Sendable {
+public enum LocalVaultError: Error, Equatable, Sendable, LocalizedError {
+    /// The vault file's format version is not one this build can read.
     case unsupportedVersion(Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unsupportedVersion(let version):
+            "The vault file uses format version \(version), which this version of the app can't read. "
+                + "Update the app to open it."
+        }
+    }
 }
 
 /// The app's local, observable record store. Records are kept as `PlainRecord`s in insertion

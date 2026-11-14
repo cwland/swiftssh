@@ -114,6 +114,15 @@ final class LocalVaultTests: XCTestCase {
         }
     }
 
+    func testUnsupportedVersionHasReadableDescription() async {
+        let error: Error = LocalVaultError.unsupportedVersion(2)
+        XCTAssertEqual(
+            error.localizedDescription,
+            "The vault file uses format version 2, which this version of the app can't read. "
+                + "Update the app to open it."
+        )
+    }
+
     func testOverlappingSavesPersistLatestState() async throws {
         let p = GatedPersistence()
         let vault = try await LocalVault.open(persistence: p, newDeviceID: { "dev-1" })

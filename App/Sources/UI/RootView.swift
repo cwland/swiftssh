@@ -17,7 +17,9 @@ struct RootView: View {
                 case .ready(let vault):
                     MainArea(navigation: environment.navigation, vault: vault)
                 case .failed(let message):
-                    VaultErrorView(message: message)
+                    VaultErrorView(message: message) {
+                        Task { await environment.load() }
+                    }
                 }
             }
         }
@@ -38,8 +40,15 @@ private struct MainArea: View {
         HStack(spacing: 0) {
             SidebarView(navigation: navigation)
             Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 0) {
+                if let error = vault.lastSaveError {
+                    SaveErrorBanner(error: error) {
+                        Task { await vault.flush() }
+                    }
+                }
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .onAppear {
             if hostsModel == nil {
@@ -72,8 +81,37 @@ private struct MainArea: View {
     }
 }
 
+/// Shown over the content while the vault's last write failed; goes away after the next
+/// successful write.
+private struct SaveErrorBanner: View {
+    let error: any Error
+    let retry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.warningForeground)
+            Text("Changes couldn't be saved: \(error.localizedDescription)")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.primary)
+                .lineLimit(2)
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button("Retry", action: retry)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.warningBackground)
+        .overlay(alignment: .bottom) {
+            Divider()
+        }
+    }
+}
+
 private struct VaultErrorView: View {
     let message: String
+    let retry: () -> Void
 
     var body: some View {
         VStack(spacing: 12) {
@@ -88,6 +126,9 @@ private struct VaultErrorView: View {
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
                 .frame(maxWidth: 560)
+            Button("Try Again", action: retry)
+                .keyboardShortcut(.defaultAction)
+                .padding(.top, 4)
         }
         .padding(32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

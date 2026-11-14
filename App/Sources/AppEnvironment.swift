@@ -24,10 +24,17 @@ final class AppEnvironment {
     }
 
     /// Loads the Keychain key and opens `~/Library/Application Support/TermiusReimagined/vault.bin`.
-    /// Runs once; later calls return immediately.
+    /// Runs once; later calls return immediately, unless the last attempt ended in `.failed`,
+    /// in which case calling again tries again.
     func load() async {
         guard !didStartLoading else { return }
         didStartLoading = true
+        defer {
+            if case .failed = state {
+                didStartLoading = false
+            }
+        }
+        state = .loading
         // When this process is the host app for unit tests, don't touch the real Keychain item
         // or vault file: an ad-hoc signed rebuild would raise a Keychain prompt on every test
         // run, and tests must never create or move aside the user's vault. Stay `.loading`.

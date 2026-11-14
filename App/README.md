@@ -16,8 +16,8 @@ open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
 ```
 
 If the test target fails with a "missing required module" (or "no such module 'AppCore'")
-error, see the fallback list in the Task 9 report: add the `AppCore` and `SyncCore` package
-products to the `TermiusReimaginedTests` dependencies in `project.yml` and regenerate.
+error, add the `AppCore` and `SyncCore` package products to the `TermiusReimaginedTests`
+dependencies in `project.yml` and regenerate.
 
 When the app runs as the unit-test host it skips loading the vault and Keychain key, so tests
 never touch your real vault.

@@ -31,6 +31,10 @@ enum Theme {
     static let badgeSize: CGFloat = 60
     static let badgeCornerRadius: CGFloat = 12
     static let detailsPanelWidth: CGFloat = 380
+
+    // Banners
+    static let warningBackground = Color.orange.opacity(0.15)
+    static let warningForeground = Color.orange
 }
 
 extension Color {
