@@ -4,7 +4,7 @@ import CoreModels
 
 /// A decrypted record as the local store sees it: the model's JSON (`CoreJSON`) plus the
 /// metadata the merge rule needs.
-public struct PlainRecord: Equatable, Sendable {
+public struct PlainRecord: Codable, Equatable, Sendable {
     public var id: UUID
     public var type: SyncRecordType
     public var updatedAt: Date

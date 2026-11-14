@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "CoreModels", targets: ["CoreModels"]),
         .library(name: "SyncCore", targets: ["SyncCore"]),
         .library(name: "SyncTestSupport", targets: ["SyncTestSupport"]),
+        .library(name: "AppCore", targets: ["AppCore"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.9.0"),
@@ -22,7 +23,17 @@ let package = Package(
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
             ]
         ),
+        .target(
+            name: "AppCore",
+            dependencies: [
+                "CoreModels",
+                "SyncCore",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "_CryptoExtras", package: "swift-crypto"),
+            ]
+        ),
         .target(name: "SyncTestSupport", dependencies: ["SyncCore", "CoreModels"]),
+        .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore"]),
         .testTarget(name: "CoreModelsTests", dependencies: ["CoreModels"]),
         .testTarget(
             name: "SyncCoreTests",
