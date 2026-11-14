@@ -2,6 +2,7 @@ import Foundation
 
 public enum OpenSSHFormatError: Error, Equatable {
     case malformedDER
+    case malformedWireData
 }
 
 /// SSH wire encoding (RFC 4251 §5), PEM armor, and the minimal DER reading needed to turn
@@ -93,6 +94,7 @@ struct DERReader {
     static let integer: UInt8 = 0x02
     static let bitString: UInt8 = 0x03
     static let octetString: UInt8 = 0x04
+    static let objectIdentifier: UInt8 = 0x06
     static let sequence: UInt8 = 0x30
 
     private var bytes: ArraySlice<UInt8>
@@ -123,5 +125,33 @@ struct DERReader {
 
     func expectEnd() throws {
         guard bytes.isEmpty else { throw OpenSSHFormatError.malformedDER }
+    }
+}
+
+/// Reads the SSH wire encoding (RFC 4251 §5); every read is bounds-checked.
+struct SSHWireReader {
+    private var bytes: ArraySlice<UInt8>
+
+    init(_ bytes: [UInt8]) { self.bytes = bytes[...] }
+
+    var remainingCount: Int { bytes.count }
+
+    mutating func bytes(count: Int) throws -> [UInt8] {
+        guard count >= 0, bytes.count >= count else { throw OpenSSHFormatError.malformedWireData }
+        let value = Array(bytes.prefix(count))
+        bytes = bytes.dropFirst(count)
+        return value
+    }
+
+    mutating func uint32() throws -> UInt32 {
+        try bytes(count: 4).reduce(0) { $0 << 8 | UInt32($1) }
+    }
+
+    mutating func string() throws -> [UInt8] {
+        try bytes(count: Int(uint32()))
+    }
+
+    func expectEnd() throws {
+        guard bytes.isEmpty else { throw OpenSSHFormatError.malformedWireData }
     }
 }
