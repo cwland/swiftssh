@@ -9,6 +9,7 @@ final class BadgeStyleTests: XCTestCase {
             let color = BadgeStyle.hexColor(for: badge)
             XCTAssertEqual(color.count, 7, "\(badge)")
             XCTAssertTrue(color.hasPrefix("#"), "\(badge)")
+            XCTAssertTrue(color.dropFirst().allSatisfy(\.isHexDigit), "\(badge)")
         }
         XCTAssertEqual(BadgeStyle.symbol(for: nil), "terminal")
         XCTAssertEqual(BadgeStyle.hexColor(for: nil).count, 7)

@@ -18,6 +18,19 @@ public final class HostsViewModel {
         self.vault = vault
     }
 
+    /// `currentGroupID` while that group is live; otherwise root (nil).
+    public var effectiveGroupID: UUID? {
+        _ = vault.revision
+        guard let id = currentGroupID, vault.get(HostGroup.self, id: id) != nil else { return nil }
+        return id
+    }
+
+    /// The selected host, nil if none is selected or it is missing or deleted.
+    public var selectedHost: SavedHost? {
+        _ = vault.revision
+        return selectedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+    }
+
     private var directory: HostDirectory {
         _ = vault.revision
         return HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
@@ -39,7 +52,7 @@ public final class HostsViewModel {
         let groups = Dictionary(vault.all(HostGroup.self).map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var chain: [HostGroup] = []
         var visited: Set<UUID> = []
-        var next = currentGroupID
+        var next = effectiveGroupID
         while let id = next, visited.insert(id).inserted, let group = groups[id] {
             chain.append(group)
             next = group.parentID
@@ -52,29 +65,38 @@ public final class HostsViewModel {
         _ = vault.revision
         guard !isFiltering else { return [] }
         return vault.all(HostGroup.self)
-            .filter { $0.parentID == currentGroupID }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .filter { $0.parentID == effectiveGroupID }
+            .sorted { Self.ordered($0.name, $0.id, $1.name, $1.id) }
     }
 
     public var visibleHosts: [SavedHost] {
         let directory = self.directory
-        let inGroup = Set(directory.hosts(inGroup: currentGroupID).map(\.id))
+        let inGroup = Set(directory.hosts(inGroup: effectiveGroupID).map(\.id))
         return directory.filter(tags: selectedTags, search: searchText)
             .filter { inGroup.contains($0.id) }
-            .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+            .sorted { Self.ordered($0.label, $0.id, $1.label, $1.id) }
     }
 
     public func subtitle(for host: SavedHost) -> String {
         let directory = self.directory
-        let username = host.username
-            ?? directory.effectiveIdentityID(for: host)
-                .flatMap { vault.get(Identity.self, id: $0)?.username }
-        return username.map { "ssh, \($0)" } ?? "ssh"
+        let hostName = host.username.flatMap { $0.isEmpty ? nil : $0 }
+        let identityName = directory.effectiveIdentityID(for: host)
+            .flatMap { vault.get(Identity.self, id: $0)?.username }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        return (hostName ?? identityName).map { "ssh, \($0)" } ?? "ssh"
     }
 
     /// Hosts in the group, including those in descendant groups.
     public func hostCount(in group: HostGroup) -> Int {
         directory.hosts(inGroup: group.id).count
+    }
+
+    private static func ordered(_ a: String, _ aID: UUID, _ b: String, _ bID: UUID) -> Bool {
+        switch a.localizedCaseInsensitiveCompare(b) {
+        case .orderedAscending: true
+        case .orderedDescending: false
+        case .orderedSame: aID.uuidString < bID.uuidString
+        }
     }
 
     public func openGroup(_ id: UUID?) {
@@ -83,14 +105,14 @@ public final class HostsViewModel {
 
     @discardableResult
     public func newHost() async throws -> SavedHost {
-        let host = try await vault.save(SavedHost(label: "New host", address: "", groupID: currentGroupID))
+        let host = try await vault.save(SavedHost(label: "New host", address: "", groupID: effectiveGroupID))
         selectedHostID = host.id
         return host
     }
 
     @discardableResult
     public func newGroup(name: String) async throws -> HostGroup {
-        try await vault.save(HostGroup(name: name, parentID: currentGroupID))
+        try await vault.save(HostGroup(name: name, parentID: effectiveGroupID))
     }
 
     public var quickConnectTarget: QuickConnectTarget? {

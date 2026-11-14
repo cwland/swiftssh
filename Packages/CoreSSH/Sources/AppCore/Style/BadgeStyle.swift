@@ -21,7 +21,7 @@ public enum BadgeStyle {
         case .macOS: "#111111"
         case .synology: "#1F4A7A"
         case .homeAssistant: "#2C5D84"
-        default: "#5B6475"
+        case .none, .fedora, .rhel, .alpine, .arch, .freeBSD, .linux: "#5B6475"
         }
     }
 }

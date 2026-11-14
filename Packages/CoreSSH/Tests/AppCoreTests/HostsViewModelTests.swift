@@ -128,6 +128,53 @@ final class HostsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.allTags, ["dev", "prod", "web"])
     }
 
+    @MainActor func testDeletedCurrentGroupFallsBackToRoot() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G"))
+        let vm = HostsViewModel(vault: vault)
+        vm.openGroup(group.id)
+        XCTAssertEqual(vm.effectiveGroupID, group.id)
+        try await vault.deleteGroup(id: group.id)
+        XCTAssertNil(vm.effectiveGroupID)
+        XCTAssertTrue(vm.breadcrumbs.isEmpty)
+        let host = try await vm.newHost()
+        XCTAssertNil(host.groupID)
+        let sub = try await vm.newGroup(name: "S")
+        XCTAssertNil(sub.parentID)
+        XCTAssertEqual(vm.visibleGroups.map(\.name), ["S"])
+    }
+
+    @MainActor func testSelectedHostIsNilAfterDeletion() async throws {
+        let vault = try await makeVault()
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertNil(vm.selectedHost)
+        let host = try await vm.newHost()
+        XCTAssertEqual(vm.selectedHost?.id, host.id)
+        try await vault.delete(SavedHost.self, id: host.id)
+        XCTAssertNil(vm.selectedHost)
+    }
+
+    @MainActor func testBreadcrumbsTerminateOnCyclicParents() async throws {
+        let vault = try await makeVault()
+        let a = try await vault.save(HostGroup(name: "A"))
+        var b = try await vault.save(HostGroup(name: "B", parentID: a.id))
+        var a2 = a
+        a2.parentID = b.id
+        try await vault.save(a2)
+        b = vault.get(HostGroup.self, id: b.id)!
+        let vm = HostsViewModel(vault: vault)
+        vm.openGroup(a.id)
+        XCTAssertEqual(Set(vm.breadcrumbs.map(\.name)), ["A", "B"])
+    }
+
+    @MainActor func testEmptyUsernameIsTreatedAsMissing() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "idUser"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h", username: "", identityID: identity.id))
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.subtitle(for: host), "ssh, idUser")
+    }
+
     @MainActor func testObservationFiresOnVisibleHostsAfterSave() async throws {
         let vault = try await makeVault()
         let vm = HostsViewModel(vault: vault)
