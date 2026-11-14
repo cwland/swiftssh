@@ -1,6 +1,9 @@
 import XCTest
 @testable import CoreModels
 
+/// Foundation also exports a `Host` on macOS.
+private typealias Host = CoreModels.Host
+
 final class ModelsTests: XCTestCase {
     private func roundTrip<T: SyncableModel>(_ value: T, file: StaticString = #filePath, line: UInt = #line) throws {
         let data = try CoreJSON.encoder.encode(value)

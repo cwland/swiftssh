@@ -259,7 +259,7 @@ public final class HostDetailsViewModel {
 
     /// Creates an identity (label "<username> credentials") from the credentials this host shares
     /// with others, and links every host in the reuse group to it, clearing their direct
-    /// username and password. All changes are applied in memory in one pass, then persisted
+    /// username, password and key. All changes are applied in memory in one pass, then persisted
     /// together; if that write fails the error is thrown and memory stays fully linked
     /// (a later write or `LocalVault.flush()` persists it).
     public func createIdentityFromReusedCredentials() async throws -> Identity {
@@ -272,9 +272,11 @@ public final class HostDetailsViewModel {
         for member in group {
             guard var current = vault.get(SavedHost.self, id: member.id), current.identityID == nil,
                   current.username == username, current.password == password else { continue }
+            // The identity becomes the host's single credential source.
             current.identityID = identity.id
             current.username = nil
             current.password = nil
+            current.sshKeyID = nil
             vault.saveNow(current)
         }
         try await vault.persistNow()

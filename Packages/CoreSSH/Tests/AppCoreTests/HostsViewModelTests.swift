@@ -157,11 +157,10 @@ final class HostsViewModelTests: XCTestCase {
     @MainActor func testBreadcrumbsTerminateOnCyclicParents() async throws {
         let vault = try await makeVault()
         let a = try await vault.save(HostGroup(name: "A"))
-        var b = try await vault.save(HostGroup(name: "B", parentID: a.id))
+        let b = try await vault.save(HostGroup(name: "B", parentID: a.id))
         var a2 = a
         a2.parentID = b.id
         try await vault.save(a2)
-        b = vault.get(HostGroup.self, id: b.id)!
         let vm = HostsViewModel(vault: vault)
         vm.openGroup(a.id)
         XCTAssertEqual(Set(vm.breadcrumbs.map(\.name)), ["A", "B"])

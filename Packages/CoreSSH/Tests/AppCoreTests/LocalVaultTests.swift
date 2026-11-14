@@ -3,6 +3,9 @@ import CoreModels
 import SyncCore
 @testable import AppCore
 
+/// Foundation also exports a `Host` on macOS.
+private typealias Host = CoreModels.Host
+
 @MainActor
 final class LocalVaultTests: XCTestCase {
     private func open(_ p: InMemoryVaultPersistence = InMemoryVaultPersistence()) async throws -> LocalVault {

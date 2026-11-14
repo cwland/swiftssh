@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import CoreModels
 
-public enum KeychainError: Error, Equatable, LocalizedError {
+public enum KeyImportError: Error, Equatable, LocalizedError {
     case publicKeyMismatch
 
     public var errorDescription: String? {
@@ -162,7 +162,7 @@ public final class KeychainViewModel {
             let (explicitType, explicitLine) = try SSHKeyImporter.parsePublicKey(explicit)
             if let derived = inspected.publicKey,
                explicitType != inspected.keyType || Self.keyBody(derived) != Self.keyBody(explicitLine) {
-                throw KeychainError.publicKeyMismatch
+                throw KeyImportError.publicKeyMismatch
             }
             keyType = explicitType
             publicLine = explicitLine

@@ -4,6 +4,9 @@ import CoreModels
 import SyncCore
 @testable import AppCore
 
+/// Foundation also exports a `Host` on macOS.
+private typealias Host = CoreModels.Host
+
 final class EncryptedFileVaultPersistenceTests: XCTestCase {
     private var dir: URL!
     private var fileURL: URL { dir.appendingPathComponent("vault.bin") }

@@ -167,8 +167,10 @@ final class HostDetailsViewModelTests: XCTestCase {
     func testReuseHintAndCreateIdentityLinksAllHosts() async throws {
         let p = InMemoryVaultPersistence()
         let vault = try await makeVault(p)
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
         let hosts = [
-            try await vault.save(SavedHost(label: "a", address: "a.example", username: "cory", password: "pw")),
+            try await vault.save(SavedHost(label: "a", address: "a.example", username: "cory", password: "pw",
+                                           sshKeyID: key.id)),
             try await vault.save(SavedHost(label: "b", address: "b.example", username: "cory", password: "pw")),
             try await vault.save(SavedHost(label: "c", address: "c.example", username: "cory", password: "pw")),
         ]
@@ -188,6 +190,7 @@ final class HostDetailsViewModelTests: XCTestCase {
             XCTAssertEqual(stored.identityID, identity.id)
             XCTAssertNil(stored.username)
             XCTAssertNil(stored.password)
+            XCTAssertNil(stored.sshKeyID, "the identity is now the host's only credential source")
         }
         let storedOther = try await persistedHost(p, id: other.id)
         XCTAssertEqual(storedOther.username, "x")

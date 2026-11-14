@@ -1,6 +1,9 @@
 import XCTest
 @testable import CoreModels
 
+/// Foundation also exports a `Host` on macOS.
+private typealias Host = CoreModels.Host
+
 final class HostQueriesTests: XCTestCase {
     func testPortFallsBackThroughGroupChainThenTo22() {
         let grand = HostGroup(name: "grand", defaultPort: 2222)

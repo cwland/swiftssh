@@ -77,7 +77,7 @@ final class KeychainViewModelTests: XCTestCase {
             _ = try await vm.importKey(label: "bad", privateKey: other.privateKey, passphrase: nil, publicKey: generated.publicKey)
             XCTFail("expected mismatch")
         } catch {
-            XCTAssertEqual(error as? KeychainError, .publicKeyMismatch)
+            XCTAssertEqual(error as? KeyImportError, .publicKeyMismatch)
         }
         XCTAssertEqual(vm.keys.count, 2)
     }

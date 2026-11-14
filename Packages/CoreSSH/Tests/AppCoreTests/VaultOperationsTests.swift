@@ -1,9 +1,9 @@
 import XCTest
 import CoreModels
-
-private typealias Host = CoreModels.Host
 import SyncCore
 @testable import AppCore
+
+private typealias Host = CoreModels.Host
 
 @MainActor
 final class VaultOperationsTests: XCTestCase {
