@@ -61,39 +61,22 @@ public final class KeychainViewModel {
         Self.summary(count: usageCount(sshKeyID: sshKeyID))
     }
 
-    /// Hosts that use the identity directly or inherit it through a group default.
+    /// Hosts that would connect with this identity (explicitly linked, or inherited through a
+    /// group default), as decided by `CredentialResolution`.
     public func usageCount(identityID: UUID) -> Int {
-        usingIdentity(identityID).count
+        resolutions().filter { $0.identity?.id == identityID }.count
     }
 
-    /// Hosts that use the key directly or through a linked identity.
+    /// Hosts that would connect with this key: the key of the identity in effect, or the host's
+    /// own key when no identity applies.
     public func usageCount(sshKeyID: UUID) -> Int {
-        let hosts = vault.all(SavedHost.self)
-        let directory = HostDirectory(hosts: hosts, groups: vault.all(HostGroup.self))
-        let identityIDs = Set(vault.identitiesUsing(sshKeyID: sshKeyID).map(\.id))
-        var used: Set<UUID> = []
-        for host in hosts {
-            if host.sshKeyID == sshKeyID {
-                used.insert(host.id)
-            } else if let identityID = Self.linkedIdentityID(of: host, in: directory), identityIDs.contains(identityID) {
-                used.insert(host.id)
-            }
-        }
-        return used.count
+        resolutions().filter { $0.key?.id == sshKeyID }.count
     }
 
-    private func usingIdentity(_ id: UUID) -> Set<UUID> {
+    private func resolutions() -> [CredentialResolution] {
         let hosts = vault.all(SavedHost.self)
         let directory = HostDirectory(hosts: hosts, groups: vault.all(HostGroup.self))
-        return Set(hosts.filter { Self.linkedIdentityID(of: $0, in: directory) == id }.map(\.id))
-    }
-
-    /// The identity a host uses directly, or inherits through a group default when the host
-    /// has no identity and no credentials of its own.
-    private static func linkedIdentityID(of host: SavedHost, in directory: HostDirectory) -> UUID? {
-        if let id = host.identityID { return id }
-        let hasOwnCredentials = !(host.username ?? "").isEmpty || !(host.password ?? "").isEmpty || host.sshKeyID != nil
-        return hasOwnCredentials ? nil : directory.effectiveIdentityID(for: host)
+        return hosts.map { CredentialResolution.resolve(host: $0, directory: directory, vault: vault) }
     }
 
     private static func summary(count: Int) -> String {

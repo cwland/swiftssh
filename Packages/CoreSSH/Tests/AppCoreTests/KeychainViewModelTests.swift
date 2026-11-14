@@ -30,9 +30,34 @@ final class KeychainViewModelTests: XCTestCase {
         XCTAssertEqual(vm.usageSummary(identityID: identity.id), "Used by 1 host")
         _ = try await vault.save(SavedHost(label: "inherit", address: "b", groupID: child.id))
         _ = try await vault.save(SavedHost(label: "own creds", address: "c", groupID: child.id, username: "root"))
-        _ = try await vault.save(SavedHost(label: "own key", address: "d", groupID: parent.id, sshKeyID: UUID()))
+        let ownKey = try await vault.save(SSHKey(label: "own", keyType: .ed25519, publicKey: "p", privateKey: "k"))
+        _ = try await vault.save(SavedHost(label: "own key", address: "d", groupID: parent.id, sshKeyID: ownKey.id))
         _ = try await vault.save(SavedHost(label: "both", address: "e", groupID: parent.id, identityID: identity.id))
         XCTAssertEqual(vm.usageSummary(identityID: identity.id), "Used by 3 hosts")
+    }
+
+    func testDeadExplicitIdentityCountsTowardGroupDefault() async throws {
+        let vault = try await makeVault()
+        let gone = try await vault.save(Identity(label: "gone", username: "g"))
+        let def = try await vault.save(Identity(label: "D", username: "d"))
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: def.id))
+        _ = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, identityID: gone.id))
+        try await vault.delete(Identity.self, id: gone.id)
+        let vm = KeychainViewModel(vault: vault)
+        XCTAssertEqual(vm.usageCount(identityID: def.id), 1)
+        XCTAssertEqual(vm.usageCount(identityID: gone.id), 0)
+    }
+
+    func testExplicitIdentityHostDoesNotCountTowardItsDirectKey() async throws {
+        let vault = try await makeVault()
+        let direct = try await vault.save(SSHKey(label: "direct", keyType: .ed25519, publicKey: "p", privateKey: "k"))
+        let viaIdentity = try await vault.save(SSHKey(label: "viaID", keyType: .ed25519, publicKey: "p", privateKey: "k"))
+        let identity = try await vault.save(Identity(label: "i", username: "u", sshKeyID: viaIdentity.id))
+        _ = try await vault.save(SavedHost(label: "H", address: "a", identityID: identity.id, sshKeyID: direct.id))
+        let vm = KeychainViewModel(vault: vault)
+        XCTAssertEqual(vm.usageCount(identityID: identity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: viaIdentity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: direct.id), 0)
     }
 
     func testGenerateEd25519StoresKeyWithPublicKey() async throws {

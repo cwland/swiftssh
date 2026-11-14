@@ -17,11 +17,9 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
 }
 
 public enum ConnectionPlanner {
-    /// Builds the plan for a saved host. Precedence: (a) the host's explicit `identityID`, if it
-    /// resolves to a live identity, always applies; (b) otherwise, if the host has any direct
-    /// credential (username, non-empty password or a live key), the host's own fields are used and
-    /// whatever they lack is left to the connection prompt; (c) otherwise the group-inherited
-    /// default identity applies. A deleted or missing identity or key counts as absent.
+    /// Builds the plan for a saved host. Credentials come from `CredentialResolution` (explicit
+    /// identity > host's direct credentials > group default identity); whatever is still missing is
+    /// left to the connection prompt.
     @MainActor
     public static func plan(hostID: UUID, vault: LocalVault) throws -> ConnectionPlan {
         guard let host = vault.get(SavedHost.self, id: hostID) else { throw ConnectionPlanError.hostNotFound }
@@ -29,27 +27,10 @@ public enum ConnectionPlanner {
         guard !address.isEmpty else { throw ConnectionPlanError.missingAddress }
 
         let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
-
-        let hostKey = host.sshKeyID.flatMap { vault.get(SSHKey.self, id: $0) }
-        let hostUsername = nonEmpty(host.username)
-        let hostPassword = nonEmpty(host.password)
-
-        var username: String?
-        var password: String?
-        var key: SSHKey?
-        if let explicit = host.identityID.flatMap({ vault.get(Identity.self, id: $0) }) {
-            username = nonEmpty(explicit.username)
-            password = nonEmpty(explicit.password)
-            key = explicit.sshKeyID.flatMap { vault.get(SSHKey.self, id: $0) }
-        } else if hostUsername != nil || hostPassword != nil || hostKey != nil {
-            username = hostUsername
-            password = hostPassword
-            key = hostKey
-        } else if let inherited = inheritedIdentity(for: host, directory: directory, vault: vault) {
-            username = nonEmpty(inherited.username)
-            password = nonEmpty(inherited.password)
-            key = inherited.sshKeyID.flatMap { vault.get(SSHKey.self, id: $0) }
-        }
+        let resolved = CredentialResolution.resolve(host: host, directory: directory, vault: vault)
+        let username = resolved.username
+        let password = resolved.password
+        let key = resolved.key
         guard let username else { throw ConnectionPlanError.missingUsername }
 
         let credential: SSHCredential
@@ -70,14 +51,6 @@ public enum ConnectionPlanner {
         return ConnectionPlan(hostID: host.id, label: host.label, host: address,
                               port: directory.effectivePort(for: host), username: username,
                               credential: credential, engine: engine, startupScript: script)
-    }
-
-    /// The group-inherited default identity, ignoring the host's own (dead) explicit link.
-    @MainActor
-    private static func inheritedIdentity(for host: SavedHost, directory: HostDirectory, vault: LocalVault) -> Identity? {
-        var inheriting = host
-        inheriting.identityID = nil
-        return directory.effectiveIdentityID(for: inheriting).flatMap { vault.get(Identity.self, id: $0) }
     }
 
     public static func plan(quickConnect target: QuickConnectTarget, defaultUsername: String) -> ConnectionPlan {
