@@ -127,6 +127,58 @@ final class LocalVaultTests: XCTestCase {
         XCTAssertEqual(Set(contents?.records.map(\.id) ?? []), [a.id, b.id])
         XCTAssertNil(vault.lastSaveError)
     }
+
+    func testSaveNowAppliesImmediatelyAndPersistsAfterFlush() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        let original = try await vault.save(Host(label: "a", address: "a.example"))
+        let r0 = vault.revision
+        var edited = original
+        edited.label = "b"
+        let stored = vault.saveNow(edited)
+        XCTAssertEqual(vault.get(Host.self, id: original.id), stored)
+        XCTAssertEqual(stored.label, "b")
+        XCTAssertGreaterThan(stored.updatedAt, original.updatedAt)
+        XCTAssertGreaterThan(vault.revision, r0)
+        await vault.flush()
+        let contents = await p.contents
+        XCTAssertEqual(contents?.records.compactMap { try? $0.decode(Host.self) }, [stored])
+        XCTAssertEqual(contents?.dirty, [original.id])
+        XCTAssertNil(vault.lastSaveError)
+    }
+
+    func testRapidSaveNowCallsPersistTheLastState() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        var host = Host(label: "0", address: "a.example")
+        for i in 1...20 {
+            host.label = "\(i)"
+            host = vault.saveNow(host)
+        }
+        await vault.flush()
+        let contents = await p.contents
+        XCTAssertEqual(contents?.records.compactMap { try? $0.decode(Host.self) }, [host])
+    }
+
+    func testSaveNowPersistFailureSetsLastSaveError() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        await p.setFailing(true)
+        let host = vault.saveNow(Host(label: "a", address: "a.example"))
+        await vault.flush()
+        XCTAssertNotNil(vault.lastSaveError)
+        XCTAssertEqual(vault.get(Host.self, id: host.id), host)
+        await p.setFailing(false)
+        vault.saveNow(host)
+        await vault.flush()
+        XCTAssertNil(vault.lastSaveError)
+    }
+
+    func testFlushWithNothingQueuedReturns() async throws {
+        let vault = try await open()
+        await vault.flush()
+        XCTAssertNil(vault.lastSaveError)
+    }
 }
 
 /// Test persistence whose n-th `save` call (1-based) blocks until `release(n)`.

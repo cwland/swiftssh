@@ -22,6 +22,8 @@ public final class LocalVault {
     @ObservationIgnored private var dirty: Set<UUID> = []
     @ObservationIgnored private var persistInFlight = false
     @ObservationIgnored private var persistWaiters: [CheckedContinuation<Void, Never>] = []
+    @ObservationIgnored private var queuedPersists: [Int: Task<Void, Error>] = [:]
+    @ObservationIgnored private var persistCounter = 0
     @ObservationIgnored private var syncState = SyncState(vaultID: nil, lastSeq: 0)
 
     private init(persistence: any VaultPersistence, deviceID: String) {
@@ -62,12 +64,31 @@ public final class LocalVault {
     /// failure the change stays in memory, `lastSaveError` is set and the error is rethrown.
     @discardableResult
     public func save<M: SyncableModel>(_ model: M) async throws -> M {
-        var stored = model
-        stored.updatedAt = Timestamps.nextUpdate(previous: records[model.id]?.updatedAt)
-        let record = try PlainRecord(stored, deviceID: deviceID)
-        store(record)
-        try await persist()
+        let stored = try apply(model)
+        try await enqueuePersist().value
         return stored
+    }
+
+    /// Synchronous `save` for callers that cannot await, such as property setters: the change
+    /// is applied in memory before returning and its persist is queued behind earlier ones.
+    /// Persist failures are reported through `lastSaveError`; `flush()` waits for the queue.
+    @discardableResult
+    public func saveNow<M: SyncableModel>(_ model: M) -> M {
+        do {
+            let stored = try apply(model)
+            enqueuePersist()
+            return stored
+        } catch {
+            lastSaveError = error
+            return model
+        }
+    }
+
+    /// Waits until every persist queued so far, including ones queued while waiting, is done.
+    public func flush() async {
+        while let task = queuedPersists.values.first {
+            _ = await task.result
+        }
     }
 
     /// Turns the record into a tombstone (hidden from queries, kept dirty so it syncs).
@@ -78,7 +99,27 @@ public final class LocalVault {
         model.deleted = true
         model.updatedAt = Timestamps.nextUpdate(previous: existing.updatedAt)
         store(try PlainRecord(model, deviceID: deviceID))
-        try await persist()
+        try await enqueuePersist().value
+    }
+
+    private func apply<M: SyncableModel>(_ model: M) throws -> M {
+        var stored = model
+        stored.updatedAt = Timestamps.nextUpdate(previous: records[model.id]?.updatedAt)
+        store(try PlainRecord(stored, deviceID: deviceID))
+        return stored
+    }
+
+    /// Starts a persist of the current state and tracks it until it finishes, for `flush()`.
+    @discardableResult
+    private func enqueuePersist() -> Task<Void, Error> {
+        persistCounter += 1
+        let key = persistCounter
+        let task = Task { @MainActor in
+            defer { queuedPersists[key] = nil }
+            try await persist()
+        }
+        queuedPersists[key] = task
+        return task
     }
 
     private func store(_ record: PlainRecord) {
