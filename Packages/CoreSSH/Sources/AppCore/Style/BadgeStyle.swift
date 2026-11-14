@@ -47,11 +47,22 @@ public enum BadgeStyle {
     /// order to try them: newest first, so a just-installed PNG wins over a leftover SVG and an SVG
     /// dropped in later wins over an older PNG; on a tie, `logoFileExtensions` order (SVG first).
     public static func logoFilesInReadOrder(for badge: OSBadge, modified: [String: Date]) -> [String] {
-        let names = logoFileNames(for: badge)
-        return names.enumerated()
-            .compactMap { offset, name in modified[name].map { (name, $0, offset) } }
-            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }
-            .map(\.0)
+        struct Candidate {
+            let name: String
+            let date: Date
+            let order: Int
+        }
+        var candidates: [Candidate] = []
+        for (order, name) in logoFileNames(for: badge).enumerated() {
+            if let date = modified[name] {
+                candidates.append(Candidate(name: name, date: date, order: order))
+            }
+        }
+        candidates.sort { (lhs: Candidate, rhs: Candidate) -> Bool in
+            if lhs.date != rhs.date { return lhs.date > rhs.date }
+            return lhs.order < rhs.order
+        }
+        return candidates.map { (candidate: Candidate) -> String in candidate.name }
     }
 
     /// Logo base names used before the catalog, and the badge they now belong to.

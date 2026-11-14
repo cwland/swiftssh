@@ -62,9 +62,12 @@ public enum BadgeImageRules {
     /// `.vector` for a PDF (`%PDF-`) or an SVG (`<svg` near the start, not inside an HTML page).
     public static func kind(of data: Data) -> ImageKind {
         let head = data.prefix(sniffLength)
-        if head.starts(with: Array("%PDF-".utf8)) { return .vector }
+        let pdfMagic: [UInt8] = Array("%PDF-".utf8)
+        if head.starts(with: pdfMagic) { return .vector }
         var text = String(decoding: head, as: UTF8.self).lowercased()
-        text = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}")))
+        let bom = CharacterSet(charactersIn: "\u{FEFF}")
+        let trimSet: CharacterSet = CharacterSet.whitespacesAndNewlines.union(bom)
+        text = text.trimmingCharacters(in: trimSet)
         if text.hasPrefix("<!doctype html") || text.hasPrefix("<html") { return .bitmap }
         return text.contains("<svg") ? .vector : .bitmap
     }
@@ -75,7 +78,9 @@ public enum BadgeImageRules {
         guard let pixelWidth, let pixelHeight else { return nil }
         guard pixelWidth > 0, pixelHeight > 0 else { return .notAnImage }
         let (pixels, overflow) = pixelWidth.multipliedReportingOverflow(by: pixelHeight)
-        return overflow || pixels > maximumSourcePixels ? .tooManyPixels : nil
+        if overflow { return .tooManyPixels }
+        if pixels > maximumSourcePixels { return .tooManyPixels }
+        return nil
     }
 
     /// The http(s) URL typed by the user, or `.notAWebLink`.
@@ -94,7 +99,9 @@ public enum BadgeImageRules {
     /// `.tooLarge` when the server announces more than the limit; nil or negative means unknown.
     public static func problem(contentLength: Int64?) -> BadgeImageError? {
         guard let contentLength, contentLength >= 0 else { return nil }
-        return contentLength > Int64(maximumDownloadBytes) ? .tooLarge : nil
+        let limit = Int64(maximumDownloadBytes)
+        if contentLength > limit { return .tooLarge }
+        return nil
     }
 
     /// True once a download has received more bytes than allowed.
@@ -104,7 +111,9 @@ public enum BadgeImageRules {
 
     /// nil for a 2xx answer, otherwise why the download failed.
     public static func problem(httpStatus: Int) -> BadgeImageError? {
-        (200..<300).contains(httpStatus) ? nil : .downloadFailed("the server answered \(httpStatus)")
+        if (200..<300).contains(httpStatus) { return nil }
+        let reason: String = "the server answered " + String(httpStatus)
+        return BadgeImageError.downloadFailed(reason)
     }
 
     /// Where an image of `imageSize` is drawn on a square canvas of `canvas` units: as large as
@@ -115,10 +124,13 @@ public enum BadgeImageRules {
         guard width.isFinite, height.isFinite, width > 0, height > 0, canvas.isFinite, canvas > 0 else {
             return nil
         }
-        let inner = canvas * (1 - 2 * paddingFraction)
-        let scale = min(inner / width, inner / height)
-        let fitted = CGSize(width: width * scale, height: height * scale)
-        return CGRect(x: (canvas - fitted.width) / 2, y: (canvas - fitted.height) / 2,
-                      width: fitted.width, height: fitted.height)
+        let margin: CGFloat = 2 * paddingFraction
+        let inner: CGFloat = canvas * (1 - margin)
+        let scale: CGFloat = min(inner / width, inner / height)
+        let fittedWidth: CGFloat = width * scale
+        let fittedHeight: CGFloat = height * scale
+        let x: CGFloat = (canvas - fittedWidth) / 2
+        let y: CGFloat = (canvas - fittedHeight) / 2
+        return CGRect(x: x, y: y, width: fittedWidth, height: fittedHeight)
     }
 }
