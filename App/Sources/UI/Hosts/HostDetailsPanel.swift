@@ -354,7 +354,7 @@ private struct HostDetailsContent: View {
 }
 
 /// A white rounded card holding a column of fields.
-private struct DetailsCard<Content: View>: View {
+struct DetailsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -371,7 +371,7 @@ private struct DetailsCard<Content: View>: View {
 }
 
 /// A small caption above its field(s).
-private struct FieldColumn<Content: View>: View {
+struct FieldColumn<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 

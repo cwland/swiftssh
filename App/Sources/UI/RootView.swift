@@ -28,9 +28,11 @@ struct RootView: View {
 private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
-    /// Kept here so search, filters and the open group survive switching sidebar items. Built
-    /// once, on appear, rather than in `init` (which runs on every parent body evaluation).
+    /// Kept here so search, filters and the open group (and the Keychain search) survive
+    /// switching sidebar items. Built once, on appear, rather than in `init` (which runs on
+    /// every parent body evaluation).
     @State private var hostsModel: HostsViewModel?
+    @State private var keychainModel: KeychainViewModel?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -42,6 +44,9 @@ private struct MainArea: View {
         .onAppear {
             if hostsModel == nil {
                 hostsModel = HostsViewModel(vault: vault)
+            }
+            if keychainModel == nil {
+                keychainModel = KeychainViewModel(vault: vault)
             }
         }
     }
@@ -56,8 +61,11 @@ private struct MainArea: View {
                 Theme.contentBackground
             }
         case .keychain:
-            // Filled in by the Keychain screen.
-            Theme.contentBackground
+            if let keychainModel {
+                KeychainView(model: keychainModel, vault: vault)
+            } else {
+                Theme.contentBackground
+            }
         case .snippets, .knownHosts, .logs:
             PlaceholderView("Coming in a later milestone")
         }

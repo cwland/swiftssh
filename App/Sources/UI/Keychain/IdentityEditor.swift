@@ -1,0 +1,236 @@
+import SwiftUI
+import AppCore
+import CoreModels
+
+/// The right-hand identity editor (same style as Host Details). It edits a local copy and saves
+/// every change at once through `KeychainViewModel.update(_:)`. Create one per identity
+/// (`.id(...)`); the identity is read once, on appear, not in `init`.
+struct IdentityEditor: View {
+    let model: KeychainViewModel
+    let vault: LocalVault
+    let identityID: UUID
+    let onClose: () -> Void
+
+    @State private var initial: Identity?
+
+    var body: some View {
+        ZStack {
+            if let initial {
+                IdentityEditorContent(model: model, vault: vault, initial: initial, onClose: onClose)
+            } else {
+                Theme.sidebarBackground
+                    .frame(width: Theme.detailsPanelWidth)
+                    .frame(maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            if initial == nil {
+                initial = vault.get(Identity.self, id: identityID)
+            }
+        }
+    }
+}
+
+private struct IdentityEditorContent: View {
+    let model: KeychainViewModel
+    let vault: LocalVault
+    let onClose: () -> Void
+
+    /// The identity as edited. Every change is merged onto the stored record and saved.
+    @State private var draft: Identity
+    /// `draft.password` as typed; empty means no password.
+    @State private var passwordText: String
+    @State private var confirmDelete = false
+    @State private var showError = false
+    @State private var errorMessage = ""
+
+    init(model: KeychainViewModel, vault: LocalVault, initial: Identity, onClose: @escaping () -> Void) {
+        self.model = model
+        self.vault = vault
+        self.onClose = onClose
+        _draft = State(initialValue: initial)
+        _passwordText = State(initialValue: initial.password ?? "")
+    }
+
+    /// Every key in the vault (unfiltered by the screen's search), by label.
+    private var availableKeys: [SSHKey] {
+        _ = vault.revision
+        return vault.all(SSHKey.self).sorted {
+            $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    generalCard
+                    credentialsCard
+                    usageCard
+                }
+                .padding(16)
+            }
+            deleteButton
+                .padding(16)
+        }
+        .frame(width: Theme.detailsPanelWidth)
+        .frame(maxHeight: .infinity)
+        .background(Theme.sidebarBackground)
+        .onChange(of: passwordText) { _, text in
+            draft.password = text.isEmpty ? nil : text
+        }
+        .onChange(of: draft) { _, edited in
+            save(edited)
+        }
+        .confirmationDialog("Delete this identity?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete identity", role: .destructive) { deleteIdentity() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(deleteMessage)
+        }
+        .alert("Something went wrong", isPresented: $showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage)
+        }
+    }
+
+    // MARK: Header and footer
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("Identity Details")
+                .font(.system(size: 17, weight: .semibold))
+            Spacer(minLength: 0)
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "arrow.right.to.line")
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help("Close (Esc)")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 52)
+    }
+
+    private var deleteButton: some View {
+        Button(role: .destructive) {
+            confirmDelete = true
+        } label: {
+            Text("Delete identity")
+                .frame(maxWidth: .infinity)
+        }
+        .controlSize(.large)
+    }
+
+    // MARK: Cards
+
+    private var generalCard: some View {
+        DetailsCard {
+            FieldColumn(title: "Label") {
+                TextField("Label", text: $draft.label, prompt: Text("Name shown on the card"))
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+
+    private var credentialsCard: some View {
+        DetailsCard {
+            FieldColumn(title: "Username") {
+                TextField("Username", text: $draft.username, prompt: Text("e.g. root"))
+                    .textFieldStyle(.roundedBorder)
+            }
+            FieldColumn(title: "Password") {
+                RevealableSecureField(title: "Password", text: $passwordText)
+            }
+            FieldColumn(title: "Key") {
+                Picker("Key", selection: $draft.sshKeyID) {
+                    Text("None").tag(UUID?.none)
+                    ForEach(availableKeys) { key in
+                        Text(key.label.isEmpty ? "Untitled key" : key.label)
+                            .tag(UUID?.some(key.id))
+                    }
+                }
+                .labelsHidden()
+                if availableKeys.isEmpty {
+                    Text("No keys yet. Generate or import one with New.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var usageCard: some View {
+        DetailsCard {
+            HStack(spacing: 8) {
+                Image(systemName: "server.rack")
+                    .foregroundStyle(.secondary)
+                Text(usageSummary)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var usageSummary: String {
+        _ = vault.revision
+        return model.usageSummary(identityID: draft.id)
+    }
+
+    private var deleteMessage: String {
+        let summary = usageSummary
+        if summary == "Not used" {
+            return "\u{201C}\(draft.label)\u{201D} isn't used by any host. It will be removed from this vault."
+        }
+        return "\(summary). Those hosts will no longer use \u{201C}\(draft.label)\u{201D}."
+    }
+
+    // MARK: Actions
+
+    /// Applies the edited fields to the stored identity and saves it. A key that no longer
+    /// exists is saved as no key.
+    private func save(_ edited: Identity) {
+        guard var current = vault.get(Identity.self, id: edited.id) else { return }
+        current.label = edited.label
+        current.username = edited.username
+        current.password = edited.password
+        if let keyID = edited.sshKeyID, vault.get(SSHKey.self, id: keyID) != nil {
+            current.sshKeyID = keyID
+        } else {
+            current.sshKeyID = nil
+        }
+        let toSave = current
+        Task {
+            do {
+                try await model.update(toSave)
+            } catch {
+                present(error)
+            }
+        }
+    }
+
+    private func deleteIdentity() {
+        let id = draft.id
+        Task {
+            do {
+                try await model.deleteIdentity(id: id)
+                onClose()
+            } catch {
+                present(error)
+            }
+        }
+    }
+
+    private func present(_ error: any Error) {
+        errorMessage = error.localizedDescription
+        showError = true
+    }
+}
