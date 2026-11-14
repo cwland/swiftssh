@@ -459,6 +459,34 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertEqual(manager.tabs.count, 1)
     }
 
+    func testCancellingPasswordPromptDisconnectsAndReconnectAsksAgain() async throws {
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let tab = try manager.open(hostID: host.id)
+        XCTAssertEqual(tab.state, .awaitingPassword(prompt: "Password for root@np.example"))
+        manager.cancelPasswordPrompt(tabID: tab.id)
+        XCTAssertEqual(tab.state, .disconnected(nil))
+        XCTAssertEqual(manager.tabs.count, 1, "the tab stays open")
+        XCTAssertTrue(factory.sessions.isEmpty)
+        manager.reconnect(tabID: tab.id)
+        XCTAssertEqual(tab.state, .awaitingPassword(prompt: "Password for root@np.example"))
+    }
+
+    func testCancellingPasswordPromptIgnoredWhenNotAsking() async throws {
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        manager.cancelPasswordPrompt(tabID: tab.id)
+        XCTAssertEqual(tab.state, .connected)
+        XCTAssertEqual(factory.sessions[0].recorded.closeCalls, 0)
+    }
+
+    func testCancellingRejectedPasswordPromptDisconnects() async throws {
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("prompt") { if case .awaitingPassword = tab.state { true } else { false } }
+        manager.cancelPasswordPrompt(tabID: tab.id)
+        XCTAssertEqual(tab.state, .disconnected(nil))
+    }
+
     func testRejectedKeyDisconnectsWithoutPrompt() async throws {
         factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
         let key = vault.saveNow(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "PEM"))

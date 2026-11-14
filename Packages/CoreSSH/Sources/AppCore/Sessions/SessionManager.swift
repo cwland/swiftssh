@@ -250,6 +250,17 @@ public final class SessionManager {
         connect(tab, plan: nil)
     }
 
+    /// Dismisses the tab's password prompt without connecting: the tab shows as disconnected and
+    /// `reconnect` asks again. Ignored when the tab is gone or not asking.
+    public func cancelPasswordPrompt(tabID: UUID) {
+        guard let tab = tab(tabID), case .awaitingPassword = tab.state else { return }
+        if let attempt = detachAttempt(of: tab) {
+            let session = attempt.session
+            Task { await session.close() }
+        }
+        tab.state = .disconnected(nil)
+    }
+
     private func storePassword(_ password: String, hostID: UUID) {
         guard var host = vault.get(SavedHost.self, id: hostID) else { return }
         let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))

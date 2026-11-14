@@ -115,6 +115,14 @@ final class HostsViewModelTests: XCTestCase {
         XCTAssertNil(vm.quickConnectTarget)
         vm.searchText = "ssh root@example.com:2222"
         XCTAssertEqual(vm.quickConnectTarget, QuickConnectTarget(username: "root", host: "example.com", port: 2222))
+    }
+
+    @MainActor func testCanConnectOnlyWithAQuickConnectTarget() async throws {
+        let vm = HostsViewModel(vault: try await makeVault())
+        XCTAssertFalse(vm.canConnect)
+        vm.searchText = "root@example.com"
+        XCTAssertTrue(vm.canConnect)
+        vm.searchText = "ssh -x"
         XCTAssertFalse(vm.canConnect)
     }
 

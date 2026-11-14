@@ -144,6 +144,6 @@ public final class HostsViewModel {
         QuickConnect.parse(searchText)
     }
 
-    /// Connecting is not available this milestone.
-    public var canConnect: Bool { false }
+    /// True when the search text is a quick-connect target (`[ssh] [user@]host[:port]`).
+    public var canConnect: Bool { quickConnectTarget != nil }
 }
