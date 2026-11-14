@@ -15,6 +15,16 @@ public struct GeneratedKey: Equatable, Sendable {
     }
 }
 
+/// Prints the private key as `<redacted>` so it can't leak into logs or test failures.
+extension GeneratedKey: CustomStringConvertible, CustomDebugStringConvertible {
+    public var description: String {
+        "GeneratedKey(keyType: \(keyType.rawValue), publicKey: \(String(reflecting: publicKey)), "
+            + "privateKey: <redacted>)"
+    }
+
+    public var debugDescription: String { description }
+}
+
 public enum SSHKeyGenerator {
     public static func ed25519(comment: String) -> GeneratedKey {
         let key = Curve25519.Signing.PrivateKey()

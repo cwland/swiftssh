@@ -198,4 +198,16 @@ final class SSHKeyGeneratorTests: XCTestCase {
         XCTAssertEqual(fromSPKI.e, fromPKCS1.e)
         XCTAssertEqual(OpenSSHFormat.mpint(fromSPKI.e), [0, 0, 0, 3, 0x01, 0x00, 0x01])
     }
+
+    func testGeneratedKeyDescriptionHidesPrivateKey() {
+        let key = GeneratedKey(keyType: .ed25519, publicKey: "ssh-ed25519 AAAAPUBLIC c",
+                               privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----SECRETBODY")
+        for text in [String(describing: key), String(reflecting: key)] {
+            XCTAssertFalse(text.contains("SECRETBODY"), text)
+            XCTAssertTrue(text.contains("<redacted>"), text)
+            XCTAssertTrue(text.contains("GeneratedKey"), text)
+            XCTAssertTrue(text.contains("ed25519"), text)
+            XCTAssertTrue(text.contains("ssh-ed25519 AAAAPUBLIC c"), text)
+        }
+    }
 }
