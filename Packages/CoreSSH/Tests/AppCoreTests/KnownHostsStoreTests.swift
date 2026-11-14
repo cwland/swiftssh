@@ -257,9 +257,12 @@ final class KnownHostsStoreTests: XCTestCase {
             return await gate.wait()
         }
         let k1 = candidate(blob: [1]), k2 = candidate(blob: [2])
-        async let d1 = ev.evaluate(k1)
-        async let d2 = ev.evaluate(k2)
+        // Start k1 and wait for its prompt before starting k2, so the order is known.
+        let t1 = Task { await ev.evaluate(k1) }
+        while await gate.count < 1 { await Task.yield() }
+        let t2 = Task { await ev.evaluate(k2) }
         while await gate.count < 2 { await Task.yield() }
+        XCTAssertEqual(seen.asked.map(\.0), [k1, k2])
         XCTAssertEqual(seen.asked.map(\.1), [.unknown, .unknown])
         await gate.release(0, .trusted)
         while vault.all(KnownHost.self).isEmpty { await Task.yield() }
@@ -270,8 +273,9 @@ final class KnownHostsStoreTests: XCTestCase {
         XCTAssertEqual(seen.asked[2].1, .changed(previousFingerprint: k1.fingerprint))
         XCTAssertEqual(vault.all(KnownHost.self).count, 1)
         await gate.release(2, .rejected)
-        let r1 = await d1, r2 = await d2
-        XCTAssertEqual([r1, r2].filter { $0 == .trusted }.count, 1)
+        let r1 = await t1.value, r2 = await t2.value
+        XCTAssertEqual(r1, .trusted)
+        XCTAssertEqual(r2, .rejected)
         XCTAssertEqual(vault.all(KnownHost.self).count, 1)
         XCTAssertEqual(store.check(k1), .known)
     }
