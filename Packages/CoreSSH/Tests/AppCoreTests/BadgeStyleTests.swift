@@ -61,6 +61,19 @@ final class BadgeStyleTests: XCTestCase {
         XCTAssertEqual(BadgeStyle.logoFolderName, "Badges")
     }
 
+    func testNewestLogoFileIsReadFirstAndSVGWinsATie() {
+        let old = Date(timeIntervalSince1970: 1_000), new = Date(timeIntervalSince1970: 2_000)
+        XCTAssertEqual(BadgeStyle.logoFilesInReadOrder(for: .ubuntu, modified: ["ubuntu.svg": old, "ubuntu.png": new]),
+                       ["ubuntu.png", "ubuntu.svg"], "a just-installed PNG wins over a leftover SVG")
+        XCTAssertEqual(BadgeStyle.logoFilesInReadOrder(for: .ubuntu, modified: ["ubuntu.svg": new, "ubuntu.png": old]),
+                       ["ubuntu.svg", "ubuntu.png"], "an SVG dropped in later wins")
+        XCTAssertEqual(BadgeStyle.logoFilesInReadOrder(for: .ubuntu, modified: ["ubuntu.svg": old, "ubuntu.png": old]),
+                       ["ubuntu.svg", "ubuntu.png"])
+        XCTAssertEqual(BadgeStyle.logoFilesInReadOrder(for: .ubuntu, modified: ["ubuntu.png": old, "debian.svg": new]),
+                       ["ubuntu.png"])
+        XCTAssertEqual(BadgeStyle.logoFilesInReadOrder(for: OSBadge(rawValue: "../x"), modified: ["../x.png": new]), [])
+    }
+
     func testLegacyRaspberryPiFilesAreRenamedOnlyWhenRaspbianHasNone() {
         XCTAssertEqual(BadgeStyle.logoFileMigrations(existingFileNames: ["raspberry-pi.svg", "ubuntu.png"]),
                        [BadgeStyle.FileRename(from: "raspberry-pi.svg", to: "raspbian.svg")])

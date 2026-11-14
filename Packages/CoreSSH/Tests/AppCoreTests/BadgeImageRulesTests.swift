@@ -120,7 +120,11 @@ final class BadgeImageRulesTests: XCTestCase {
     func testNewErrorMessages() {
         XCTAssertEqual(BadgeImageError.tooManyPixels.message, "That image has too many pixels (over 50 megapixels).")
         XCTAssertEqual(BadgeImageError.oldFileNotRemoved(name: "ubuntu.svg", reason: "denied").message,
-                       "The new image is saved and shown, but the old ubuntu.svg couldn't be removed (denied). Remove it in Finder, or it will be used again after the app restarts.")
+                       "The new image is saved and shown, but the old ubuntu.svg couldn't be removed (denied). You can delete it in Finder.")
+    }
+
+    func testCouldNotReadMessage() {
+        XCTAssertEqual(BadgeImageError.couldNotRead("no permission").message, "Couldn't read that file: no permission")
     }
 
     func testRenderedCanvasIsSRGB() {

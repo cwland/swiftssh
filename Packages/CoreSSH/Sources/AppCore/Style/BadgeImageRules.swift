@@ -9,6 +9,7 @@ public enum BadgeImageError: Error, Equatable, Sendable {
     case tooLarge
     case tooManyPixels
     case downloadFailed(String)
+    case couldNotRead(String)
     case couldNotSave(String)
     /// The new PNG was written but the old file of the same name (which is preferred) wasn't removed.
     case oldFileNotRemoved(name: String, reason: String)
@@ -21,9 +22,10 @@ public enum BadgeImageError: Error, Equatable, Sendable {
         case .tooLarge: "That image is larger than 2 MB."
         case .tooManyPixels: "That image has too many pixels (over 50 megapixels)."
         case .downloadFailed(let reason): "Couldn't download it: \(reason)"
+        case .couldNotRead(let reason): "Couldn't read that file: \(reason)"
         case .couldNotSave(let reason): "Couldn't save the image: \(reason)"
         case .oldFileNotRemoved(let name, let reason):
-            "The new image is saved and shown, but the old \(name) couldn't be removed (\(reason)). Remove it in Finder, or it will be used again after the app restarts."
+            "The new image is saved and shown, but the old \(name) couldn't be removed (\(reason)). You can delete it in Finder."
         }
     }
 }

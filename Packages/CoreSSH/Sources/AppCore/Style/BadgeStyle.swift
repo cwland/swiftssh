@@ -1,3 +1,4 @@
+import Foundation
 import CoreModels
 
 /// How an OS badge looks, from the bundled `OSCatalog`. Ids the catalog doesn't know (written
@@ -22,7 +23,7 @@ public enum BadgeStyle {
     /// Folder (inside Application Support/TermiusReimagined) holding user-supplied logos.
     public static let logoFolderName = "Badges"
 
-    /// Logo file extensions, in order of preference.
+    /// Logo file extensions, in order of preference when two files are equally new.
     public static let logoFileExtensions = ["svg", "png"]
 
     /// Base file name (without extension) of the logo for a badge: its catalog id. nil for an id
@@ -40,6 +41,17 @@ public enum BadgeStyle {
     public static func logoFileNames(for badge: OSBadge) -> [String] {
         guard let base = logoFileName(for: badge) else { return [] }
         return logoFileExtensions.map { base + "." + $0 }
+    }
+
+    /// The logo files of `badge` that exist (`modified`: file name → modification date), in the
+    /// order to try them: newest first, so a just-installed PNG wins over a leftover SVG and an SVG
+    /// dropped in later wins over an older PNG; on a tie, `logoFileExtensions` order (SVG first).
+    public static func logoFilesInReadOrder(for badge: OSBadge, modified: [String: Date]) -> [String] {
+        let names = logoFileNames(for: badge)
+        return names.enumerated()
+            .compactMap { offset, name in modified[name].map { (name, $0, offset) } }
+            .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.2 < $1.2 }
+            .map(\.0)
     }
 
     /// Logo base names used before the catalog, and the badge they now belong to.
