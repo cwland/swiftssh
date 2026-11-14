@@ -66,6 +66,40 @@ final class ConnectionPlannerTests: XCTestCase {
         guard case .none = plan.credential else { return XCTFail("\(plan.credential)") }
     }
 
+    func testExplicitIdentityWinsOverDirectUsername() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "root", identityID: identity.id))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "alice")
+        guard case .password("secret") = plan.credential else { return XCTFail("\(plan.credential)") }
+    }
+
+    func testDeletedExplicitIdentityFallsThroughToGroupDefault() async throws {
+        let vault = try await makeVault()
+        let gone = try await vault.save(Identity(label: "x", username: "ghost", password: "boo"))
+        let def = try await vault.save(Identity(label: "d", username: "alice", password: "secret"))
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: def.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, identityID: gone.id))
+        try await vault.delete(Identity.self, id: gone.id)
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "alice")
+        guard case .password("secret") = plan.credential else { return XCTFail("\(plan.credential)") }
+    }
+
+    func testDeletedExplicitIdentityFallsThroughToDirectCredentials() async throws {
+        let vault = try await makeVault()
+        let gone = try await vault.save(Identity(label: "x", username: "ghost", password: "boo"))
+        let def = try await vault.save(Identity(label: "d", username: "alice", password: "secret"))
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: def.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, username: "root",
+                                                  identityID: gone.id, password: "pw"))
+        try await vault.delete(Identity.self, id: gone.id)
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "root")
+        guard case .password("pw") = plan.credential else { return XCTFail("\(plan.credential)") }
+    }
+
     func testEmptyPasswordCountsAsNoPassword() async throws {
         let vault = try await makeVault()
         let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
@@ -162,6 +196,20 @@ final class ConnectionPlannerTests: XCTestCase {
                 XCTAssertFalse(text.contains("hunter"))
                 XCTAssertFalse(text.contains("SECRETPEM"))
                 XCTAssertTrue(text.contains("<redacted>"))
+            }
+        }
+    }
+
+    func testPlanDescriptionIsRedacted() async {
+        let plan = ConnectionPlan(hostID: nil, label: "L", host: "h", port: 22, username: "u",
+                                  credential: .privateKey(type: .ed25519, pem: "SECRETPEM", passphrase: "hunter3"),
+                                  engine: .citadel, startupScript: nil)
+        let pw = ConnectionPlan(hostID: nil, label: "L", host: "h", port: 22, username: "u",
+                                credential: .password("hunter2"), engine: .citadel, startupScript: nil)
+        for p in [plan, pw] {
+            for text in [String(describing: p), String(reflecting: p)] {
+                XCTAssertFalse(text.contains("hunter"))
+                XCTAssertFalse(text.contains("SECRETPEM"))
             }
         }
     }
