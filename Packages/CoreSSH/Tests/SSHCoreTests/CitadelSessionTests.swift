@@ -288,8 +288,20 @@ final class CitadelSessionTests: XCTestCase {
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForEvents([.connected, .ready])
         try await Task.sleep(for: .seconds(1))
+        XCTAssertFalse(session.startedKeepAliveLoop)
         XCTAssertEqual(session.answeredKeepAliveProbes, 0)
         XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+        await session.close()
+    }
+
+    func testKeepAliveLoopStartsOnlyWhenAnIntervalIsSet() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password),
+                                                keepAlive: KeepAlivePolicy(interval: .milliseconds(200), maxUnanswered: 3)),
+                                     hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertTrue(session.startedKeepAliveLoop)
         await session.close()
     }
 

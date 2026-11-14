@@ -607,7 +607,7 @@ public final class SystemSSHSession: TerminalSession {
     /// `ServerAliveInterval`/`ServerAliveCountMax` for the policy; off is `ServerAliveInterval=0`.
     private static func aliveArguments(_ policy: KeepAlivePolicy) -> [String] {
         guard let interval = policy.interval else { return ["-o", "ServerAliveInterval=0"] }
-        let seconds = Int(interval.components.seconds)
+        let seconds = max(1, Int(interval.components.seconds)) // 0 would mean off
         return ["-o", "ServerAliveInterval=\(seconds)", "-o", "ServerAliveCountMax=\(policy.maxUnanswered)"]
     }
 

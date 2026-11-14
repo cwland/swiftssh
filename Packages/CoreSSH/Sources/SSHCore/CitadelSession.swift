@@ -41,6 +41,8 @@ public final class CitadelSession: TerminalSession {
         var cancelPending: (@Sendable () -> Void)?
         /// Keep-alive probes the server answered (accepted or refused); for tests.
         var answeredProbes = 0
+        /// A keep-alive probe loop was started for this session; for tests.
+        var keepAliveLoopStarted = false
     }
 
     private enum PTYInput: Sendable {
@@ -174,6 +176,9 @@ public final class CitadelSession: TerminalSession {
 
     /// Keep-alive probes the server has answered so far (tests only).
     var answeredKeepAliveProbes: Int { state.withLock { $0.answeredProbes } }
+
+    /// Whether this session started a keep-alive probe loop (tests only).
+    var startedKeepAliveLoop: Bool { state.withLock { $0.keepAliveLoopStarted } }
 
     // MARK: Authentication
 
@@ -401,7 +406,8 @@ public final class CitadelSession: TerminalSession {
                 assert(root != nil, "Keep-alive disabled: Citadel's TTYStdinWriter no longer exposes its channel (or it has no parent)")
                 let keepAliveTask = root.flatMap { root in
                     plan.keepAlive.interval.map { interval in
-                        Task { await self.runKeepAlive(on: root, connection: connection,
+                        self.state.withLock { $0.keepAliveLoopStarted = true }
+                        return Task { await self.runKeepAlive(on: root, connection: connection,
                                                        interval: interval, maxUnanswered: plan.keepAlive.maxUnanswered) }
                     }
                 }

@@ -229,6 +229,9 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(alive(.normal), ["ServerAliveInterval=30", "ServerAliveCountMax=3"])
         XCTAssertEqual(alive(.relaxed), ["ServerAliveInterval=60", "ServerAliveCountMax=5"])
         XCTAssertEqual(alive(.off), ["ServerAliveInterval=0"])
+        // A sub-second interval must not truncate to 0 (which means off).
+        XCTAssertEqual(alive(KeepAlivePolicy(interval: .milliseconds(400), maxUnanswered: 2)),
+                       ["ServerAliveInterval=1", "ServerAliveCountMax=2"])
     }
 
     func testKnownHostsLinesReplaceEveryLineForTheHost() {

@@ -140,8 +140,7 @@ final class SessionManagerTests: XCTestCase {
         await waitUntil("connected") { tab.state == .connected }
         XCTAssertEqual(factory.sessions[0].plan.keepAlive, .fast)
 
-        current = .off   // changed while the tab is open: the open session keeps its plan
-        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .fast)
+        current = .off   // changed while the tab is open; the first session was built with .fast (asserted above)
         manager.reconnect(tabID: tab.id)
         await waitUntil("second session") { self.factory.sessions.count == 2 }
         XCTAssertEqual(factory.sessions[1].plan.keepAlive, .off)
