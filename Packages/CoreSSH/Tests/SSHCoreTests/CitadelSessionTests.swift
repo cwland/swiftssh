@@ -277,18 +277,30 @@ final class CitadelSessionTests: XCTestCase {
         await session.close()
     }
 
-    func testKeepAliveDefaultsAreThirtySecondsThreeMissed() {
-        XCTAssertEqual(CitadelSession.KeepAlive.default.interval, .seconds(30))
-        XCTAssertEqual(CitadelSession.KeepAlive.default.maxUnanswered, 3)
+    func testPlanDefaultsToTheNormalKeepAlive() {
+        XCTAssertEqual(plan(.none).keepAlive, .normal)
+    }
+
+    func testKeepAliveOffSendsNoProbes() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password), keepAlive: .off),
+                                     hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(session.answeredKeepAliveProbes, 0)
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+        await session.close()
     }
 
     func testKeepAliveSurvivesManyAnsweredProbesThenDetectsAFrozenServer() async throws {
         #if !os(Linux)
         throw XCTSkip("suspendSessions() reads /proc (Linux only)")
         #endif
-        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
-                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
-                                     keepAlive: .init(interval: .milliseconds(300), maxUnanswered: 2))
+        let session = CitadelSession(plan: plan(.password(server.password),
+                                                keepAlive: KeepAlivePolicy(interval: .milliseconds(300), maxUnanswered: 2)),
+                                     hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForEvents([.connected, .ready])
@@ -311,9 +323,10 @@ final class CitadelSessionTests: XCTestCase {
         #if !os(Linux)
         throw XCTSkip("suspendSessions() reads /proc (Linux only)")
         #endif
-        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
-                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
-                                     keepAlive: .init(interval: .milliseconds(500), maxUnanswered: 3))
+        let session = CitadelSession(plan: plan(.password(server.password),
+                                                keepAlive: KeepAlivePolicy(interval: .milliseconds(500), maxUnanswered: 3)),
+                                     hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15))
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForEvents([.connected, .ready])
@@ -409,9 +422,10 @@ final class CitadelSessionTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func plan(_ credential: SSHCredential) -> ConnectionPlan {
+    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {
         ConnectionPlan(hostID: nil, label: "test", host: server.host, port: server.port,
-                       username: server.username, credential: credential, engine: .citadel, startupScript: nil)
+                       username: server.username, credential: credential, engine: .citadel, startupScript: nil,
+                       keepAlive: keepAlive)
     }
 
     private func assertShellWorks(_ credential: SSHCredential, file: StaticString = #filePath, line: UInt = #line) async throws {

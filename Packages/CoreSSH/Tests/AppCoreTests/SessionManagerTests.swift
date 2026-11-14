@@ -112,12 +112,43 @@ final class SessionManagerTests: XCTestCase {
         manager = makeManager(initialSizeTimeout: .zero)
     }
 
-    private func makeManager(initialSizeTimeout: Duration) -> SessionManager {
+    private func makeManager(initialSizeTimeout: Duration,
+                             keepAlivePolicy: (@MainActor () -> KeepAlivePolicy)? = nil) -> SessionManager {
         let factory = factory!
-        return SessionManager(vault: vault, knownHosts: store,
-                              makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+        let make: @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession = { plan, evaluator in
+            factory.make(plan, evaluator)
+        }
+        if let keepAlivePolicy {
+            return SessionManager(vault: vault, knownHosts: store, makeSession: make,
+                                  deviceName: "Test Mac", defaultUsername: "me",
+                                  initialSizeTimeout: initialSizeTimeout, keepAlivePolicy: keepAlivePolicy)
+        }
+        return SessionManager(vault: vault, knownHosts: store, makeSession: make,
                               deviceName: "Test Mac", defaultUsername: "me",
                               initialSizeTimeout: initialSizeTimeout)
+    }
+
+    func testPlansDefaultToTheNormalKeepAlive() async throws {
+        _ = try manager.open(hostID: passwordHost().id)
+        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .normal)
+    }
+
+    func testEachAttemptGetsThePolicyCurrentAtThatTime() async throws {
+        var current = KeepAlivePolicy.fast
+        manager = makeManager(initialSizeTimeout: .zero, keepAlivePolicy: { current })
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .fast)
+
+        current = .off   // changed while the tab is open: the open session keeps its plan
+        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .fast)
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second session") { self.factory.sessions.count == 2 }
+        XCTAssertEqual(factory.sessions[1].plan.keepAlive, .off)
+
+        current = .relaxed
+        _ = try manager.open(hostID: passwordHost(label: "Second").id)
+        XCTAssertEqual(factory.sessions[2].plan.keepAlive, .relaxed)
     }
 
     // MARK: Helpers

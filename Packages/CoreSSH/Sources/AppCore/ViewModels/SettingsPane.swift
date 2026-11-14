@@ -1,10 +1,12 @@
 /// Entries in the Settings window's sidebar. Later panes (terminal themes, sync, AI, security)
 /// are added here.
 public enum SettingsPane: String, CaseIterable, Hashable, Sendable {
+    case connection
     case osIcons
 
     public var title: String {
         switch self {
+        case .connection: "Connection"
         case .osIcons: "OS Icons"
         }
     }
@@ -12,6 +14,7 @@ public enum SettingsPane: String, CaseIterable, Hashable, Sendable {
     /// SF Symbol for the sidebar row.
     public var systemImage: String {
         switch self {
+        case .connection: "antenna.radiowaves.left.and.right"
         case .osIcons: "square.grid.2x2"
         }
     }
