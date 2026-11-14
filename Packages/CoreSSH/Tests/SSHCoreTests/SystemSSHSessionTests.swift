@@ -617,40 +617,71 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(secretFiles(), [])
     }
 
+    #if os(Linux)
+    // These two tests write into the real ~/.ssh (ssh reads it through the passwd entry, not $HOME),
+    // so they only run as root in the Linux sandbox, never touch a file that already exists, and
+    // remove exactly what they created.
+
     func testPasswordIsNotSpentOnDefaultKeys() async throws {
-        // ssh finds default keys through the passwd entry's home directory (not $HOME).
-        let home = try XCTUnwrap(getpwuid(getuid())).pointee.pw_dir.map { String(cString: $0) } ?? ""
-        let defaultKey = URL(fileURLWithPath: home).appendingPathComponent(".ssh/id_ed25519")
-        guard !FileManager.default.fileExists(atPath: defaultKey.path) else { throw XCTSkip("a real default key exists") }
-        try FileManager.default.createDirectory(at: defaultKey.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        defer {
-            try? FileManager.default.removeItem(at: defaultKey)
-            try? FileManager.default.removeItem(at: defaultKey.appendingPathExtension("pub"))
+        let keyFile = scratch.appendingPathComponent("id_ed25519")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "some passphrase", "-f", keyFile.path])
+        let privateKey = try Data(contentsOf: keyFile)
+        let publicKey = try Data(contentsOf: keyFile.appendingPathExtension("pub"))
+        try await withHomeSSHFiles(["id_ed25519": (privateKey, 0o600), "id_ed25519.pub": (publicKey, 0o644)]) {
+            try server.authorize(publicKeyLine: String(decoding: publicKey, as: UTF8.self))
+            try await assertShellWorks(.password(server.password))
+            XCTAssertTrue(server.log().contains("Accepted password"), server.log())
         }
-        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "some passphrase", "-f", defaultKey.path])
-        try server.authorize(publicKeyLine: String(contentsOf: defaultKey.appendingPathExtension("pub"), encoding: .utf8))
-        try await assertShellWorks(.password(server.password))
-        XCTAssertTrue(server.log().contains("Accepted password"), server.log())
     }
 
     func testUserSSHConfigIsIgnored() async throws {
-        let home = try XCTUnwrap(getpwuid(getuid())).pointee.pw_dir.map { String(cString: $0) } ?? ""
-        let config = URL(fileURLWithPath: home).appendingPathComponent(".ssh/config")
-        guard !FileManager.default.fileExists(atPath: config.path) else { throw XCTSkip("a real ssh config exists") }
-        try FileManager.default.createDirectory(at: config.deletingLastPathComponent(), withIntermediateDirectories: true,
-                                                attributes: [.posixPermissions: 0o700])
-        defer { try? FileManager.default.removeItem(at: config) }
-        _ = FileManager.default.createFile(atPath: config.path, contents: Data("Host *\n  ProxyCommand /bin/false\n".utf8),
-                                           attributes: [.posixPermissions: 0o600])
-        let session = makeSession(.password(server.password))
-        let recorder = EventRecorder(session.events)
-        await session.start(cols: 80, rows: 24)
-        try await recorder.waitForEvents([.connected, .ready])
-        _ = try await session.runCommand("true")
-        await session.close()
-        try await recorder.waitForFinish()
+        try await withHomeSSHFiles(["config": (Data("Host *\n  ProxyCommand /bin/false\n".utf8), 0o600)]) {
+            let session = makeSession(.password(server.password))
+            let recorder = EventRecorder(session.events)
+            await session.start(cols: 80, rows: 24)
+            try await recorder.waitForEvents([.connected, .ready])
+            _ = try await session.runCommand("true")
+            await session.close()
+            try await recorder.waitForFinish()
+        }
     }
+
+    /// Runs `body` with `files` (name: contents, mode) present in the passwd home's `.ssh`. Skips
+    /// unless running as root or when any of the files already exists. Files are created with
+    /// O_EXCL; afterwards only the files created here are removed, and `.ssh` too if created here.
+    private func withHomeSSHFiles(_ files: [String: (Data, mode_t)], _ body: () async throws -> Void) async throws {
+        guard getuid() == 0 else { throw XCTSkip("writes to ~/.ssh only as root in the Linux sandbox") }
+        let home = try XCTUnwrap(getpwuid(getuid())).pointee.pw_dir.map { String(cString: $0) } ?? ""
+        let directory = URL(fileURLWithPath: home).appendingPathComponent(".ssh", isDirectory: true)
+        for name in files.keys where FileManager.default.fileExists(atPath: directory.appendingPathComponent(name).path) {
+            throw XCTSkip("~/.ssh/\(name) already exists")
+        }
+        var createdDirectory = false
+        if mkdir(directory.path, 0o700) == 0 {
+            createdDirectory = true
+        } else if errno != EEXIST {
+            return XCTFail("mkdir ~/.ssh: errno \(errno)")
+        }
+        var created: [URL] = []
+        defer {
+            for file in created { unlink(file.path) }
+            if createdDirectory { try? FileManager.default.removeItem(at: directory) }
+        }
+        for (name, (contents, mode)) in files.sorted(by: { $0.key < $1.key }) {
+            let url = directory.appendingPathComponent(name)
+            let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, mode)
+            guard fd >= 0 else {
+                if errno == EEXIST { throw XCTSkip("~/.ssh/\(name) appeared meanwhile") }
+                return XCTFail("create ~/.ssh/\(name): errno \(errno)")
+            }
+            created.append(url)
+            let written = contents.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+            close(fd)
+            guard written == contents.count else { return XCTFail("short write to ~/.ssh/\(name)") }
+        }
+        try await body()
+    }
+    #endif
 
     func testSessionStartFallbackWhenTerminalModeIsUnavailable() async throws {
         // Password through askpass: started once the helper consumed the secret and output followed.

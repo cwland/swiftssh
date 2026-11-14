@@ -49,7 +49,7 @@ let package = Package(
             ]
         ),
         .target(name: "SyncTestSupport", dependencies: ["SyncCore", "CoreModels"]),
-        .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore"]),
+        .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore", "SSHCore"]),
         .testTarget(
             name: "SSHCoreTests",
             dependencies: [
