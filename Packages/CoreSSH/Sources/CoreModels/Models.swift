@@ -9,6 +9,16 @@ public enum AIProvider: String, Codable, Sendable, CaseIterable {
     case openAICompatible, anthropic
 }
 
+/// Logging in with 1Password's SSH agent instead of a stored password or key.
+public struct AgentKeyChoice: Codable, Hashable, Sendable {
+    /// Public key line ("ssh-ed25519 AAAA… comment") to pin; nil = let the agent offer any key.
+    public var publicKey: String?
+
+    public init(publicKey: String?) {
+        self.publicKey = publicKey
+    }
+}
+
 public struct HostGroup: SyncableModel {
     public static let recordType = SyncRecordType.hostGroup
     public var id: UUID
@@ -42,6 +52,8 @@ public struct Host: SyncableModel {
     public var identityID: UUID?
     public var password: String?
     public var sshKeyID: UUID?
+    /// Non-nil = log in with the 1Password SSH agent (wins over `sshKeyID` and `password`).
+    public var agentKey: AgentKeyChoice?
     public var osBadge: OSBadge?
     public var osBadgeIsManual: Bool
     public var themeID: String?
@@ -54,12 +66,14 @@ public struct Host: SyncableModel {
 
     public init(id: UUID = UUID(), label: String, address: String, port: Int? = nil, groupID: UUID? = nil,
                 tags: [String] = [], username: String? = nil, identityID: UUID? = nil, password: String? = nil,
-                sshKeyID: UUID? = nil, osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
+                sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil,
+                osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
                 themeID: String? = nil, startupSnippetID: UUID? = nil, lastConnectedAt: Date? = nil,
                 useSystemSSH: Bool? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.address = address; self.port = port
         self.groupID = groupID; self.tags = tags; self.username = username
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
+        self.agentKey = agentKey
         self.osBadge = osBadge; self.osBadgeIsManual = osBadgeIsManual; self.themeID = themeID
         self.startupSnippetID = startupSnippetID; self.lastConnectedAt = lastConnectedAt
         self.useSystemSSH = useSystemSSH
@@ -74,13 +88,15 @@ public struct Identity: SyncableModel {
     public var username: String
     public var password: String?
     public var sshKeyID: UUID?
+    /// Non-nil = log in with the 1Password SSH agent (wins over `sshKeyID` and `password`).
+    public var agentKey: AgentKeyChoice?
     public var updatedAt: Date
     public var deleted: Bool
 
     public init(id: UUID = UUID(), label: String, username: String, password: String? = nil,
-                sshKeyID: UUID? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
+                sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.username = username; self.password = password
-        self.sshKeyID = sshKeyID; self.updatedAt = updatedAt; self.deleted = deleted
+        self.sshKeyID = sshKeyID; self.agentKey = agentKey; self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
 

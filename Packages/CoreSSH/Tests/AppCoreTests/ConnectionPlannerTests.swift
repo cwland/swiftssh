@@ -260,4 +260,81 @@ final class ConnectionPlannerTests: XCTestCase {
             }
         }
     }
+
+    // MARK: 1Password SSH agent
+
+    func testHostAgentKeyWinsOverKeyAndPassword() async throws {
+        let vault = try await makeVault()
+        let k = try await vault.save(key())
+        let choice = AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pinned")
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "root", password: "pw",
+                                                  sshKeyID: k.id, agentKey: choice))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.agentKey, choice)
+        guard case .none = plan.credential else { return XCTFail("\(plan.credential)") }
+        XCTAssertEqual(plan.engine, .systemSSH)
+        XCTAssertEqual(plan.username, "root")
+    }
+
+    func testPlansWithoutAgentKeyHaveNone() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "root", password: "pw"))
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).agentKey)
+        XCTAssertNil(ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: nil, host: "h", port: nil),
+                                            defaultUsername: "me").agentKey)
+    }
+
+    func testIdentityAgentKeyWinsWithinTheIdentity() async throws {
+        let vault = try await makeVault()
+        let k = try await vault.save(key())
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret", sshKeyID: k.id,
+                                                     agentKey: AgentKeyChoice(publicKey: nil)))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", identityID: identity.id))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertEqual(plan.username, "alice")
+        XCTAssertEqual(plan.engine, .systemSSH)
+    }
+
+    func testSourceOrderIsUnchangedByAgentKeys() async throws {
+        let vault = try await makeVault()
+        // An explicit identity without an agent key beats the host's own agent key.
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "root", identityID: identity.id,
+                                                  agentKey: AgentKeyChoice(publicKey: nil)))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertNil(plan.agentKey)
+        guard case .password("secret") = plan.credential else { return XCTFail("\(plan.credential)") }
+
+        // A host whose only direct credential is an agent key doesn't inherit the group's identity...
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "bob", password: "pw2"))
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: groupIdentity.id))
+        let agentOnly = try await vault.save(SavedHost(label: "A", address: "a", groupID: group.id,
+                                                       agentKey: AgentKeyChoice(publicKey: nil)))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: agentOnly.id, vault: vault)) { error in
+            XCTAssertEqual(error as? ConnectionPlanError, .missingUsername(.host(label: "A")))
+        }
+
+        // ...while a group identity's agent key is inherited.
+        let agentIdentity = try await vault.save(Identity(label: "ag", username: "carol",
+                                                          agentKey: AgentKeyChoice(publicKey: "ssh-ed25519 AAAA")))
+        let agentGroup = try await vault.save(HostGroup(name: "ag", defaultIdentityID: agentIdentity.id))
+        let inheriting = try await vault.save(SavedHost(label: "I", address: "a", groupID: agentGroup.id))
+        let inherited = try ConnectionPlanner.plan(hostID: inheriting.id, vault: vault)
+        XCTAssertEqual(inherited.agentKey, AgentKeyChoice(publicKey: "ssh-ed25519 AAAA"))
+        XCTAssertEqual(inherited.username, "carol")
+    }
+
+    func testKeyShadowedByAgentKeyIsNotCountedAsUsed() async throws {
+        let vault = try await makeVault()
+        let k = try await vault.save(key())
+        _ = try await vault.save(SavedHost(label: "H", address: "a", username: "root", sshKeyID: k.id,
+                                           agentKey: AgentKeyChoice(publicKey: nil)))
+        let resolved = CredentialResolution.resolve(host: vault.all(SavedHost.self)[0],
+                                                    directory: HostDirectory(hosts: vault.all(SavedHost.self), groups: []),
+                                                    vault: vault)
+        XCTAssertEqual(resolved.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertNil(resolved.key)
+        XCTAssertNil(resolved.password)
+    }
 }

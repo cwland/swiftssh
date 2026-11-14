@@ -208,6 +208,9 @@ public final class CitadelSession: TerminalSession {
                     return .failure(.keyUnreadable)
                 }
             }
+        case .agent:
+            // Signing with an agent needs system ssh (plans with an agent credential always use it).
+            return .failure(.connectionFailed("The built-in SSH engine can't sign in with an SSH agent."))
         case .none:
             // Asking for a password is the session manager's job; there is nothing to sign in with.
             return .failure(.authenticationFailed)
@@ -598,7 +601,7 @@ public final class CitadelSession: TerminalSession {
         switch plan.credential {
         case .password(let password): [password].filter { !$0.isEmpty }
         case .privateKey(_, _, let passphrase): [passphrase].compactMap { $0 }.filter { !$0.isEmpty }
-        case .none: []
+        case .agent, .none: []
         }
     }
 
