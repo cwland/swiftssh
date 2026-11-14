@@ -1,0 +1,168 @@
+import XCTest
+import CoreModels
+import SSHCore
+import SyncCore
+@testable import AppCore
+
+private typealias SavedHost = CoreModels.Host
+
+@MainActor
+final class ConnectionPlannerTests: XCTestCase {
+    private func makeVault() async throws -> LocalVault {
+        try await LocalVault.open(persistence: InMemoryVaultPersistence(), newDeviceID: { "dev-1" })
+    }
+
+    private func key(_ type: KeyType = .ed25519, passphrase: String? = nil) -> SSHKey {
+        SSHKey(label: "k", keyType: type, publicKey: "pub", privateKey: "PEM-\(type.rawValue)", passphrase: passphrase)
+    }
+
+    func testDirectPasswordHost() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "H", address: "h.example", username: "root", password: "pw"))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.hostID, host.id)
+        XCTAssertEqual(plan.label, "H")
+        XCTAssertEqual(plan.host, "h.example")
+        XCTAssertEqual(plan.port, 22)
+        XCTAssertEqual(plan.username, "root")
+        guard case .password("pw") = plan.credential else { return XCTFail("\(plan.credential)") }
+        XCTAssertEqual(plan.engine, .citadel)
+        XCTAssertNil(plan.startupScript)
+    }
+
+    func testIdentityProvidesUsernamePasswordAndKey() async throws {
+        let vault = try await makeVault()
+        let pwID = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let k = try await vault.save(key(passphrase: "pp"))
+        let keyID = try await vault.save(Identity(label: "j", username: "bob", sshKeyID: k.id))
+        let h1 = try await vault.save(SavedHost(label: "1", address: "a", identityID: pwID.id))
+        let h2 = try await vault.save(SavedHost(label: "2", address: "b", identityID: keyID.id))
+        let p1 = try ConnectionPlanner.plan(hostID: h1.id, vault: vault)
+        XCTAssertEqual(p1.username, "alice")
+        guard case .password("secret") = p1.credential else { return XCTFail() }
+        let p2 = try ConnectionPlanner.plan(hostID: h2.id, vault: vault)
+        XCTAssertEqual(p2.username, "bob")
+        guard case .privateKey(.ed25519, "PEM-ed25519", "pp") = p2.credential else { return XCTFail() }
+    }
+
+    func testGroupDefaultIdentityIsInherited() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let parent = try await vault.save(HostGroup(name: "p", defaultIdentityID: identity.id))
+        let child = try await vault.save(HostGroup(name: "c", parentID: parent.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: child.id))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "alice")
+        guard case .password("secret") = plan.credential else { return XCTFail() }
+    }
+
+    func testDirectCredentialsDisableInheritance() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let group = try await vault.save(HostGroup(name: "g", defaultIdentityID: identity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, username: "root"))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "root")
+        guard case .none = plan.credential else { return XCTFail("\(plan.credential)") }
+    }
+
+    func testEmptyPasswordCountsAsNoPassword() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", identityID: identity.id, password: ""))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "alice")
+        guard case .password("secret") = plan.credential else { return XCTFail("\(plan.credential)") }
+        let bare = try await vault.save(SavedHost(label: "B", address: "b", username: "u", password: ""))
+        guard case .none = try ConnectionPlanner.plan(hostID: bare.id, vault: vault).credential else { return XCTFail() }
+    }
+
+    func testMissingKeyIsTreatedAsAbsent() async throws {
+        let vault = try await makeVault()
+        let k = try await vault.save(key())
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "u", password: "pw", sshKeyID: k.id))
+        try await vault.delete(SSHKey.self, id: k.id)
+        guard case .password("pw") = try ConnectionPlanner.plan(hostID: host.id, vault: vault).credential
+        else { return XCTFail() }
+    }
+
+    func testKeyWinsOverPassword() async throws {
+        let vault = try await makeVault()
+        let k = try await vault.save(key())
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "u", password: "pw", sshKeyID: k.id))
+        guard case .privateKey(.ed25519, _, nil) = try ConnectionPlanner.plan(hostID: host.id, vault: vault).credential
+        else { return XCTFail() }
+    }
+
+    func testRSAKeySelectsSystemSSH() async throws {
+        let vault = try await makeVault()
+        let ed = try await vault.save(key(.ed25519))
+        let rsa = try await vault.save(key(.rsa))
+        let h1 = try await vault.save(SavedHost(label: "1", address: "a", username: "u", sshKeyID: ed.id))
+        let h2 = try await vault.save(SavedHost(label: "2", address: "b", username: "u", sshKeyID: rsa.id))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: h1.id, vault: vault).engine, .citadel)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: h2.id, vault: vault).engine, .systemSSH)
+    }
+
+    func testUseSystemSSHFlagSelectsSystemSSH() async throws {
+        let vault = try await makeVault()
+        let on = try await vault.save(SavedHost(label: "1", address: "a", username: "u", useSystemSSH: true))
+        let off = try await vault.save(SavedHost(label: "2", address: "b", username: "u", useSystemSSH: false))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: on.id, vault: vault).engine, .systemSSH)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: off.id, vault: vault).engine, .citadel)
+    }
+
+    func testInheritedPortAndStartupSnippet() async throws {
+        let vault = try await makeVault()
+        let snippet = try await vault.save(Snippet(name: "s", script: "cd /srv && ls"))
+        let group = try await vault.save(HostGroup(name: "g", defaultPort: 2222))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, username: "u",
+                                                  startupSnippetID: snippet.id))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.port, 2222)
+        XCTAssertEqual(plan.startupScript, "cd /srv && ls")
+        try await vault.delete(Snippet.self, id: snippet.id)
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
+    }
+
+    func testMissingAddressOrUsernameThrows() async throws {
+        let vault = try await makeVault()
+        let noAddress = try await vault.save(SavedHost(label: "1", address: "  ", username: "u"))
+        let noUser = try await vault.save(SavedHost(label: "2", address: "a"))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: noAddress.id, vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingAddress)
+        }
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: noUser.id, vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .missingUsername)
+        }
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: UUID(), vault: vault)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .hostNotFound)
+        }
+    }
+
+    func testQuickConnectUsesDefaultUsernameAndCitadel() async {
+        let bare = ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: nil, host: "h", port: nil),
+                                          defaultUsername: "corylanders")
+        XCTAssertEqual(bare.username, "corylanders")
+        XCTAssertEqual(bare.port, 22)
+        XCTAssertEqual(bare.engine, .citadel)
+        XCTAssertNil(bare.hostID)
+        guard case .none = bare.credential else { return XCTFail() }
+        let full = ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: "bob", host: "h", port: 2200),
+                                          defaultUsername: "corylanders")
+        XCTAssertEqual(full.username, "bob")
+        XCTAssertEqual(full.port, 2200)
+    }
+
+    func testCredentialDescriptionIsRedacted() async {
+        let creds: [SSHCredential] = [.password("hunter2"),
+                                      .privateKey(type: .rsa, pem: "SECRETPEM", passphrase: "hunter3")]
+        for c in creds {
+            for text in [c.description, c.debugDescription, "\(c)", String(reflecting: c)] {
+                XCTAssertFalse(text.contains("hunter"))
+                XCTAssertFalse(text.contains("SECRETPEM"))
+                XCTAssertTrue(text.contains("<redacted>"))
+            }
+        }
+    }
+}
