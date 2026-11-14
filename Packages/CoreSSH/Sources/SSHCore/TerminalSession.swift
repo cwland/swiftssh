@@ -9,18 +9,27 @@ public enum SSHEngine: Sendable, Equatable {
 public enum SSHCredential: Sendable, CustomStringConvertible, CustomDebugStringConvertible {
     case password(String)
     case privateKey(type: KeyType, pem: String, passphrase: String?)
+    /// Sign in with the keys of an SSH agent (1Password's) at `socketPath`, through system ssh only.
+    /// `publicKey` ("type base64 comment") pins one agent key; nil lets the agent offer any key.
+    case agent(socketPath: String, publicKey: String?)
     case none
 
-    /// Secrets are never printed.
+    /// Secrets are never printed; of a pinned agent key only its type is.
     public var description: String {
         switch self {
         case .password:
             "password(<redacted>)"
         case .privateKey(let type, _, let passphrase):
             "privateKey(type: \(type.rawValue), pem: <redacted>, passphrase: \(passphrase == nil ? "nil" : "<redacted>"))"
+        case .agent(let socketPath, let publicKey):
+            "agent(socketPath: \(socketPath), publicKey: \(publicKey.map { Self.keyType(of: $0) + " <pinned>" } ?? "nil"))"
         case .none:
             "none"
         }
+    }
+
+    private static func keyType(of publicKeyLine: String) -> String {
+        publicKeyLine.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "?"
     }
 
     public var debugDescription: String { description }
@@ -51,18 +60,29 @@ public struct ConnectionPlan: Sendable {
     public var host: String
     public var port: Int
     public var username: String
-    public var credential: SSHCredential
+    /// Setting an `.agent` credential also switches `engine` to `.systemSSH`: only system ssh can sign
+    /// with an agent.
+    public var credential: SSHCredential {
+        didSet { if case .agent = credential { engine = .systemSSH } }
+    }
     public var engine: SSHEngine
     public var startupScript: String?
     public var keepAlive: KeepAlivePolicy
+    /// Non-nil = the host signs in with 1Password's SSH agent. The planner can't know the agent's socket,
+    /// so `credential` stays `.none` until the session manager turns this into `.agent(socketPath:publicKey:)`
+    /// at connect time.
+    public var agentKey: AgentKeyChoice?
 
+    /// An `.agent` credential always gets `.systemSSH`, whatever `engine` says.
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,
                 credential: SSHCredential, engine: SSHEngine, startupScript: String?,
-                keepAlive: KeepAlivePolicy = .normal) {
+                keepAlive: KeepAlivePolicy = .normal, agentKey: AgentKeyChoice? = nil) {
         self.hostID = hostID; self.label = label; self.host = host; self.port = port
         self.username = username; self.credential = credential; self.engine = engine
         self.startupScript = startupScript
         self.keepAlive = keepAlive
+        self.agentKey = agentKey
+        if case .agent = credential { self.engine = .systemSSH }
     }
 }
 

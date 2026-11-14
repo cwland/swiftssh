@@ -29,6 +29,8 @@ public final class TerminalTab: Identifiable {
     public fileprivate(set) var state: State = .connecting
     /// nil = not auto-reconnecting. See `SessionManager` for when it starts and ends.
     public fileprivate(set) var autoReconnect: AutoReconnectState?
+    /// A next step to offer next to the current `.disconnected` message; cleared when a new attempt starts.
+    public fileprivate(set) var suggestedAction: SuggestedAction?
 
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
@@ -148,6 +150,10 @@ fileprivate final class SessionAttempt {
 /// `ReconnectSchedule`. A try that drops the same way, before or after it connected, leads to the next
 /// countdown, or to `.gaveUp` after the last; a try that becomes ready, fails any other way, or needs a
 /// password typed ends auto-reconnect (`nil`) and the tab shows what it would after `reconnect`.
+///
+/// 1Password agent keys: a plan with `agentKey` gets its socket from `agentSocket()` at every attempt and
+/// connects with `.agent(socketPath:publicKey:)` through system ssh. Without a socket no session starts:
+/// the tab is disconnected with a setup hint and `suggestedAction = .openOnePasswordSetup`.
 @MainActor @Observable
 public final class SessionManager {
     public private(set) var tabs: [TerminalTab] = []
@@ -166,6 +172,7 @@ public final class SessionManager {
     @ObservationIgnored private let defaultUsername: String
     @ObservationIgnored private let keepAlivePolicy: @MainActor () -> KeepAlivePolicy
     @ObservationIgnored private let autoReconnectEnabled: @MainActor () -> Bool
+    @ObservationIgnored private let agentSocket: @MainActor () -> String?
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     /// Every attempt whose session has not ended yet, including ones being closed.
@@ -180,7 +187,9 @@ public final class SessionManager {
                 keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .normal },
                 autoReconnectEnabled: @escaping @MainActor () -> Bool = { true },
                 now: @escaping @Sendable () -> Date = { Date() },
-                sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+                sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+                agentSocket: @escaping @MainActor () -> String? = { nil }) {
+        self.agentSocket = agentSocket
         self.keepAlivePolicy = keepAlivePolicy
         self.autoReconnectEnabled = autoReconnectEnabled
         self.now = now
@@ -471,6 +480,7 @@ public final class SessionManager {
             let session = old.session
             Task { await session.close() }
         }
+        tab.suggestedAction = nil
         var plan: ConnectionPlan
         if let given {
             plan = given
@@ -486,13 +496,22 @@ public final class SessionManager {
         tab.title = plan.label
         if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { tab.badge = host.osBadge }
 
+        if let agentKey = plan.agentKey {
+            guard let socket = agentSocket() else {
+                tab.state = .disconnected(Self.agentNotFoundMessage)
+                tab.suggestedAction = .openOnePasswordSetup
+                return
+            }
+            plan.credential = .agent(socketPath: socket, publicKey: agentKey.publicKey) // also selects system ssh
+        }
+
         var usedEnteredPassword = false
         if let entered = tab.enteredPassword {
             switch plan.credential {
             case .password, .none:
                 plan.credential = .password(entered)
                 usedEnteredPassword = true
-            case .privateKey:
+            case .privateKey, .agent:
                 break
             }
         }
@@ -694,6 +713,8 @@ public final class SessionManager {
                 return .awaitingPassword(prompt: "Password for \(who) (the saved one was rejected)")
             case .privateKey:
                 return .disconnected("The server rejected the key for \(who).")
+            case .agent:
+                return .disconnected("The server didn't accept the key from 1Password's SSH agent for \(who).")
             case .none:
                 return .disconnected(SessionError.authenticationFailed.localizedDescription)
             }
@@ -701,6 +722,9 @@ public final class SessionManager {
             return .disconnected(error.localizedDescription)
         }
     }
+
+    static let agentNotFoundMessage =
+        "1Password's SSH agent wasn't found. Turn on \u{201C}Use the SSH agent\u{201D} in 1Password \u{2192} Settings \u{2192} Developer."
 
     private static func userAtHost(_ plan: ConnectionPlan) -> String {
         "\(plan.username)@\(plan.host)"

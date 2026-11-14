@@ -113,10 +113,16 @@ final class SessionManagerTests: XCTestCase {
     }
 
     private func makeManager(initialSizeTimeout: Duration,
-                             keepAlivePolicy: (@MainActor () -> KeepAlivePolicy)? = nil) -> SessionManager {
+                             keepAlivePolicy: (@MainActor () -> KeepAlivePolicy)? = nil,
+                             agentSocket: (@MainActor () -> String?)? = nil) -> SessionManager {
         let factory = factory!
         let make: @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession = { plan, evaluator in
             factory.make(plan, evaluator)
+        }
+        if let agentSocket {
+            return SessionManager(vault: vault, knownHosts: store, makeSession: make,
+                                  deviceName: "Test Mac", defaultUsername: "me",
+                                  initialSizeTimeout: initialSizeTimeout, agentSocket: agentSocket)
         }
         if let keepAlivePolicy {
             return SessionManager(vault: vault, knownHosts: store, makeSession: make,
@@ -1190,4 +1196,94 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
         XCTAssertEqual(sleeper.requests, [.seconds(5)])
         XCTAssertEqual(factory.sessions.count, 2)
     }
+}
+
+// MARK: - 1Password SSH agent
+
+extension SessionManagerTests {
+    private static let noAgentMessage =
+        "1Password's SSH agent wasn't found. Turn on \u{201C}Use the SSH agent\u{201D} in 1Password \u{2192} Settings \u{2192} Developer."
+
+    private func agentHost(_ choice: AgentKeyChoice = AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin")) -> SavedHost {
+        vault.saveNow(SavedHost(label: "Agent", address: "agent.example", username: "root", password: "pw",
+                                agentKey: choice))
+    }
+
+    func testAgentPlanUsesTheSocketAtConnectTime() async throws {
+        let socket = SocketBox("/tmp/first.sock")
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { socket.path })
+        let tab = try manager.open(hostID: agentHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        let plan = factory.sessions[0].plan
+        guard case .agent("/tmp/first.sock", "ssh-ed25519 AAAA pin") = plan.credential else { return XCTFail("\(plan.credential)") }
+        XCTAssertEqual(plan.engine, .systemSSH)
+        XCTAssertNil(tab.suggestedAction)
+
+        socket.path = "/tmp/second.sock" // read again for every attempt
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second session") { self.factory.sessions.count == 2 }
+        guard case .agent("/tmp/second.sock", _) = factory.sessions[1].plan.credential else {
+            return XCTFail("\(factory.sessions[1].plan.credential)")
+        }
+    }
+
+    func testUnpinnedAgentKeyPassesNoPublicKey() async throws {
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHost(AgentKeyChoice(publicKey: nil)).id)
+        await waitUntil("connected") { tab.state == .connected }
+        guard case .agent("/tmp/a.sock", nil) = factory.sessions[0].plan.credential else {
+            return XCTFail("\(factory.sessions[0].plan.credential)")
+        }
+    }
+
+    func testMissingAgentSocketDisconnectsWithSetupSuggestion() async throws {
+        let socket = SocketBox(nil)
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { socket.path })
+        let tab = try manager.open(hostID: agentHost().id)
+        XCTAssertEqual(tab.state, .disconnected(Self.noAgentMessage))
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        XCTAssertTrue(factory.sessions.isEmpty, "no session without a socket")
+
+        // The default provider has no socket either.
+        manager = makeManager(initialSizeTimeout: .zero)
+        let other = try manager.open(hostID: agentHost().id)
+        XCTAssertEqual(other.state, .disconnected(Self.noAgentMessage))
+        XCTAssertEqual(other.suggestedAction, .openOnePasswordSetup)
+
+        // Once the agent is there, a new attempt clears the suggestion.
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { socket.path })
+        let retried = try manager.open(hostID: agentHost().id)
+        XCTAssertEqual(retried.suggestedAction, .openOnePasswordSetup)
+        socket.path = "/tmp/a.sock"
+        manager.reconnect(tabID: retried.id)
+        XCTAssertNil(retried.suggestedAction)
+        await waitUntil("connected") { retried.state == .connected }
+    }
+
+    func testPasswordHostsNeverAskForTheAgent() async throws {
+        let asked = SocketBox(nil)
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { asked.reads += 1; return nil })
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(asked.reads, 0)
+        XCTAssertNil(tab.suggestedAction)
+        guard case .password("pw") = factory.sessions[0].plan.credential else { return XCTFail() }
+    }
+
+    func testRejectedAgentKeyMessage() async throws {
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        manager = makeManager(initialSizeTimeout: .zero, agentSocket: { "/tmp/a.sock" })
+        let tab = try manager.open(hostID: agentHost().id)
+        await waitUntil("disconnected") {
+            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example.")
+        }
+        XCTAssertNil(tab.suggestedAction)
+    }
+}
+
+@MainActor
+private final class SocketBox {
+    var path: String?
+    var reads = 0
+    init(_ path: String?) { self.path = path }
 }

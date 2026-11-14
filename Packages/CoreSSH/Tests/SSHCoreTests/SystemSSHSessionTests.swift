@@ -760,6 +760,53 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(secretFiles(), [])
     }
 
+    // MARK: SSH agent
+
+    func testAgentLoginWithAnyAgentKey() async throws {
+        let agent = try TestSSHAgent.start()
+        defer { agent.stop() }
+        try agent.addKey(comment: "not-authorized")
+        let key = try agent.addKey(comment: "authorized")
+        try server.authorize(publicKeyLine: key.publicKeyLine)
+        try await assertShellWorks(.agent(socketPath: agent.socketPath, publicKey: nil))
+        XCTAssertTrue(server.log().contains("Accepted publickey"), server.log())
+        XCTAssertEqual(secretFiles(), [])
+    }
+
+    func testAgentLoginWithAPinnedKey() async throws {
+        let agent = try TestSSHAgent.start()
+        defer { agent.stop() }
+        let authorized = try agent.addKey(comment: "authorized")
+        let other = try agent.addKey(comment: "other")
+        try server.authorize(publicKeyLine: authorized.publicKeyLine)
+        try await assertShellWorks(.agent(socketPath: agent.socketPath, publicKey: authorized.publicKeyLine))
+        XCTAssertEqual(secretFiles(), [], "the pinned .pub file is removed with the other files")
+
+        // Pinned to a key the server doesn't know: the authorized agent key is never offered.
+        let session = makeSession(.agent(socketPath: agent.socketPath, publicKey: other.publicKeyLine))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
+        XCTAssertEqual(secretFiles(), [])
+        let log = server.log()
+        for marker in ["Failed password", "keyboard-interactive", "Accepted password"] {
+            XCTAssertFalse(log.contains(marker), "\(marker) in:\n\(log)")
+        }
+    }
+
+    func testInvalidPinnedKeyFailsBeforeSSHRuns() async throws {
+        let session = makeSession(.agent(socketPath: "/tmp/none.sock", publicKey: "ssh-ed25519 not-base64!"))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        guard case .closed(.failed(.connectionFailed(let message))) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        XCTAssertTrue(message.contains("public key"), message)
+        XCTAssertEqual(secretFiles(), [])
+    }
+
     #if os(Linux)
     // These two tests write into the real ~/.ssh (ssh reads it through the passwd entry, not $HOME),
     // so they only run as root in the Linux sandbox, never touch a file that already exists, and
@@ -786,6 +833,30 @@ final class SystemSSHSessionTests: XCTestCase {
             _ = try await session.runCommand("true")
             await session.close()
             try await recorder.waitForFinish()
+        }
+    }
+
+    func testAgentNeverUsesTheUsersOwnKeyFiles() async throws {
+        let agent = try TestSSHAgent.start()
+        defer { agent.stop() }
+        try agent.addKey(comment: "not-authorized")
+        // An encrypted default key the server would accept: ssh must not ask for its passphrase.
+        let keyFile = scratch.appendingPathComponent("id_ed25519")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "some passphrase", "-f", keyFile.path])
+        let privateKey = try Data(contentsOf: keyFile)
+        let publicKey = try Data(contentsOf: keyFile.appendingPathExtension("pub"))
+        try await withHomeSSHFiles(["id_ed25519": (privateKey, 0o600), "id_ed25519.pub": (publicKey, 0o644)]) {
+            try server.authorize(publicKeyLine: String(decoding: publicKey, as: UTF8.self))
+            let session = makeSession(.agent(socketPath: agent.socketPath, publicKey: nil))
+            let recorder = EventRecorder(session.events)
+            await session.start(cols: 80, rows: 24)
+            do {
+                try await recorder.waitForFinish(timeout: 10)
+            } catch {
+                await session.close() // e.g. ssh waiting for the default key's passphrase
+                throw error
+            }
+            XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
         }
     }
 
@@ -982,7 +1053,8 @@ final class SystemSSHSessionTests: XCTestCase {
 
     private static func secretFiles(in root: URL) -> [String] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
-        return names.filter { $0.hasSuffix(".key") || $0.hasSuffix(".secret") || $0.hasSuffix(".known_hosts") }.sorted()
+        return names.filter { $0.hasSuffix(".key") || $0.hasSuffix(".secret") || $0.hasSuffix(".known_hosts") || $0.hasSuffix(".pub") }
+            .sorted()
     }
 
     private static func controlSockets(in root: URL) -> [String] {
@@ -1042,3 +1114,4 @@ final class CheckRecorder: @unchecked Sendable {
     func append(_ check: HostKeyCheck) { lock.withLock { recorded.append(check) } }
     var checks: [HostKeyCheck] { lock.withLock { recorded } }
 }
+

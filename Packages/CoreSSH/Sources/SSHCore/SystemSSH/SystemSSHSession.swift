@@ -13,6 +13,11 @@ import Synchronization
 ///   written to a one-time 0600 file that the askpass helper prints and deletes; a private key goes to a
 ///   0600 file passed with `-i`. Both are deleted as soon as the session has started or ssh exits
 ///   (whichever comes first), and on `close()`.
+/// - **SSH agent** (`.agent`, 1Password): `IdentityAgent` names the agent's socket and authentication is
+///   public key only. A pinned key's public key goes to a 0600 `<uuid>.pub` passed as `IdentityFile` with
+///   `IdentitiesOnly=yes`, removed with the other per-session files; unpinned, any agent key is offered but
+///   none of the user's own key files (`IdentityFile=none`). No askpass is set; the session behaves like
+///   one with a stored secret.
 /// - **Session start** is detected when ssh switches the terminal out of canonical mode, which it does
 ///   only after authentication, right before the remote session's output; it emits `.ready`. With a
 ///   stored secret, ssh's own messages before that point are held back and, if ssh fails (exit status
@@ -280,9 +285,18 @@ public final class SystemSSHSession: TerminalSession {
         let knownHostsFile: URL
         var keyFile: URL?
         var secretFile: URL?
+        var agentKeyFile: URL?
         do {
             knownHostsFile = try track(runtime.writeKnownHosts(lines))
             switch plan.credential {
+            case .agent(_, let publicKey?):
+                guard let line = Self.pinnedKeyFileLine(publicKey) else {
+                    finish(.failed(.connectionFailed("The pinned 1Password key is not a valid public key.")))
+                    return
+                }
+                agentKeyFile = try track(runtime.writePublicKey(line))
+            case .agent(_, nil):
+                break
             case .password(let password):
                 secretFile = try track(runtime.writeSecret(password))
             case .privateKey(_, let pem, let passphrase):
@@ -306,6 +320,7 @@ public final class SystemSSHSession: TerminalSession {
         switch plan.credential {
         case .password: auth = .password
         case .privateKey: auth = keyFile.map(AuthArguments.key) ?? .none
+        case .agent(let socket, _): auth = .agent(socket: socket, publicKeyFile: agentKeyFile)
         case .none: auth = .none
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
@@ -316,7 +331,11 @@ public final class SystemSSHSession: TerminalSession {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
                            "DISPLAY": ":0", "TR_SECRET_FILE": secretFile.path]
         }
-        let interactive = secretFile == nil
+        // An agent signs without the user typing anything (1Password asks in its own window), so its
+        // sessions behave like ones with a stored secret: ssh's messages before the session become the error.
+        let usesAgent: Bool
+        if case .agent = plan.credential { usesAgent = true } else { usesAgent = false }
+        let interactive = secretFile == nil && !usesAgent
         let (cols, rows) = state.withLock { ($0.cols, $0.rows) }
         let ssh: PTYProcess
         do {
@@ -535,7 +554,7 @@ public final class SystemSSHSession: TerminalSession {
         switch plan.credential {
         case .password(let password): [password].filter { !$0.isEmpty }
         case .privateKey(_, _, let passphrase): [passphrase ?? ""].filter { !$0.isEmpty }
-        case .none: []
+        case .agent, .none: []
         }
     }
 
@@ -567,6 +586,9 @@ public final class SystemSSHSession: TerminalSession {
         case key(URL)
         /// Password or keyboard-interactive only (the user's default keys are never tried).
         case password
+        /// Public key only, signed by the agent at `socket`: with `publicKeyFile`, only that key
+        /// (`IdentitiesOnly`); without, any agent key, but never the user's own key files (`IdentityFile=none`).
+        case agent(socket: String, publicKeyFile: URL?)
         /// No restriction (ssh asks in the terminal).
         case none
     }
@@ -582,18 +604,40 @@ public final class SystemSSHSession: TerminalSession {
                                                   keepAlive: keepAlive)
         switch auth {
         case .key(let keyFile):
-            arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path,
-                          "-o", "PreferredAuthentications=publickey",
-                          "-o", "PasswordAuthentication=no",
-                          "-o", "KbdInteractiveAuthentication=no"]
+            arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path] + publicKeyOnlyArguments
         case .password:
             arguments += ["-o", "PubkeyAuthentication=no",
                           "-o", "PreferredAuthentications=keyboard-interactive,password"]
+        case .agent(let socket, let publicKeyFile):
+            arguments += ["-o", "IdentityAgent=\(quoted(socket))"]
+            if let publicKeyFile {
+                arguments += ["-o", "IdentityFile=\(quoted(publicKeyFile.path))", "-o", "IdentitiesOnly=yes"]
+            } else {
+                arguments += ["-o", "IdentityFile=none"]
+            }
+            arguments += publicKeyOnlyArguments
         case .none:
             break
         }
         arguments += ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "--", host]
         return arguments
+    }
+
+    private static let publicKeyOnlyArguments = [
+        "-o", "PreferredAuthentications=publickey",
+        "-o", "PasswordAuthentication=no",
+        "-o", "KbdInteractiveAuthentication=no",
+    ]
+
+    /// The `type base64` part of a pinned agent key's public key line, or nil unless it is one line whose
+    /// base64 decodes to a key blob of that type. The comment is dropped (it never matters to ssh).
+    static func pinnedKeyFileLine(_ publicKeyLine: String) -> String? {
+        let trimmed = publicKeyLine.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.contains(where: \.isNewline) else { return nil }
+        let fields = trimmed.split(whereSeparator: \.isWhitespace)
+        guard fields.count >= 2, let blob = Data(base64Encoded: String(fields[1])),
+              blobKeyType(blob) == String(fields[0]) else { return nil }
+        return "\(fields[0]) \(fields[1])"
     }
 
     /// A command through the existing control master only (`ControlMaster=no`, the exact socket).

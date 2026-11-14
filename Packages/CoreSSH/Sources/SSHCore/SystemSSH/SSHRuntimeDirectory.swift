@@ -6,7 +6,7 @@ import Glibc
 import Foundation
 
 /// The private directory for system ssh's temporary files: the askpass helper, one-time secret files,
-/// temporary private keys and each session's generated `known_hosts` file. ssh's control sockets live in a separate,
+/// temporary private keys, pinned agent public keys and each session's generated `known_hosts` file. ssh's control sockets live in a separate,
 /// short `controlDirectory` (`/tmp/tr-<uid>`), because Unix socket paths are limited to 104 bytes on macOS
 /// and the app's run directory is far too deep for `<dir>/<40-character %C>`.
 ///
@@ -101,6 +101,13 @@ public struct SSHRuntimeDirectory: Sendable {
     public func writeKey(_ pem: String) throws -> URL {
         let url = root.appendingPathComponent("\(UUID().uuidString).key")
         try create(url, contents: Data((pem.hasSuffix("\n") ? pem : pem + "\n").utf8), mode: 0o600)
+        return url
+    }
+
+    /// Writes a pinned agent key's public key line for `IdentityFile`, `<uuid>.pub` (0600), with a final newline.
+    public func writePublicKey(_ line: String) throws -> URL {
+        let url = root.appendingPathComponent("\(UUID().uuidString).pub")
+        try create(url, contents: Data((line + "\n").utf8), mode: 0o600)
         return url
     }
 

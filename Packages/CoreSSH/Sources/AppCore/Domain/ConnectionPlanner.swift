@@ -38,7 +38,8 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
 public enum ConnectionPlanner {
     /// Builds the plan for a saved host. Credentials come from `CredentialResolution` (explicit
     /// identity > host's direct credentials > group default identity); whatever is still missing is
-    /// left to the connection prompt.
+    /// left to the connection prompt. With a 1Password agent key the plan's `agentKey` is set, its
+    /// credential is `.none` and its engine `.systemSSH`.
     @MainActor
     public static func plan(hostID: UUID, vault: LocalVault) throws -> ConnectionPlan {
         guard let host = vault.get(SavedHost.self, id: hostID) else { throw ConnectionPlanError.hostNotFound }
@@ -69,12 +70,15 @@ public enum ConnectionPlanner {
         var engine = SSHEngine.citadel
         if host.useSystemSSH == true { engine = .systemSSH }
         if case .privateKey(.rsa, _, _) = credential { engine = .systemSSH }
+        // Only system ssh signs with an agent; the session manager fills in the socket at connect time.
+        if resolved.agentKey != nil { engine = .systemSSH }
 
         let script = host.startupSnippetID.flatMap { vault.get(Snippet.self, id: $0)?.script }
 
         return ConnectionPlan(hostID: host.id, label: host.label, host: address,
                               port: directory.effectivePort(for: host), username: username,
-                              credential: credential, engine: engine, startupScript: script)
+                              credential: credential, engine: engine, startupScript: script,
+                              agentKey: resolved.agentKey)
     }
 
     public static func plan(quickConnect target: QuickConnectTarget, defaultUsername: String) -> ConnectionPlan {

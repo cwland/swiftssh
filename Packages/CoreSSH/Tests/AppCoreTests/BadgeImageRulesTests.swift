@@ -120,7 +120,9 @@ final class BadgeImageRulesTests: XCTestCase {
     }
 
     func testSettingsPanes() {
-        XCTAssertEqual(SettingsPane.allCases, [.connection, .osIcons])
+        XCTAssertEqual(SettingsPane.allCases, [.connection, .onePassword, .osIcons])
+        XCTAssertEqual(SettingsPane.onePassword.title, "1Password")
+        XCTAssertEqual(SettingsPane.onePassword.systemImage, "key.horizontal")
         XCTAssertEqual(SettingsPane.connection.title, "Connection")
         XCTAssertEqual(SettingsPane.connection.systemImage, "antenna.radiowaves.left.and.right")
         XCTAssertEqual(SettingsPane.osIcons.title, "OS Icons")
