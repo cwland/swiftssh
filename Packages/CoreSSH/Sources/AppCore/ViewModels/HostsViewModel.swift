@@ -87,13 +87,11 @@ public final class HostsViewModel {
             .sorted { Self.ordered($0.label, $0.id, $1.label, $1.id) }
     }
 
+    /// "ssh, <user>" naming the user a connection to the host would log in as (the same
+    /// resolution `ConnectionPlanner` uses), or "ssh" when there is none.
     public func subtitle(for host: SavedHost) -> String {
-        let directory = self.directory
-        let hostName = host.username.flatMap { $0.isEmpty ? nil : $0 }
-        let identityName = directory.effectiveIdentityID(for: host)
-            .flatMap { vault.get(Identity.self, id: $0)?.username }
-            .flatMap { $0.isEmpty ? nil : $0 }
-        return (hostName ?? identityName).map { "ssh, \($0)" } ?? "ssh"
+        let username = CredentialResolution.resolve(host: host, directory: directory, vault: vault).username
+        return username.map { "ssh, \($0)" } ?? "ssh"
     }
 
     /// Hosts in the group, including those in descendant groups.

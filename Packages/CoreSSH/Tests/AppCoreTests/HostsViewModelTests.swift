@@ -70,19 +70,27 @@ final class HostsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.visibleHosts.count, 3)
     }
 
-    @MainActor func testSubtitleUsesHostThenIdentityThenGroupIdentityUsername() async throws {
+    @MainActor func testSubtitleNamesTheUserTheConnectionUses() async throws {
         let vault = try await makeVault()
         let hostIdentity = try await vault.save(Identity(label: "i1", username: "idUser"))
         let groupIdentity = try await vault.save(Identity(label: "i2", username: "groupUser"))
         let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
-        let direct = try await vault.save(SavedHost(label: "d", address: "d", username: "direct", identityID: hostIdentity.id))
+        // An explicit identity wins over the host's own username.
+        let explicitWins = try await vault.save(SavedHost(label: "e", address: "e", username: "direct",
+                                                          identityID: hostIdentity.id))
+        let direct = try await vault.save(SavedHost(label: "d", address: "d", groupID: group.id, username: "direct"))
         let viaIdentity = try await vault.save(SavedHost(label: "i", address: "i", identityID: hostIdentity.id))
         let viaGroup = try await vault.save(SavedHost(label: "g", address: "g", groupID: group.id))
+        // A host with its own password uses its own fields, so the group identity's user is not used.
+        let ownPasswordOnly = try await vault.save(SavedHost(label: "p", address: "p", groupID: group.id,
+                                                             password: "pw"))
         let none = try await vault.save(SavedHost(label: "n", address: "n"))
         let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.subtitle(for: explicitWins), "ssh, idUser")
         XCTAssertEqual(vm.subtitle(for: direct), "ssh, direct")
         XCTAssertEqual(vm.subtitle(for: viaIdentity), "ssh, idUser")
         XCTAssertEqual(vm.subtitle(for: viaGroup), "ssh, groupUser")
+        XCTAssertEqual(vm.subtitle(for: ownPasswordOnly), "ssh")
         XCTAssertEqual(vm.subtitle(for: none), "ssh")
     }
 
