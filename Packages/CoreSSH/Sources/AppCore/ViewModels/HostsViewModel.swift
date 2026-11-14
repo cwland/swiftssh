@@ -2,6 +2,16 @@ import Foundation
 import Observation
 import CoreModels
 
+public enum HostsError: Error, Equatable, Sendable, LocalizedError {
+    case emptyGroupName
+
+    public var errorDescription: String? {
+        switch self {
+        case .emptyGroupName: "A group name can't be empty."
+        }
+    }
+}
+
 @MainActor @Observable
 public final class HostsViewModel {
     public enum Layout: Sendable { case grid, list }
@@ -113,6 +123,21 @@ public final class HostsViewModel {
     @discardableResult
     public func newGroup(name: String) async throws -> HostGroup {
         try await vault.save(HostGroup(name: name, parentID: effectiveGroupID))
+    }
+
+    /// Trims the name; an empty result throws `HostsError.emptyGroupName`. A missing or deleted
+    /// group is left alone.
+    public func renameGroup(id: UUID, name: String) async throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw HostsError.emptyGroupName }
+        guard var group = vault.get(HostGroup.self, id: id) else { return }
+        group.name = trimmed
+        try await vault.save(group)
+    }
+
+    /// Moves the group's hosts and subgroups up one level, then deletes the group.
+    public func deleteGroup(id: UUID) async throws {
+        try await vault.deleteGroup(id: id)
     }
 
     public var quickConnectTarget: QuickConnectTarget? {

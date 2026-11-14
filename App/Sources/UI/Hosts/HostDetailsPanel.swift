@@ -3,26 +3,45 @@ import AppCore
 import CoreModels
 
 /// The right-hand Host Details panel. Each edit saves at once through `HostDetailsViewModel`.
-/// Create one panel per host (`.id(hostID)`): the view model keeps per-host UI state.
+/// Create one panel per host (`.id(hostID)`): the view model keeps per-host UI state. The view
+/// model is built once, on appear, not in `init`, so re-evaluating a parent body is cheap.
 struct HostDetailsPanel: View {
-    @State private var details: HostDetailsViewModel
-    private let onClose: () -> Void
+    let vault: LocalVault
+    let hostID: UUID
+    let onClose: () -> Void
 
-    /// Tags as typed; committed to the view model on Return, on leaving the field and on close.
-    @State private var tagsText: String
+    @State private var details: HostDetailsViewModel?
+
+    var body: some View {
+        ZStack {
+            if let details {
+                HostDetailsContent(details: details, onClose: onClose)
+            } else {
+                Theme.sidebarBackground
+                    .frame(width: Theme.detailsPanelWidth)
+                    .frame(maxHeight: .infinity)
+            }
+        }
+        .onAppear {
+            if details == nil {
+                details = HostDetailsViewModel(vault: vault, hostID: hostID)
+            }
+        }
+    }
+}
+
+private struct HostDetailsContent: View {
+    @Bindable var details: HostDetailsViewModel
+    let onClose: () -> Void
+
+    /// Tags as typed. Every change is saved at once; the text is normalized on Return and blur.
+    @State private var tagsText = ""
     @FocusState private var tagsFieldFocused: Bool
     @State private var revealPassword = false
     @State private var showBadgePicker = false
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
-
-    init(vault: LocalVault, hostID: UUID, onClose: @escaping () -> Void) {
-        let details = HostDetailsViewModel(vault: vault, hostID: hostID)
-        _details = State(initialValue: details)
-        _tagsText = State(initialValue: details.tags.joined(separator: ", "))
-        self.onClose = onClose
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,8 +71,8 @@ struct HostDetailsPanel: View {
         .frame(maxHeight: .infinity)
         // The Visual Reference gives the panel the sidebar's color (#F6F7F9).
         .background(Theme.sidebarBackground)
-        .onDisappear {
-            commitTags()
+        .onAppear {
+            tagsText = details.tags.joined(separator: ", ")
         }
         .confirmationDialog("Delete this host?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete host", role: .destructive) { deleteHost() }
@@ -82,7 +101,8 @@ struct HostDetailsPanel: View {
             } label: {
                 Image(systemName: "ellipsis")
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.borderless)
             .menuIndicator(.hidden)
             .fixedSize()
             .help("More actions")
@@ -169,12 +189,15 @@ struct HostDetailsPanel: View {
                 TextField("Tags", text: $tagsText, prompt: Text("Comma-separated, e.g. prod, web"))
                     .textFieldStyle(.roundedBorder)
                     .focused($tagsFieldFocused)
+                    .onChange(of: tagsText) { _, text in
+                        details.tags = text.split(separator: ",").map(String.init)
+                    }
                     .onSubmit {
-                        commitTags()
+                        normalizeTagsText()
                     }
                     .onChange(of: tagsFieldFocused) { _, isFocused in
                         if !isFocused {
-                            commitTags()
+                            normalizeTagsText()
                         }
                     }
             }
@@ -298,11 +321,8 @@ struct HostDetailsPanel: View {
 
     // MARK: Actions
 
-    private func commitTags() {
-        let typed = tagsText.split(separator: ",").map(String.init)
-        if typed != details.tags {
-            details.tags = typed
-        }
+    /// Shows the saved (trimmed, deduplicated) tags in the field.
+    private func normalizeTagsText() {
         tagsText = details.tags.joined(separator: ", ")
     }
 

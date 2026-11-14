@@ -28,14 +28,9 @@ struct RootView: View {
 private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
-    /// Kept here so search, filters and the open group survive switching sidebar items.
-    @State private var hostsModel: HostsViewModel
-
-    init(navigation: AppNavigation, vault: LocalVault) {
-        self.navigation = navigation
-        self.vault = vault
-        _hostsModel = State(initialValue: HostsViewModel(vault: vault))
-    }
+    /// Kept here so search, filters and the open group survive switching sidebar items. Built
+    /// once, on appear, rather than in `init` (which runs on every parent body evaluation).
+    @State private var hostsModel: HostsViewModel?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -44,13 +39,22 @@ private struct MainArea: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .onAppear {
+            if hostsModel == nil {
+                hostsModel = HostsViewModel(vault: vault)
+            }
+        }
     }
 
     @ViewBuilder
     private var content: some View {
         switch navigation.sidebar {
         case .hosts:
-            HostsView(model: hostsModel, vault: vault)
+            if let hostsModel {
+                HostsView(model: hostsModel, vault: vault)
+            } else {
+                Theme.contentBackground
+            }
         case .keychain:
             // Filled in by the Keychain screen.
             Theme.contentBackground

@@ -243,7 +243,8 @@ struct HostsView: View {
             Image(systemName: "server.rack")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
-            if model.searchText.isEmpty && model.selectedTags.isEmpty {
+            if model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && model.selectedTags.isEmpty {
                 Text("No hosts yet — click New host")
                     .font(.system(size: 15))
                     .foregroundStyle(.secondary)
@@ -281,14 +282,12 @@ struct HostsView: View {
     }
 
     private func renameGroup() {
-        let name = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty, let groupID = groupToRename?.id else { return }
+        guard let groupID = groupToRename?.id else { return }
+        let name = renameText
         groupToRename = nil
         Task {
             do {
-                guard var group = vault.get(HostGroup.self, id: groupID) else { return }
-                group.name = name
-                try await vault.save(group)
+                try await model.renameGroup(id: groupID, name: name)
             } catch {
                 present(error)
             }
@@ -299,7 +298,7 @@ struct HostsView: View {
         groupToDelete = nil
         Task {
             do {
-                try await vault.deleteGroup(id: group.id)
+                try await model.deleteGroup(id: group.id)
             } catch {
                 present(error)
             }

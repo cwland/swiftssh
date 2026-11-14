@@ -184,6 +184,48 @@ final class HostsViewModelTests: XCTestCase {
         try await vault.save(SavedHost(label: "x", address: "x"))
         XCTAssertTrue(fired.value)
     }
+
+    @MainActor func testRenameGroupTrimsAndSaves() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "Old"))
+        let vm = HostsViewModel(vault: vault)
+        try await vm.renameGroup(id: group.id, name: "  New name \n")
+        XCTAssertEqual(vault.get(HostGroup.self, id: group.id)?.name, "New name")
+    }
+
+    @MainActor func testRenameGroupRejectsEmptyName() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "Old"))
+        let vm = HostsViewModel(vault: vault)
+        do {
+            try await vm.renameGroup(id: group.id, name: "   ")
+            XCTFail("expected HostsError.emptyGroupName")
+        } catch let error as HostsError {
+            XCTAssertEqual(error, .emptyGroupName)
+            XCTAssertEqual(error.localizedDescription, "A group name can't be empty.")
+        }
+        XCTAssertEqual(vault.get(HostGroup.self, id: group.id)?.name, "Old")
+    }
+
+    @MainActor func testRenameMissingGroupDoesNothing() async throws {
+        let vault = try await makeVault()
+        let vm = HostsViewModel(vault: vault)
+        try await vm.renameGroup(id: UUID(), name: "x")
+        XCTAssertTrue(vault.all(HostGroup.self).isEmpty)
+    }
+
+    @MainActor func testDeleteGroupMovesHostsAndSubgroupsUpOneLevel() async throws {
+        let vault = try await makeVault()
+        let parent = try await vault.save(HostGroup(name: "Parent"))
+        let group = try await vault.save(HostGroup(name: "Doomed", parentID: parent.id))
+        let child = try await vault.save(HostGroup(name: "Child", parentID: group.id))
+        let host = try await vault.save(SavedHost(label: "h", address: "h", groupID: group.id))
+        let vm = HostsViewModel(vault: vault)
+        try await vm.deleteGroup(id: group.id)
+        XCTAssertNil(vault.get(HostGroup.self, id: group.id))
+        XCTAssertEqual(vault.get(HostGroup.self, id: child.id)?.parentID, parent.id)
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.groupID, parent.id)
+    }
 }
 
 private final class Fired: @unchecked Sendable { var value = false }
