@@ -35,11 +35,27 @@ Re-run `xcodegen generate` whenever files are added or removed under `Sources/` 
 - Vault key: login keychain, generic password, service `com.cwland.TermiusReimagined`,
   account `local-vault-key`, not synchronized.
 
-## Your own OS logos (optional)
+## OS icons (Settings → OS Icons)
 
-Host badges show a generic symbol per OS. To use real logos, put image files in
-`~/Library/Application Support/TermiusReimagined/Badges/` (the app creates the empty folder at
-launch). Name each file `<name>.svg` or `<name>.png` (SVG is used when both exist):
+Host badges show a generic symbol per OS. Open **Settings** (Cmd+,) → **OS Icons** to customize
+each OS: **Choose Image…** (SVG, PNG, JPEG or PDF), **From URL…** (http/https only, up to 2 MB,
+15 s timeout), a badge **color**, **Show in white** (on: the image is drawn as a white
+silhouette, so it needs a transparent background; off: it keeps its own colors) and **Reset**
+(standard symbol, color and white drawing; the logo file goes to the Trash). Every badge in the
+app updates immediately.
+
+Chosen images are only decoded as images and redrawn as a 256×256-pixel PNG (128 pt at 2x,
+transparent, aspect-fitted inside a 12% margin). Everything is stored on this Mac only, in
+`~/Library/Application Support/TermiusReimagined/Badges/` (the app creates the folder at
+launch; **Show in Finder** at the bottom of the pane opens it):
+
+- `<name>.png` / `<name>.svg` — the logo (SVG is used when both exist; choosing an image in
+  Settings writes `<name>.png` and removes `<name>.svg`).
+- `settings.json` — per-OS "show in white" and color, keyed by `<name>`; only changed OSes are
+  listed. Not synced.
+
+You can still drop `<name>.svg` or `<name>.png` files into the folder by hand; they are read at
+launch and whenever the OS Icons pane opens.
 
 | OS | File name |
 | --- | --- |
@@ -56,9 +72,7 @@ launch). Name each file `<name>.svg` or `<name>.png` (SVG is used when both exis
 | Synology DSM | `synology` |
 | Home Assistant OS | `home-assistant` |
 
-Logos are drawn in white on the badge's colored square (as a template: only the image's shape and
-transparency are used, so use logos with a transparent background). They are read once per
-launch: quit and reopen the app after adding or changing files. The repository ships no logo files.
+The repository ships no logo files.
 
 The app is ad-hoc signed, so the first launch after each rebuild may ask for access to the
 vault key in your keychain: click "Always Allow".

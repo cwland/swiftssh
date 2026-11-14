@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import AppCore
 
 /// Visual Reference tokens. The top bar stays navy in both appearances; content and sidebar
 /// follow the system appearance.
@@ -84,6 +85,13 @@ extension Color {
             return NSColor(srgbRed: red, green: green, blue: blue, alpha: 1)
         }
         return Color(nsColor: nsColor)
+    }
+
+    /// "#RRGGBB" of this color in sRGB, nil if it can't be converted (e.g. a pattern color).
+    var sRGBHex: String? {
+        guard let srgb = NSColor(self).usingColorSpace(.sRGB) else { return nil }
+        return BadgeColor.hex(red: Double(srgb.redComponent), green: Double(srgb.greenComponent),
+                              blue: Double(srgb.blueComponent))
     }
 
     static func rgbComponents(hex: String) -> (red: Double, green: Double, blue: Double) {
