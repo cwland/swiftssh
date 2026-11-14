@@ -12,6 +12,12 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 0)
+            Text(AppVersion.display)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 10)
         }
         .padding(.horizontal, 10)
         .padding(.top, 12)

@@ -36,8 +36,17 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: "Termius Reimagined"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        MARKETING_VERSION: "0.1.0"
+        MARKETING_VERSION: "0.3.1"
         CURRENT_PROJECT_VERSION: "1"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      - name: Stamp git commit
+        basedOnDependencyAnalysis: false
+        script: |
+          plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          commit=$(git -C "${SRCROOT}/.." rev-parse --short HEAD 2>/dev/null || echo unknown)
+          /usr/libexec/PlistBuddy -c "Delete :TRGitCommit" "$plist" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c "Add :TRGitCommit string ${commit}" "$plist"
     dependencies:
       - package: CoreSSH
         product: AppCore
