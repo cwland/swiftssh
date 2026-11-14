@@ -212,33 +212,3 @@ struct OnePasswordSetupHint: View {
         }
     }
 }
-
-// MARK: - Saving agentKey
-
-/// Reads and writes `agentKey` straight on the stored records, because `HostDetailsViewModel` and
-/// `KeychainViewModel.updateNow` don't know the field yet.
-/// Core follow-up: move these into the view models (with tests) and drop this type.
-@MainActor
-enum AgentKeyStore {
-    static func hostAgentKey(vault: LocalVault, hostID: UUID) -> AgentKeyChoice? {
-        _ = vault.revision
-        return vault.get(SavedHost.self, id: hostID)?.agentKey
-    }
-
-    /// A non-nil choice makes the host use direct credentials: it unlinks any identity.
-    static func setHostAgentKey(_ choice: AgentKeyChoice?, vault: LocalVault, hostID: UUID) {
-        guard var host = vault.get(SavedHost.self, id: hostID) else { return }
-        let before = host
-        host.agentKey = choice
-        if choice != nil { host.identityID = nil }
-        if host != before { vault.saveNow(host) }
-    }
-
-    /// Saves `agentKey` onto the stored identity (after `KeychainViewModel.updateNow` saved the rest).
-    /// Does nothing when the identity is missing or deleted.
-    static func saveIdentityAgentKey(_ choice: AgentKeyChoice?, vault: LocalVault, identityID: UUID) {
-        guard var identity = vault.get(Identity.self, id: identityID), identity.agentKey != choice else { return }
-        identity.agentKey = choice
-        vault.saveNow(identity)
-    }
-}

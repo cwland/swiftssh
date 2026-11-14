@@ -231,9 +231,7 @@ private struct IdentityEditorContent: View {
 
     /// Saves synchronously, merged onto the stored identity; a deleted identity stays deleted.
     private func save(_ edited: Identity) {
-        model.updateNow(edited)
-        // `updateNow` doesn't merge `agentKey` yet (core follow-up), so save it here.
-        AgentKeyStore.saveIdentityAgentKey(edited.agentKey, vault: vault, identityID: edited.id)
+        model.updateNow(edited) // merges agentKey too
     }
 
     /// Drops a key reference whose key was deleted, so the Picker never holds an invalid tag.

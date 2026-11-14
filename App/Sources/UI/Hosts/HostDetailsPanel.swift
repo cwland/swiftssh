@@ -16,7 +16,7 @@ struct HostDetailsPanel: View {
     var body: some View {
         ZStack {
             if let details {
-                HostDetailsContent(details: details, vault: vault, onClose: onClose, onConnect: onConnect)
+                HostDetailsContent(details: details, onClose: onClose, onConnect: onConnect)
             } else {
                 Theme.sidebarBackground
                     .frame(width: Theme.detailsPanelWidth)
@@ -33,8 +33,6 @@ struct HostDetailsPanel: View {
 
 private struct HostDetailsContent: View {
     @Bindable var details: HostDetailsViewModel
-    /// For `agentKey`, which `HostDetailsViewModel` doesn't edit yet (see `AgentKeyStore`).
-    let vault: LocalVault
     let onClose: () -> Void
     let onConnect: () -> Void
 
@@ -269,7 +267,7 @@ private struct HostDetailsContent: View {
         DetailsCard {
             Text("Credentials")
                 .font(.system(size: 13, weight: .semibold))
-            Picker("Credentials", selection: credentialMode) {
+            Picker("Credentials", selection: $details.credentialMode) {
                 Text("Identity").tag(CredentialMode.identity)
                 Text("Direct").tag(CredentialMode.direct)
             }
@@ -288,7 +286,7 @@ private struct HostDetailsContent: View {
     @ViewBuilder
     private var identityFields: some View {
         FieldColumn(title: "Identity") {
-            Picker("Identity", selection: identityID) {
+            Picker("Identity", selection: $details.identityID) {
                 Text("None").tag(UUID?.none)
                 ForEach(details.availableIdentities) { identity in
                     Text(identity.label.isEmpty ? identity.username : identity.label)
@@ -313,7 +311,7 @@ private struct HostDetailsContent: View {
         LoginMethodPicker(method: loginMethod)
         switch loginMethod.wrappedValue {
         case .onePasswordAgent:
-            OnePasswordAgentKeyPicker(choice: agentKey)
+            OnePasswordAgentKeyPicker(choice: $details.agentKey)
         case .passwordOrKey:
             FieldColumn(title: "Password") {
                 OnePasswordPasswordField(title: "Password", text: $details.password)
@@ -330,51 +328,21 @@ private struct HostDetailsContent: View {
         }
     }
 
-    // MARK: 1Password agent (app-layer until HostDetailsViewModel knows `agentKey`)
+    // MARK: 1Password agent
 
-    /// Switching to Identity also stops using the 1Password agent for direct credentials.
-    private var credentialMode: Binding<CredentialMode> {
-        Binding(get: { details.credentialMode },
-                set: { mode in
-                    details.credentialMode = mode
-                    if mode == .identity {
-                        AgentKeyStore.setHostAgentKey(nil, vault: vault, hostID: details.hostID)
-                    }
-                })
-    }
-
-    /// Linking an identity clears the direct credentials, `agentKey` included.
-    private var identityID: Binding<UUID?> {
-        Binding(get: { details.identityID },
-                set: { id in
-                    details.identityID = id
-                    if id != nil {
-                        AgentKeyStore.setHostAgentKey(nil, vault: vault, hostID: details.hostID)
-                    }
-                })
-    }
-
-    /// The stored password and key are kept while the agent is used (the agent takes precedence),
-    /// so switching back restores them.
+    /// Switching to Identity, or linking one, clears `agentKey` (in `HostDetailsViewModel`). The stored
+    /// password and key are kept while the agent is used (the agent takes precedence), so switching
+    /// back restores them.
     private var loginMethod: Binding<LoginMethod> {
-        Binding(get: { LoginMethod(agentKey: AgentKeyStore.hostAgentKey(vault: vault, hostID: details.hostID)) },
+        Binding(get: { LoginMethod(agentKey: details.agentKey) },
                 set: { method in
-                    let current = AgentKeyStore.hostAgentKey(vault: vault, hostID: details.hostID)
                     switch method {
                     case .passwordOrKey:
-                        AgentKeyStore.setHostAgentKey(nil, vault: vault, hostID: details.hostID)
+                        details.agentKey = nil
                     case .onePasswordAgent:
-                        if current == nil {
-                            AgentKeyStore.setHostAgentKey(AgentKeyChoice(publicKey: nil), vault: vault,
-                                                          hostID: details.hostID)
-                        }
+                        if details.agentKey == nil { details.agentKey = AgentKeyChoice(publicKey: nil) }
                     }
                 })
-    }
-
-    private var agentKey: Binding<AgentKeyChoice?> {
-        Binding(get: { AgentKeyStore.hostAgentKey(vault: vault, hostID: details.hostID) },
-                set: { AgentKeyStore.setHostAgentKey($0, vault: vault, hostID: details.hostID) })
     }
 
     private func reuseHintCard(_ hint: String) -> some View {
