@@ -34,6 +34,8 @@ final class TestSSHServer: @unchecked Sendable {
     let authorizedKeysFile: URL
     private let pid: pid_t
     private let stopped = NSLock()
+    private let suspended = NSLock()
+    private var suspendedPIDs: Set<pid_t> = []
     private var isStopped = false
 
     /// Run directories of servers started by this process (never treated as stale).
@@ -153,7 +155,47 @@ final class TestSSHServer: @unchecked Sendable {
         (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
     }
 
+    /// Freezes (SIGSTOP) every per-connection sshd process and its children, so open connections stay
+    /// up at the TCP level but the server never answers again — like a hung or vanished host.
+    /// Linux only (reads /proc). `stop()` resumes them before shutting down.
+    func suspendSessions() {
+        let pids = descendants(of: pid)
+        suspended.withLock { suspendedPIDs.formUnion(pids) }
+        for child in pids { kill(child, SIGSTOP) }
+    }
+
+    private func resumeSessions() {
+        let pids = suspended.withLock { () -> Set<pid_t> in
+            defer { suspendedPIDs = [] }
+            return suspendedPIDs
+        }
+        for child in pids { kill(child, SIGCONT) }
+    }
+
+    /// All processes below `root` (children, grandchildren, ...), from /proc/<pid>/stat.
+    private func descendants(of root: pid_t) -> Set<pid_t> {
+        var parents: [pid_t: pid_t] = [:]
+        let entries = (try? FileManager.default.contentsOfDirectory(atPath: "/proc")) ?? []
+        for entry in entries {
+            guard let child = pid_t(entry),
+                  let stat = try? String(contentsOfFile: "/proc/\(child)/stat", encoding: .utf8),
+                  let close = stat.lastIndex(of: ")") else { continue }
+            // Fields after the command name: state ppid ...
+            let fields = stat[stat.index(after: close)...].split(separator: " ")
+            if fields.count >= 2, let ppid = pid_t(fields[1]) { parents[child] = ppid }
+        }
+        var result: Set<pid_t> = []
+        var frontier: Set<pid_t> = [root]
+        while !frontier.isEmpty {
+            let next = Set(parents.filter { frontier.contains($0.value) }.map(\.key)).subtracting(result)
+            result.formUnion(next)
+            frontier = next
+        }
+        return result
+    }
+
     func stop() {
+        resumeSessions()
         let first = stopped.withLock { () -> Bool in
             defer { isStopped = true }
             return !isStopped

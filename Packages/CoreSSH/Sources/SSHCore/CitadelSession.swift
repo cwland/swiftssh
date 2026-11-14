@@ -20,11 +20,23 @@ public final class CitadelSession: TerminalSession {
 
     static let terminalType = "xterm-256color"
     static let commandOutputLimit = 1_048_576
+    static let unresponsiveMessage = "The server stopped responding."
+
+    /// SSH-level keep-alive: a want-reply global request every `interval`; the session ends when
+    /// `maxUnanswered` probes in a row got no reply within `interval` each.
+    struct KeepAlive: Sendable, Equatable {
+        var interval: Duration
+        var maxUnanswered: Int
+
+        /// Like OpenSSH's ServerAliveInterval 30 / ServerAliveCountMax 3.
+        static let `default` = KeepAlive(interval: .seconds(30), maxUnanswered: 3)
+    }
 
     private let plan: ConnectionPlan
     private let hostKeys: any HostKeyEvaluator
     private let connectTimeout: Duration
     private let commandTimeout: Duration
+    private let keepAlive: KeepAlive
     private let eventContinuation: AsyncStream<SessionEvent>.Continuation
     private let input: AsyncStream<PTYInput>
     private let inputContinuation: AsyncStream<PTYInput>.Continuation
@@ -49,12 +61,14 @@ public final class CitadelSession: TerminalSession {
         self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
     }
 
-    /// `commandTimeout` bounds `runCommand`; only tests change it.
-    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration) {
+    /// `commandTimeout` bounds `runCommand`; `keepAlive` sets the liveness probes. Only tests change them.
+    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration,
+         keepAlive: KeepAlive = .default) {
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
         self.commandTimeout = commandTimeout
+        self.keepAlive = keepAlive
         (events, eventContinuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .unbounded)
         (input, inputContinuation) = AsyncStream.makeStream(of: PTYInput.self, bufferingPolicy: .unbounded)
     }
@@ -390,6 +404,11 @@ public final class CitadelSession: TerminalSession {
                 self.emit(.connected)
                 self.emit(.ready)
                 opening.resolve(.opened)
+                // The PTY channel's parent is the TCP channel that carries the SSH connection.
+                let keepAliveTask = Self.channel(of: outbound)?.parent.map { root in
+                    Task { await self.runKeepAlive(on: root, connection: connection) }
+                }
+                defer { keepAliveTask?.cancel() }
                 for try await chunk in inbound {
                     switch chunk {
                     case .stdout(let buffer), .stderr(let buffer):
@@ -403,6 +422,84 @@ public final class CitadelSession: TerminalSession {
         finish(reason)
         opening.resolve(.failedOrClosed)
         await connection.shutdown()
+    }
+
+    // MARK: Keep-alive
+
+    /// Global request used as the keep-alive probe. Citadel 0.12.1 and swift-nio-ssh expose no public
+    /// way to send an arbitrary global request (such as `keepalive@openssh.com`); the only public
+    /// want-reply global request is the TCP forwarding one (`NIOSSHHandler.sendTCPForwardingRequest`).
+    /// Cancelling a forward this client never set up is harmless: the server answers
+    /// SSH_MSG_REQUEST_FAILURE (RFC 4254 §4), and any answer proves the connection is alive.
+    static var keepAliveProbe: GlobalRequest.TCPForwardingRequest {
+        .cancel(host: "keepalive@termius-reimagined", port: 0)
+    }
+
+    private enum ProbeResult: Sendable {
+        case replied, noReply, failed
+    }
+
+    /// Probes the server every `keepAlive.interval`. After `maxUnanswered` probes in a row without a reply
+    /// (each given `interval` to answer) the session ends with `unresponsiveMessage`. Stops when the
+    /// session ends or the connection fails (the shell task reports that).
+    private func runKeepAlive(on root: Channel, connection: Connection) async {
+        let interval = keepAlive.interval
+        var unanswered = 0
+        var wait = interval
+        while true {
+            try? await Task.sleep(for: wait)
+            if Task.isCancelled || isEnded { return }
+            let result = OneShot<ProbeResult>()
+            Self.probe(root).whenComplete { outcome in
+                switch outcome {
+                case .success: result.resolve(.replied)
+                case .failure: result.resolve(.failed)
+                }
+            }
+            let timer = Task {
+                try? await Task.sleep(for: interval)
+                result.resolve(.noReply)
+            }
+            let clock = ContinuousClock()
+            let sent = clock.now
+            let outcome = await result.wait()
+            timer.cancel()
+            if Task.isCancelled || isEnded { return }
+            switch outcome {
+            case .replied:
+                unanswered = 0
+                let elapsed = clock.now - sent
+                wait = elapsed < interval ? interval - elapsed : .zero
+            case .noReply:
+                unanswered += 1
+                wait = .zero // the reply wait already took one interval
+                if unanswered >= keepAlive.maxUnanswered {
+                    finish(.failed(.connectionFailed(Self.unresponsiveMessage)))
+                    await connection.closeClient()
+                    return
+                }
+            case .failed:
+                // The connection itself failed; the shell task ends the session with its own reason.
+                return
+            }
+        }
+    }
+
+    /// Sends one keep-alive probe. Succeeds when the server answered, whether it accepted or refused.
+    private static func probe(_ root: Channel) -> EventLoopFuture<Void> {
+        root.eventLoop.flatSubmit {
+            let promise = root.eventLoop.makePromise(of: GlobalRequest.TCPForwardingResponse?.self)
+            do {
+                let handler = try root.pipeline.syncOperations.handler(type: NIOSSHHandler.self)
+                handler.sendTCPForwardingRequest(keepAliveProbe, promise: promise)
+            } catch {
+                promise.fail(error)
+            }
+            return promise.futureResult.map { _ in () }.flatMapErrorThrowing { error in
+                if let error = error as? NIOSSHError, error.type == .globalRequestRefused { return }
+                throw error
+            }
+        }
     }
 
     // MARK: Commands

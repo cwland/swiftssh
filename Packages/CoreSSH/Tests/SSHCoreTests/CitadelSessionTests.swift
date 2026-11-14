@@ -277,6 +277,47 @@ final class CitadelSessionTests: XCTestCase {
         await session.close()
     }
 
+    func testKeepAliveDefaultsAreThirtySecondsThreeMissed() {
+        XCTAssertEqual(CitadelSession.KeepAlive.default.interval, .seconds(30))
+        XCTAssertEqual(CitadelSession.KeepAlive.default.maxUnanswered, 3)
+    }
+
+    func testKeepAliveKeepsAnIdleHealthySessionOpen() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
+                                     keepAlive: .init(interval: .milliseconds(300), maxUnanswered: 2))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        // Many keep-alive rounds pass while idle; every probe is answered.
+        try await Task.sleep(for: .seconds(3))
+        await session.send(Array("echo alive-$((5+5))\n".utf8))
+        try await recorder.waitForOutput(containing: "alive-10")
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+        await session.close()
+    }
+
+    func testUnresponsiveServerEndsSessionAfterMissedKeepAlives() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
+                                     keepAlive: .init(interval: .milliseconds(500), maxUnanswered: 3))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+
+        server.suspendSessions()
+        let clock = ContinuousClock()
+        let begin = clock.now
+        try await recorder.waitForFinish()
+        let took = clock.now - begin
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.connected, .ready, .closed(.failed(.connectionFailed(CitadelSession.unresponsiveMessage)))])
+        // 3 unanswered probes, 0.5 s apart: about 1.5–2 s, well under 10 s.
+        XCTAssertGreaterThanOrEqual(took, .milliseconds(1_000))
+        XCTAssertLessThan(took, .seconds(10))
+        await session.close()
+    }
+
     func testCloseByUserEndsWithUserClosed() async throws {
         let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
         let recorder = EventRecorder(session.events)
