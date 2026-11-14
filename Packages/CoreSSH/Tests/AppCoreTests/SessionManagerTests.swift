@@ -392,6 +392,24 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertTrue(vault.all(KnownHost.self).isEmpty)
     }
 
+    func testSessionEndingWhileAwaitingHostKeyRejectsPrompt() async throws {
+        let c = candidate()
+        let decision = Mutex<HostKeyDecision?>(nil)
+        factory.onStart = { @Sendable s in
+            let d = await s.evaluator.evaluate(c)
+            decision.withLock { $0 = d }
+        }
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("prompt") { tab.state == .awaitingHostKey(c, .unknown) }
+        factory.sessions[0].emit(.closed(.failed(.timedOut)))
+        await waitUntil("rejected") { decision.withLock { $0 } == .rejected }
+        XCTAssertEqual(tab.state, .disconnected(SessionError.timedOut.localizedDescription))
+        manager.answerHostKey(tabID: tab.id, .trusted)
+        await settle()
+        XCTAssertEqual(store.check(c), .unknown)
+        XCTAssertTrue(vault.all(KnownHost.self).isEmpty)
+    }
+
     func testMissingPasswordPromptsAndSaveStoresIt() async throws {
         let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
         let tab = try manager.open(hostID: host.id)
@@ -421,6 +439,101 @@ final class SessionManagerTests: XCTestCase {
         await waitUntil("connected") { tab.state == .connected }
         XCTAssertEqual(vault.get(Identity.self, id: identity.id)?.password, "secret")
         XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
+    }
+
+    /// The server accepts only "good"; every other password is rejected.
+    private func acceptOnly(_ good: String) {
+        factory.onStart = { @Sendable s in
+            if case .password(good) = s.plan.credential {
+                s.emit(.connected)
+                s.emit(.ready)
+            } else {
+                s.emit(.closed(.failed(.authenticationFailed)))
+            }
+        }
+    }
+
+    func testMistypedPasswordWithSaveKeepsStoredPasswordAndRightOneIsSaved() async throws {
+        acceptOnly("good")
+        let host = passwordHost() // stored "pw", which the server now rejects
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("prompt") {
+            tab.state == .awaitingPassword(prompt: "Password for root@web.example (the saved one was rejected)")
+        }
+        manager.providePassword(tabID: tab.id, "typo", save: true)
+        await waitUntil("rejected prompt") {
+            tab.state == .awaitingPassword(prompt: "Password for root@web.example (that password was rejected)")
+        }
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.password, "pw",
+                       "a rejected password must not replace the stored one")
+        manager.providePassword(tabID: tab.id, "good", save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("saved") { self.vault.get(SavedHost.self, id: host.id)?.password == "good" }
+    }
+
+    func testSavedPasswordIsStoredOnlyWhenSessionIsReady() async throws {
+        factory.onStart = { @Sendable s in s.emit(.connected) }
+        let identity = vault.saveNow(Identity(label: "i", username: "alice"))
+        let host = vault.saveNow(SavedHost(label: "H", address: "h.example", identityID: identity.id))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, "secret", save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        await settle()
+        XCTAssertNil(vault.get(Identity.self, id: identity.id)?.password, "not stored before .ready")
+        factory.sessions[0].emit(.ready)
+        await waitUntil("stored on identity") { self.vault.get(Identity.self, id: identity.id)?.password == "secret" }
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
+    }
+
+    func testMistypedPasswordWithSaveOnIdentityKeepsIdentityPassword() async throws {
+        acceptOnly("good")
+        let identity = vault.saveNow(Identity(label: "i", username: "alice", password: "old"))
+        let host = vault.saveNow(SavedHost(label: "H", address: "h.example", identityID: identity.id))
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("prompt") { if case .awaitingPassword = tab.state { true } else { false } }
+        manager.providePassword(tabID: tab.id, "typo", save: true)
+        await waitUntil("rejected prompt") {
+            tab.state == .awaitingPassword(prompt: "Password for alice@h.example (that password was rejected)")
+        }
+        XCTAssertEqual(vault.get(Identity.self, id: identity.id)?.password, "old")
+        manager.providePassword(tabID: tab.id, "good", save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("saved") { self.vault.get(Identity.self, id: identity.id)?.password == "good" }
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
+    }
+
+    func testEnteredPasswordIsForgottenOnceReadySoReconnectAsksAgain() async throws {
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, "typed", save: false)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        manager.reconnect(tabID: tab.id)
+        XCTAssertEqual(tab.state, .awaitingPassword(prompt: "Password for root@np.example"))
+        XCTAssertEqual(factory.sessions.count, 1)
+    }
+
+    func testReconnectAfterReadyUsesVaultPasswordNotEnteredOne() async throws {
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, "typed", save: false)
+        await waitUntil("connected") { tab.state == .connected }
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        var edited = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        edited.password = "fromVault"
+        vault.saveNow(edited)
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second session") { self.factory.sessions.count == 2 }
+        guard case .password("fromVault") = factory.sessions[1].plan.credential else {
+            return XCTFail("expected the vault password, got \(factory.sessions[1].plan.credential)")
+        }
+    }
+
+    func testCanSavePasswordOnlyForSavedHosts() async throws {
+        let hostTab = try manager.open(hostID: passwordHost().id)
+        XCTAssertTrue(hostTab.canSavePassword)
+        let quick = manager.open(quickConnect: QuickConnectTarget(username: nil, host: "q.example", port: 22))
+        XCTAssertFalse(quick.canSavePassword)
     }
 
     func testSystemSSHWithoutPasswordStartsWithoutPrompt() async throws {

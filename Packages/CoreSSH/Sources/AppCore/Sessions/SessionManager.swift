@@ -38,8 +38,11 @@ public final class TerminalTab: Identifiable {
     @ObservationIgnored fileprivate var attempt: SessionAttempt?
     /// Bumped whenever the current attempt is replaced or ended; stale host key prompts compare it.
     @ObservationIgnored fileprivate var generation = 0
-    /// A password typed for this tab, used instead of the stored one until the server rejects it.
+    /// A password typed for this tab, used instead of the stored one until the server rejects it
+    /// or a session using it becomes ready.
     @ObservationIgnored fileprivate var enteredPassword: String?
+    /// The user asked to save `enteredPassword`; it is stored once a session using it is ready.
+    @ObservationIgnored fileprivate var saveEnteredPassword = false
     @ObservationIgnored fileprivate var size = (cols: 80, rows: 24)
     /// True once the view sent a size or the first start stopped waiting for one; later starts
     /// (reconnects) use `size` at once.
@@ -61,6 +64,9 @@ public final class TerminalTab: Identifiable {
         if case .host(let id) = target { return id }
         return nil
     }
+
+    /// Whether a typed password can be saved: only a saved host has somewhere to keep it.
+    public var canSavePassword: Bool { hostID != nil }
 
     fileprivate func deliver(_ bytes: [UInt8]) {
         if let outputSink {
@@ -243,10 +249,12 @@ public final class SessionManager {
 
     /// Connects with `password` after a password prompt. With `save`, the password is stored where
     /// the host's credentials come from: on the identity in effect, otherwise on the host itself.
+    /// It is stored only once the server accepts it (the session is ready), so a mistyped password
+    /// never replaces a good saved one.
     public func providePassword(tabID: UUID, _ password: String, save: Bool) {
         guard let tab = tab(tabID), case .awaitingPassword = tab.state else { return }
         tab.enteredPassword = password
-        if save, let hostID = tab.hostID { storePassword(password, hostID: hostID) }
+        tab.saveEnteredPassword = save && tab.canSavePassword
         connect(tab, plan: nil)
     }
 
@@ -305,10 +313,7 @@ public final class SessionManager {
     /// key prompt and stops input. The caller closes the session.
     private func detachAttempt(of tab: TerminalTab) -> SessionAttempt? {
         tab.generation += 1
-        if let answer = tab.hostKeyAnswer {
-            tab.hostKeyAnswer = nil
-            answer.resume(returning: .rejected)
-        }
+        rejectPendingHostKey(of: tab)
         if let waiter = tab.sizeWaiter {
             tab.sizeWaiter = nil
             waiter.resume()
@@ -317,6 +322,13 @@ public final class SessionManager {
         tab.attempt = nil
         attempt.inputs.finish()
         return attempt
+    }
+
+    /// Answers a pending host key prompt with `.rejected`: its attempt is gone.
+    private func rejectPendingHostKey(of tab: TerminalTab) {
+        guard let answer = tab.hostKeyAnswer else { return }
+        tab.hostKeyAnswer = nil
+        answer.resume(returning: .rejected)
     }
 
     private func connect(_ tab: TerminalTab, plan given: ConnectionPlan?) {
@@ -454,6 +466,7 @@ public final class SessionManager {
             guard let current else { return }
             current.attempt = nil
             current.generation += 1
+            rejectPendingHostKey(of: current)
             if reason == .userClosed {
                 if isOpen(current) { close(tabID: current.id) }
                 return
@@ -467,6 +480,14 @@ public final class SessionManager {
         let log = vault.saveNow(ConnectionLog(hostID: plan.hostID, hostLabel: plan.label, username: plan.username,
                                               deviceName: deviceName, startedAt: Date()))
         attempt.logID = log.id
+        // The server accepted the typed password: now it may be saved (where the existing rule says).
+        if attempt.usedEnteredPassword, tab.saveEnteredPassword, let hostID = tab.hostID,
+           case .password(let accepted) = plan.credential {
+            storePassword(accepted, hostID: hostID)
+        }
+        // From now on the vault (or a new prompt) decides, so later vault edits are not shadowed.
+        tab.enteredPassword = nil
+        tab.saveEnteredPassword = false
         if let hostID = plan.hostID, var host = vault.get(SavedHost.self, id: hostID) {
             host.lastConnectedAt = Date()
             vault.saveNow(host)
@@ -514,6 +535,7 @@ public final class SessionManager {
             case .password:
                 if attempt.usedEnteredPassword {
                     tab.enteredPassword = nil
+                    tab.saveEnteredPassword = false
                     return .awaitingPassword(prompt: "Password for \(who) (that password was rejected)")
                 }
                 return .awaitingPassword(prompt: "Password for \(who) (the saved one was rejected)")
