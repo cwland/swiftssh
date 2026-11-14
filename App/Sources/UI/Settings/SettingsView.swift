@@ -2,7 +2,7 @@ import SwiftUI
 import AppCore
 
 /// The Settings window (Cmd+,): a Termius-style sidebar of panes on the left and the selected
-/// pane on the right. New panes are added to `AppSettingsPane` and to `pane(for:)`. The selection
+/// pane on the right. New panes are added to AppCore's `SettingsPane` and to `pane(for:)`. The selection
 /// lives in `SettingsNavigation`, so other windows can open Settings on a pane.
 struct SettingsView: View {
     let connectionSettings: ConnectionSettings
@@ -12,7 +12,7 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 2) {
-                ForEach(AppSettingsPane.allCases, id: \.self) { pane in
+                ForEach(SettingsPane.allCases, id: \.self) { pane in
                     SettingsSidebarRow(pane: pane, isSelected: navigation.selection == pane) {
                         navigation.selection = pane
                     }
@@ -35,7 +35,7 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func pane(for pane: AppSettingsPane) -> some View {
+    private func pane(for pane: SettingsPane) -> some View {
         switch pane {
         case .connection: ConnectionSettingsPane(settings: connectionSettings)
         case .onePassword: OnePasswordSettingsPane(setup: onePassword)
@@ -47,7 +47,7 @@ struct SettingsView: View {
 }
 
 private struct SettingsSidebarRow: View {
-    let pane: AppSettingsPane
+    let pane: SettingsPane
     let isSelected: Bool
     let action: () -> Void
 
