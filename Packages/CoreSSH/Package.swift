@@ -46,7 +46,9 @@ let package = Package(
                 "SSHCore",
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
-            ]
+            ],
+            // The OS catalog (Cory's list, verbatim) and the app's overlay; see OSCatalog.
+            resources: [.copy("Resources/os-catalog.json"), .copy("Resources/os-catalog-app.json")]
         ),
         .target(name: "SyncTestSupport", dependencies: ["SyncCore", "CoreModels"]),
         .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore", "SSHCore"]),

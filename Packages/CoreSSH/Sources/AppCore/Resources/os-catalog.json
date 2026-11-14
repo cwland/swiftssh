@@ -1,0 +1,259 @@
+{
+  "desktop_and_server": [
+    {
+      "id": "windows",
+      "name": "Windows (11 / Server)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/windows-11.svg"
+    },
+    {
+      "id": "windows-10",
+      "name": "Windows 10",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/windows-10.svg"
+    },
+    {
+      "id": "macos",
+      "name": "macOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/macos.svg"
+    },
+    {
+      "id": "apple",
+      "name": "Apple / Darwin",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/apple.svg"
+    },
+    {
+      "id": "linux",
+      "name": "Generic Linux (Fallback)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/linux.svg"
+    }
+  ],
+  "linux_distributions": [
+    {
+      "id": "ubuntu",
+      "name": "Ubuntu",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/ubuntu.svg"
+    },
+    {
+      "id": "debian",
+      "name": "Debian",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/debian.svg"
+    },
+    {
+      "id": "rhel",
+      "name": "Red Hat Enterprise Linux (RHEL)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/redhat.svg"
+    },
+    {
+      "id": "fedora",
+      "name": "Fedora",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/fedora.svg"
+    },
+    {
+      "id": "arch",
+      "name": "Arch Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/arch-linux.svg"
+    },
+    {
+      "id": "almalinux",
+      "name": "AlmaLinux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/almalinux.svg"
+    },
+    {
+      "id": "rocky",
+      "name": "Rocky Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/rocky-linux.svg"
+    },
+    {
+      "id": "centos",
+      "name": "CentOS / CentOS Stream",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/centos.svg"
+    },
+    {
+      "id": "alpine",
+      "name": "Alpine Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/alpine-linux.svg"
+    },
+    {
+      "id": "opensuse",
+      "name": "openSUSE / SUSE",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/opensuse.svg"
+    },
+    {
+      "id": "linuxmint",
+      "name": "Linux Mint",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/linux-mint.svg"
+    },
+    {
+      "id": "kali",
+      "name": "Kali Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/kali-linux.svg"
+    },
+    {
+      "id": "manjaro",
+      "name": "Manjaro",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/manjaro.svg"
+    },
+    {
+      "id": "gentoo",
+      "name": "Gentoo",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/gentoo.svg"
+    },
+    {
+      "id": "nixos",
+      "name": "NixOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/nixos.svg"
+    },
+    {
+      "id": "pop",
+      "name": "Pop!_OS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/pop-os.svg"
+    },
+    {
+      "id": "raspbian",
+      "name": "Raspberry Pi OS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/raspberry-pi.svg"
+    },
+    {
+      "id": "oracle",
+      "name": "Oracle Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/oracle.svg"
+    },
+    {
+      "id": "amzn",
+      "name": "Amazon Linux",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/aws.svg"
+    }
+  ],
+  "nas_operating_systems": [
+    {
+      "id": "synology",
+      "name": "Synology DiskStation Manager (DSM)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/synology.svg"
+    },
+    {
+      "id": "truenas",
+      "name": "TrueNAS (CORE / SCALE)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/truenas.svg"
+    },
+    {
+      "id": "unraid",
+      "name": "Unraid",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/unraid.svg"
+    },
+    {
+      "id": "qnap",
+      "name": "QNAP (QTS / QuTS hero)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/qnap.svg"
+    },
+    {
+      "id": "openmediavault",
+      "name": "OpenMediaVault (OMV)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/openmediavault.svg"
+    },
+    {
+      "id": "asustor",
+      "name": "ASUSTOR (ADM)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/asustor.svg"
+    },
+    {
+      "id": "terramaster",
+      "name": "TerraMaster (TOS)",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/terramaster.svg"
+    },
+    {
+      "id": "casaos",
+      "name": "CasaOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/casaos.svg"
+    },
+    {
+      "id": "umbrel",
+      "name": "umbrelOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/umbrel.svg"
+    }
+  ],
+  "routers_and_firewalls": [
+    {
+      "id": "pfsense",
+      "name": "pfSense",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/pfsense.svg"
+    },
+    {
+      "id": "opnsense",
+      "name": "OPNsense",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/opnsense.svg"
+    },
+    {
+      "id": "openwrt",
+      "name": "OpenWrt",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/openwrt.svg"
+    },
+    {
+      "id": "mikrotik",
+      "name": "MikroTik RouterOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/mikrotik.svg"
+    },
+    {
+      "id": "ubiquiti",
+      "name": "Ubiquiti UniFi OS / EdgeOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/ubiquiti-unifi.svg"
+    },
+    {
+      "id": "cisco",
+      "name": "Cisco IOS / NX-OS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/cisco.svg"
+    },
+    {
+      "id": "vyos",
+      "name": "VyOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/vyos.svg"
+    },
+    {
+      "id": "sophos",
+      "name": "Sophos Firewall",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/sophos.svg"
+    },
+    {
+      "id": "fortinet",
+      "name": "Fortinet FortiOS",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/fortigate.svg"
+    }
+  ],
+  "hypervisors_and_containers": [
+    {
+      "id": "proxmox",
+      "name": "Proxmox VE",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/proxmox.svg"
+    },
+    {
+      "id": "vmware",
+      "name": "VMware ESXi",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/vmware.svg"
+    },
+    {
+      "id": "xcpng",
+      "name": "XCP-ng",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/xcp-ng.svg"
+    },
+    {
+      "id": "docker",
+      "name": "Docker Container",
+      "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/docker.svg"
+    }
+  ],
+  "bsd_and_unix": [
+    {
+      "id": "freebsd",
+      "name": "FreeBSD",
+      "icon": "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/freebsd.svg"
+    },
+    {
+      "id": "openbsd",
+      "name": "OpenBSD",
+      "icon": "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/openbsd.svg"
+    },
+    {
+      "id": "netbsd",
+      "name": "NetBSD",
+      "icon": "https://cdn.jsdelivr.net/gh/selfhst/icons/svg/netbsd.svg"
+    }
+  ]
+}

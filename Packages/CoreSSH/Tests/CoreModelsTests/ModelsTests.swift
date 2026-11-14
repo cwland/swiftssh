@@ -16,7 +16,7 @@ final class ModelsTests: XCTestCase {
         let other = UUID()
         let date = Date(timeIntervalSince1970: 1_700_000_000.123)
         try roundTrip(HostGroup(id: id, name: "Prod", parentID: other, defaultIdentityID: other, defaultPort: 2222, defaultThemeID: "nord", updatedAt: date, deleted: true))
-        try roundTrip(Host(id: id, label: "Docker", address: "10.0.0.1", port: 2200, groupID: other, tags: ["a", "b"], username: "root", identityID: other, password: "pw", sshKeyID: other, osBadge: .ubuntu, osBadgeIsManual: true, themeID: "dracula", startupSnippetID: other, lastConnectedAt: date, updatedAt: date, deleted: true))
+        try roundTrip(Host(id: id, label: "Docker", address: "10.0.0.1", port: 2200, groupID: other, tags: ["a", "b"], username: "root", identityID: other, password: "pw", sshKeyID: other, osBadge: .raspbian, osBadgeIsManual: true, themeID: "dracula", startupSnippetID: other, lastConnectedAt: date, updatedAt: date, deleted: true))
         try roundTrip(Identity(id: id, label: "Me", username: "cory", password: "pw", sshKeyID: other, updatedAt: date, deleted: true))
         try roundTrip(SSHKey(id: id, label: "k", keyType: .rsa, publicKey: "pub", privateKey: "priv", passphrase: "pp", updatedAt: date, deleted: true))
         try roundTrip(Snippet(id: id, name: "n", script: "ls", package: "pkg", updatedAt: date, deleted: true))

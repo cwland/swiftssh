@@ -77,20 +77,54 @@ final class BadgeImageRulesTests: XCTestCase {
     func testFileNaming() {
         XCTAssertEqual(BadgeStyle.installedLogoFileName(for: .ubuntu), "ubuntu.png")
         XCTAssertEqual(BadgeStyle.installedLogoFileName(for: .homeAssistant), "home-assistant.png")
-        XCTAssertEqual(BadgeStyle.logoFileNames(for: .raspberryPiOS), ["raspberry-pi.svg", "raspberry-pi.png"])
+        XCTAssertEqual(BadgeStyle.logoFileNames(for: .raspbian), ["raspbian.svg", "raspbian.png"])
         XCTAssertEqual(BadgeStyle.settingsFileName, "settings.json")
         XCTAssertEqual(BadgeImageRules.allowedFileExtensions, ["svg", "png", "jpg", "jpeg", "pdf"])
     }
 
     func testSettingsOrderAndNames() {
-        XCTAssertEqual(BadgeStyle.settingsOrder, [
-            .ubuntu, .debian, .raspberryPiOS, .fedora, .rhel, .alpine, .arch, .macOS, .freeBSD, .linux,
-            .synology, .homeAssistant,
+        XCTAssertEqual(BadgeStyle.settingsOrder.prefix(6), [.windows, .windows10, .macos, .apple, .linux, .ubuntu])
+        XCTAssertEqual(BadgeStyle.settingsOrder.last, .homeAssistant)
+        XCTAssertEqual(BadgeStyle.settingsOrder.prefix(3).map(BadgeStyle.settingsName(for:)), [
+            "Windows (11 / Server)", "Windows 10", "macOS",
         ])
-        XCTAssertEqual(BadgeStyle.settingsOrder.map(BadgeStyle.settingsName(for:)), [
-            "Ubuntu", "Debian", "Raspberry Pi", "Fedora", "RHEL", "Alpine", "Arch", "macOS", "FreeBSD",
-            "Linux", "Synology", "Home Assistant",
-        ])
+    }
+
+    func testDecodeLimits() {
+        XCTAssertEqual(BadgeImageRules.maximumDecodePixelSize, 1024)
+        XCTAssertEqual(BadgeImageRules.maximumSourcePixels, 50_000_000)
+        XCTAssertNil(BadgeImageRules.problem(pixelWidth: 4000, pixelHeight: 3000))
+        XCTAssertNil(BadgeImageRules.problem(pixelWidth: 10_000, pixelHeight: 5_000))
+        XCTAssertEqual(BadgeImageRules.problem(pixelWidth: 10_000, pixelHeight: 5_001), .tooManyPixels)
+        XCTAssertEqual(BadgeImageRules.problem(pixelWidth: 100_000, pixelHeight: 100_000), .tooManyPixels)
+        XCTAssertEqual(BadgeImageRules.problem(pixelWidth: Int.max, pixelHeight: Int.max), .tooManyPixels, "no overflow")
+        XCTAssertEqual(BadgeImageRules.problem(pixelWidth: 0, pixelHeight: 10), .notAnImage)
+        XCTAssertEqual(BadgeImageRules.problem(pixelWidth: -1, pixelHeight: 10), .notAnImage)
+        XCTAssertNil(BadgeImageRules.problem(pixelWidth: nil, pixelHeight: nil), "unknown: the thumbnail limit still applies")
+    }
+
+    func testImageKindSniffing() {
+        func kind(_ text: String) -> BadgeImageRules.ImageKind { BadgeImageRules.kind(of: Data(text.utf8)) }
+        XCTAssertEqual(kind("%PDF-1.7\n..."), .vector)
+        XCTAssertEqual(kind("<svg xmlns=\"http://www.w3.org/2000/svg\"/>"), .vector)
+        XCTAssertEqual(kind("\u{FEFF}  \n<?xml version=\"1.0\"?>\n<!-- c -->\n<SVG viewBox=\"0 0 1 1\"></SVG>"), .vector)
+        XCTAssertEqual(kind("<!DOCTYPE html><html><body><svg></svg></body></html>"), .bitmap, "a web page is not an SVG")
+        XCTAssertEqual(kind("<html><svg/></html>"), .bitmap)
+        XCTAssertEqual(BadgeImageRules.kind(of: Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])), .bitmap)
+        XCTAssertEqual(BadgeImageRules.kind(of: Data([0xFF, 0xD8, 0xFF])), .bitmap)
+        XCTAssertEqual(BadgeImageRules.kind(of: Data()), .bitmap)
+        let late = String(repeating: " ", count: 5000) + "<svg/>"
+        XCTAssertEqual(kind(late), .bitmap, "only the start of the file is looked at")
+    }
+
+    func testNewErrorMessages() {
+        XCTAssertEqual(BadgeImageError.tooManyPixels.message, "That image has too many pixels (over 50 megapixels).")
+        XCTAssertEqual(BadgeImageError.oldFileNotRemoved(name: "ubuntu.svg", reason: "denied").message,
+                       "The new image is saved and shown, but the old ubuntu.svg couldn't be removed (denied). Remove it in Finder, or it will be used again after the app restarts.")
+    }
+
+    func testRenderedCanvasIsSRGB() {
+        XCTAssertEqual(BadgeImageRules.colorSpaceName, "kCGColorSpaceSRGB")
     }
 
     func testSettingsPanes() {

@@ -7,8 +7,11 @@ public enum BadgeImageError: Error, Equatable, Sendable {
     case notAnImage
     case notAnImageFile
     case tooLarge
+    case tooManyPixels
     case downloadFailed(String)
     case couldNotSave(String)
+    /// The new PNG was written but the old file of the same name (which is preferred) wasn't removed.
+    case oldFileNotRemoved(name: String, reason: String)
 
     public var message: String {
         switch self {
@@ -16,8 +19,11 @@ public enum BadgeImageError: Error, Equatable, Sendable {
         case .notAnImage: "That link isn't an image."
         case .notAnImageFile: "That file isn't an image."
         case .tooLarge: "That image is larger than 2 MB."
+        case .tooManyPixels: "That image has too many pixels (over 50 megapixels)."
         case .downloadFailed(let reason): "Couldn't download it: \(reason)"
         case .couldNotSave(let reason): "Couldn't save the image: \(reason)"
+        case .oldFileNotRemoved(let name, let reason):
+            "The new image is saved and shown, but the old \(name) couldn't be removed (\(reason)). Remove it in Finder, or it will be used again after the app restarts."
         }
     }
 }
@@ -35,6 +41,42 @@ public enum BadgeImageRules {
     public static let canvasPixels = 256
     /// Empty margin on each side, as a fraction of the canvas.
     public static let paddingFraction: CGFloat = 0.12
+
+    /// Bitmaps are decoded as a thumbnail no larger than this many pixels on the long side.
+    public static let maximumDecodePixelSize = 1024
+    /// Bitmaps that announce more pixels than this are refused before decoding.
+    public static let maximumSourcePixels = 50_000_000
+    /// Stored PNGs are rendered in this color space (`CGColorSpace.sRGB`).
+    public static let colorSpaceName = "kCGColorSpaceSRGB"
+
+    /// How image bytes are decoded: vectors (SVG, PDF) by the system's vector renderer, everything
+    /// else by ImageIO with the thumbnail pixel limit.
+    public enum ImageKind: Equatable, Sendable {
+        case vector
+        case bitmap
+    }
+
+    /// Bytes looked at by `kind(of:)`.
+    static let sniffLength = 4096
+
+    /// `.vector` for a PDF (`%PDF-`) or an SVG (`<svg` near the start, not inside an HTML page).
+    public static func kind(of data: Data) -> ImageKind {
+        let head = data.prefix(sniffLength)
+        if head.starts(with: Array("%PDF-".utf8)) { return .vector }
+        var text = String(decoding: head, as: UTF8.self).lowercased()
+        text = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "\u{FEFF}")))
+        if text.hasPrefix("<!doctype html") || text.hasPrefix("<html") { return .bitmap }
+        return text.contains("<svg") ? .vector : .bitmap
+    }
+
+    /// nil when the announced size may be decoded; `.tooManyPixels` above the limit, `.notAnImage`
+    /// for an empty size. Unknown sizes pass (the thumbnail limit still applies).
+    public static func problem(pixelWidth: Int?, pixelHeight: Int?) -> BadgeImageError? {
+        guard let pixelWidth, let pixelHeight else { return nil }
+        guard pixelWidth > 0, pixelHeight > 0 else { return .notAnImage }
+        let (pixels, overflow) = pixelWidth.multipliedReportingOverflow(by: pixelHeight)
+        return overflow || pixels > maximumSourcePixels ? .tooManyPixels : nil
+    }
 
     /// The http(s) URL typed by the user, or `.notAWebLink`.
     public static func webURL(from text: String) throws(BadgeImageError) -> URL {

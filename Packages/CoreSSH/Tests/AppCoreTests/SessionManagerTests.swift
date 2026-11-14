@@ -24,16 +24,19 @@ private final class FakeSession: TerminalSession, Sendable {
     private let state = Mutex(Recorded())
     let onStart: @Sendable (FakeSession) async -> Void
     let commandOutput: String
+    /// Per-command answers; any other command gets `commandOutput`.
+    let outputsByCommand: [String: String]
     /// When false, `close()` never ends the session (to test the close-all deadline).
     let closesOnRequest: Bool
 
     init(plan: ConnectionPlan, evaluator: any HostKeyEvaluator,
          onStart: @escaping @Sendable (FakeSession) async -> Void,
-         commandOutput: String, closesOnRequest: Bool) {
+         commandOutput: String, outputsByCommand: [String: String] = [:], closesOnRequest: Bool) {
         self.plan = plan
         self.evaluator = evaluator
         self.onStart = onStart
         self.commandOutput = commandOutput
+        self.outputsByCommand = outputsByCommand
         self.closesOnRequest = closesOnRequest
         (events, continuation) = AsyncStream.makeStream()
     }
@@ -66,7 +69,7 @@ private final class FakeSession: TerminalSession, Sendable {
 
     func runCommand(_ command: String) async throws -> String {
         state.withLock { $0.commands.append(command) }
-        return commandOutput
+        return outputsByCommand[command] ?? commandOutput
     }
 
     func close() async {
@@ -83,11 +86,13 @@ private final class FakeFactory {
         s.emit(.ready)
     }
     var commandOutput = "Linux\nID=ubuntu\n"
+    var outputsByCommand: [String: String] = [:]
     var closesOnRequest = true
 
     func make(_ plan: ConnectionPlan, _ evaluator: any HostKeyEvaluator) -> any TerminalSession {
         let s = FakeSession(plan: plan, evaluator: evaluator, onStart: onStart,
-                            commandOutput: commandOutput, closesOnRequest: closesOnRequest)
+                            commandOutput: commandOutput, outputsByCommand: outputsByCommand,
+                            closesOnRequest: closesOnRequest)
         sessions.append(s)
         return s
     }
@@ -280,6 +285,47 @@ final class SessionManagerTests: XCTestCase {
         await settle()
         XCTAssertEqual(vault.get(SavedHost.self, id: manual.id)?.osBadge, .debian)
         XCTAssertEqual(mtab.badge, .debian)
+    }
+
+    func testWindowsCmdProbeAsksForTheBuild() async throws {
+        factory.commandOutput = "TR_OS_ENV=Windows_NT; sh -c \"uname -s; true\"\r\n"
+        factory.outputsByCommand = [
+            OSDetector.windowsVersionCommand:
+                "\r\nMicrosoft Windows [Version 10.0.19045.5011]\r\n    InstallationType    REG_SZ    Client\r\n",
+        ]
+        let host = passwordHost(label: "Win")
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("badge") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .windows10 }
+        XCTAssertEqual(tab.badge, .windows10)
+        XCTAssertEqual(factory.sessions[0].recorded.commands, [OSDetector.probeCommand, OSDetector.windowsVersionCommand])
+    }
+
+    func testPosixProbeRunsNoFollowUp() async throws {
+        factory.commandOutput = "TR_OS_ENV=%OS%\nLinux\nID=debian\nTR_OS_MARKER=proxmox\n"
+        let host = passwordHost(label: "PVE")
+        _ = try manager.open(hostID: host.id)
+        await waitUntil("badge") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .proxmox }
+        await settle()
+        XCTAssertEqual(factory.sessions[0].recorded.commands, [OSDetector.probeCommand])
+    }
+
+    /// "Automatic" in Host Details clears the badge; the next connection probes again even if
+    /// this host was probed earlier in the app session.
+    func testAutomaticHostWithoutBadgeIsProbedAgain() async throws {
+        let host = passwordHost(label: "Auto")
+        let first = try manager.open(hostID: host.id)
+        await waitUntil("badge") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .ubuntu }
+        XCTAssertEqual(first.badge, .ubuntu)
+
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        stored.osBadge = nil
+        stored.osBadgeIsManual = false
+        vault.saveNow(stored)
+        factory.commandOutput = "TR_OS_ENV=%OS%\nLinux\nID=debian\n"
+        let second = try manager.open(hostID: host.id)
+        await waitUntil("re-probed") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .debian }
+        XCTAssertEqual(second.badge, .debian)
+        XCTAssertEqual(factory.sessions[1].recorded.commands, [OSDetector.probeCommand])
     }
 
     func testStartupScriptIsSentAfterConnect() async throws {

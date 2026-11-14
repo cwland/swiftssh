@@ -1,8 +1,5 @@
 import Foundation
 
-public enum OSBadge: String, Codable, Sendable, CaseIterable {
-    case ubuntu, debian, raspberryPiOS, fedora, rhel, alpine, arch, macOS, freeBSD, linux, synology, homeAssistant
-}
 
 public enum KeyType: String, Codable, Sendable, CaseIterable {
     case ed25519, rsa

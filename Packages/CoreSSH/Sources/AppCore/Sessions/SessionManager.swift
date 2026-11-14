@@ -491,12 +491,18 @@ public final class SessionManager {
         if let hostID = plan.hostID, var host = vault.get(SavedHost.self, id: hostID) {
             host.lastConnectedAt = Date()
             vault.saveNow(host)
-            if !host.osBadgeIsManual, !probedHosts.contains(hostID) {
+            // Once per host per app session, and again whenever an automatic host has no badge
+            // (e.g. after "Automatic" in Host Details).
+            if !host.osBadgeIsManual, !probedHosts.contains(hostID) || host.osBadge == nil {
                 probedHosts.insert(hostID)
                 let session = attempt.session
                 Task { [weak self] in
                     do {
-                        let output = try await session.runCommand(OSDetector.probeCommand)
+                        var output = try await session.runCommand(OSDetector.probeCommand)
+                        if let followUp = OSDetector.followUpCommand(forProbeOutput: output),
+                           let more = try? await session.runCommand(followUp) {
+                            output += "\n" + more
+                        }
                         self?.applyProbe(output, hostID: hostID)
                     } catch {
                         self?.probedHosts.remove(hostID) // try again on the next connection

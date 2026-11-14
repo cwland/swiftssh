@@ -123,6 +123,29 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.osBadge, .debian)
     }
 
+    func testAutomaticOSClearsTheManualChoice() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", osBadge: .ubuntu))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertTrue(vm.isOSAutomatic)
+        vm.osBadge = .proxmox
+        XCTAssertFalse(vm.isOSAutomatic)
+        vm.useAutomaticOS()
+        let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(stored.osBadge, "cleared so the next connection detects it")
+        XCTAssertFalse(stored.osBadgeIsManual)
+        XCTAssertTrue(vm.isOSAutomatic)
+        XCTAssertNil(vm.osBadge)
+    }
+
+    func testManualBadgeAcceptsAnyCatalogID() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.osBadge = .xcpng
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.osBadge?.rawValue, "xcpng")
+    }
+
     func testSwitchingCredentialModeClearsTheOtherMode() async throws {
         let vault = try await makeVault()
         let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))

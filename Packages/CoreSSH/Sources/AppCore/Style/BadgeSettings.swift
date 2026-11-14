@@ -1,30 +1,39 @@
 import Foundation
 import CoreModels
 
-/// Per-OS badge appearance chosen in Settings → OS Icons: whether the logo is drawn as a white
-/// template and an optional badge color. Stored locally (never synced) as
-/// `Badges/settings.json`, keyed by the badge's logo file name:
+/// Per-OS badge settings chosen in Settings → OS Icons: whether the logo is drawn as a white
+/// template, an optional badge color, an optional icon link (instead of the catalog's default)
+/// and the link the current image was downloaded from. Stored locally (never synced) as
+/// `Badges/settings.json`, keyed by catalog id:
 ///
-///     { "version": 1, "badges": { "ubuntu": { "showInWhite": false, "color": "#E2602F" } } }
+///     { "version": 2, "badges": { "ubuntu": { "showInWhite": false, "color": "#E2602F",
+///                                             "link": "https://…", "source": "https://…" } } }
 ///
-/// Badges left at their defaults are not written. Unknown keys, unknown badges and malformed
-/// colors are ignored when reading.
+/// Entries left at their defaults are not written. Reading is lenient: each field is read on its
+/// own, so a bad value drops only that value; unknown ids, unknown keys, bad colors and links that
+/// aren't http(s) are ignored. Version 1 keys (`raspberry-pi`) are read as their catalog id.
 public struct BadgeSettings: Equatable, Sendable {
     public struct Appearance: Equatable, Sendable {
         /// Draw the logo as a white template on the colored square (default) or in its own colors.
         public var showsInWhite = true
         /// "#RRGGBB" override; nil uses `BadgeStyle.hexColor(for:)`.
         public var hexColor: String?
+        /// Icon link override; nil uses the catalog's default link.
+        public var link: String?
+        /// The link the installed image was downloaded from; nil for a file or no image.
+        public var imageSource: String?
 
-        public init(showsInWhite: Bool = true, hexColor: String? = nil) {
+        public init(showsInWhite: Bool = true, hexColor: String? = nil, link: String? = nil, imageSource: String? = nil) {
             self.showsInWhite = showsInWhite
             self.hexColor = hexColor
+            self.link = link
+            self.imageSource = imageSource
         }
 
-        var isDefault: Bool { showsInWhite && hexColor == nil }
+        var isDefault: Bool { showsInWhite && hexColor == nil && link == nil && imageSource == nil }
     }
 
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     private var appearances: [OSBadge: Appearance] = [:]
 
@@ -39,9 +48,31 @@ public struct BadgeSettings: Equatable, Sendable {
         badge.flatMap { appearances[$0]?.hexColor } ?? BadgeStyle.hexColor(for: badge)
     }
 
-    /// True when the color or the white setting differs from the defaults.
-    public func hasCustomAppearance(for badge: OSBadge) -> Bool {
+    /// The icon link shown in Settings: the override, else the catalog default ("" if none).
+    public func link(for badge: OSBadge) -> String {
+        appearances[badge]?.link ?? OSCatalog.shared.entry(for: badge)?.defaultLink ?? ""
+    }
+
+    public func hasCustomLink(for badge: OSBadge) -> Bool {
+        appearances[badge]?.link != nil
+    }
+
+    /// Where the current image came from, when it was downloaded.
+    public func imageSource(for badge: OSBadge) -> String? {
+        appearances[badge]?.imageSource
+    }
+
+    /// True when anything differs from the defaults (color, white, link or a remembered source).
+    public func hasCustomSettings(for badge: OSBadge) -> Bool {
         appearances[badge] != nil
+    }
+
+    /// Whether Download All Defaults should fetch this entry: it has a default link, no custom
+    /// link, and either no image or an image that came from the default link.
+    public func wantsDefaultDownload(_ badge: OSBadge, hasLogo: Bool) -> Bool {
+        guard let entry = OSCatalog.shared.entry(for: badge), !entry.defaultLink.isEmpty,
+              !hasCustomLink(for: badge) else { return false }
+        return !hasLogo || imageSource(for: badge) == entry.defaultLink
     }
 
     public mutating func setShowsInWhite(_ showsInWhite: Bool, for badge: OSBadge) {
@@ -56,7 +87,23 @@ public struct BadgeSettings: Equatable, Sendable {
         }
     }
 
-    /// Back to white and the standard color.
+    /// Sets the icon link (the catalog default clears the override) and returns it as a URL.
+    /// Anything but an http(s) link throws `.notAWebLink` and changes nothing.
+    @discardableResult
+    public mutating func setLink(_ text: String, for badge: OSBadge) throws(BadgeImageError) -> URL {
+        let url = try BadgeImageRules.webURL(from: text)
+        let link = url.absoluteString
+        update(badge) {
+            $0.link = link == OSCatalog.shared.entry(for: badge)?.defaultLink ? nil : link
+        }
+        return url
+    }
+
+    public mutating func setImageSource(_ link: String?, for badge: OSBadge) {
+        update(badge) { $0.imageSource = link }
+    }
+
+    /// Back to white, the standard color and the default link; forgets the image source.
     public mutating func reset(_ badge: OSBadge) {
         appearances[badge] = nil
     }
@@ -69,28 +116,69 @@ public struct BadgeSettings: Equatable, Sendable {
 
     // MARK: JSON
 
-    private struct FileFormat: Codable {
-        var version: Int?
-        var badges: [String: Entry]?
+    private struct FileFormat: Encodable {
+        var version: Int
+        var badges: [String: Entry]
     }
 
     private struct Entry: Codable {
         var showInWhite: Bool?
         var color: String?
+        var link: String?
+        var source: String?
+
+        init(showInWhite: Bool?, color: String?, link: String?, source: String?) {
+            self.showInWhite = showInWhite; self.color = color; self.link = link; self.source = source
+        }
+
+        /// Every field on its own: a value of the wrong type drops only that value.
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            showInWhite = try? container.decodeIfPresent(Bool.self, forKey: .showInWhite)
+            color = try? container.decodeIfPresent(String.self, forKey: .color)
+            link = try? container.decodeIfPresent(String.self, forKey: .link)
+            source = try? container.decodeIfPresent(String.self, forKey: .source)
+        }
     }
 
-    /// Reads `settings.json`. Throws only when the data isn't a JSON object of this shape.
+    private struct LenientFile: Decodable {
+        var badges: [String: Lenient<Entry>]?
+
+        init(from decoder: Decoder) throws {
+            // Must be an object; everything inside it is optional.
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            badges = try? container.decodeIfPresent([String: Lenient<Entry>].self, forKey: .badges)
+        }
+
+        private enum CodingKeys: String, CodingKey { case badges }
+    }
+
+    /// Reads `settings.json`. Throws only when the data isn't a JSON object.
     public init(jsonData: Data) throws {
-        let file = try JSONDecoder().decode(FileFormat.self, from: jsonData)
-        for (name, entry) in file.badges ?? [:] {
-            guard let badge = OSBadge.allCases.first(where: { BadgeStyle.logoFileName(for: $0) == name }) else {
-                continue
-            }
+        let file = try JSONDecoder().decode(LenientFile.self, from: jsonData)
+        let entries = file.badges ?? [:]
+        // Legacy keys first, so an entry under the current id overwrites its legacy twin.
+        let ordered = entries.sorted { lhs, rhs in
+            let l = BadgeStyle.legacyLogoFileNames[lhs.key] != nil
+            let r = BadgeStyle.legacyLogoFileNames[rhs.key] != nil
+            return l != r ? l : lhs.key < rhs.key
+        }
+        for (key, lenient) in ordered {
+            guard let entry = lenient.value else { continue }
+            let badge = BadgeStyle.legacyLogoFileNames[key] ?? OSBadge(rawValue: key)
+            guard OSCatalog.shared.contains(badge), OSCatalog.isValidID(key) else { continue }
+            appearances[badge] = nil
             if let showInWhite = entry.showInWhite {
                 setShowsInWhite(showInWhite, for: badge)
             }
             if let color = entry.color {
                 setColor(color, for: badge)
+            }
+            if let link = entry.link {
+                _ = try? setLink(link, for: badge)
+            }
+            if let source = entry.source, let url = try? BadgeImageRules.webURL(from: source) {
+                setImageSource(url.absoluteString, for: badge)
             }
         }
     }
@@ -99,11 +187,12 @@ public struct BadgeSettings: Equatable, Sendable {
     public func jsonData() throws -> Data {
         var badges: [String: Entry] = [:]
         for (badge, appearance) in appearances {
-            badges[BadgeStyle.logoFileName(for: badge)] = Entry(showInWhite: appearance.showsInWhite,
-                                                                 color: appearance.hexColor)
+            guard let key = BadgeStyle.logoFileName(for: badge) else { continue }
+            badges[key] = Entry(showInWhite: appearance.showsInWhite, color: appearance.hexColor,
+                                link: appearance.link, source: appearance.imageSource)
         }
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(FileFormat(version: Self.currentVersion, badges: badges))
     }
 }

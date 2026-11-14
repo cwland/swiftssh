@@ -1,0 +1,79 @@
+{
+  "fallback": { "color": "#5B6475", "symbol": "terminal" },
+  "categories": [
+    { "key": "desktop_and_server", "title": "Desktop & Server", "symbol": "desktopcomputer" },
+    { "key": "linux_distributions", "title": "Linux Distributions", "symbol": "terminal" },
+    { "key": "nas_operating_systems", "title": "NAS", "symbol": "externaldrive.connected.to.line.below" },
+    { "key": "routers_and_firewalls", "title": "Routers & Firewalls", "symbol": "network" },
+    { "key": "hypervisors_and_containers", "title": "Hypervisors & Containers", "symbol": "square.stack.3d.up" },
+    { "key": "bsd_and_unix", "title": "BSD & Unix", "symbol": "server.rack" },
+    { "key": "home_automation", "title": "Home Automation", "symbol": "house" }
+  ],
+  "extraEntries": {
+    "home_automation": [
+      {
+        "id": "home-assistant",
+        "name": "Home Assistant",
+        "icon": "https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/svg/home-assistant.svg"
+      }
+    ]
+  },
+  "entries": {
+    "windows": { "color": "#0078D4", "symbol": "pc" },
+    "windows-10": { "color": "#0067B8", "symbol": "pc" },
+    "macos": { "color": "#111111" },
+    "apple": { "color": "#1D1D1F" },
+    "linux": { "color": "#5B6475", "symbol": "terminal" },
+
+    "ubuntu": { "color": "#E2602F" },
+    "debian": { "color": "#C2275A" },
+    "rhel": { "color": "#CC0000" },
+    "fedora": { "color": "#3C6EB4" },
+    "arch": { "color": "#1793D1" },
+    "almalinux": { "color": "#0F4266" },
+    "rocky": { "color": "#10B981" },
+    "centos": { "color": "#932279" },
+    "alpine": { "color": "#0D597F" },
+    "opensuse": { "color": "#73BA25" },
+    "linuxmint": { "color": "#5B9A2F" },
+    "kali": { "color": "#2777D1" },
+    "manjaro": { "color": "#35BF5C" },
+    "gentoo": { "color": "#54487A" },
+    "nixos": { "color": "#5277C3" },
+    "pop": { "color": "#48B9C7" },
+    "raspbian": { "color": "#C2275A", "symbol": "cpu" },
+    "oracle": { "color": "#C74634" },
+    "amzn": { "color": "#232F3E" },
+
+    "synology": { "color": "#1F4A7A" },
+    "truenas": { "color": "#0095D5" },
+    "unraid": { "color": "#F15A2C" },
+    "qnap": { "color": "#1D7FC5" },
+    "openmediavault": { "color": "#2F6EA5" },
+    "asustor": { "color": "#1B4C8C" },
+    "terramaster": { "color": "#E8501E" },
+    "casaos": { "color": "#0C6BE5" },
+    "umbrel": { "color": "#5351FB" },
+
+    "pfsense": { "color": "#1C5B9B" },
+    "opnsense": { "color": "#D94F00" },
+    "openwrt": { "color": "#00A3D0" },
+    "mikrotik": { "color": "#2B3A42" },
+    "ubiquiti": { "color": "#0559C9" },
+    "cisco": { "color": "#1BA0D7" },
+    "vyos": { "color": "#1B2C47" },
+    "sophos": { "color": "#005BC8" },
+    "fortinet": { "color": "#DA291C" },
+
+    "proxmox": { "color": "#E57000" },
+    "vmware": { "color": "#0091DA" },
+    "xcpng": { "color": "#1E4C83" },
+    "docker": { "color": "#2496ED", "symbol": "shippingbox" },
+
+    "freebsd": { "color": "#AB2B28" },
+    "openbsd": { "color": "#9C7A1A" },
+    "netbsd": { "color": "#E46B1C" },
+
+    "home-assistant": { "color": "#2C5D84" }
+  }
+}

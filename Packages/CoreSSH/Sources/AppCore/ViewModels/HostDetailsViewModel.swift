@@ -125,6 +125,19 @@ public final class HostDetailsViewModel {
         }
     }
 
+    /// True unless the user chose the OS (then the probe never changes it).
+    public var isOSAutomatic: Bool {
+        !(host?.osBadgeIsManual ?? false)
+    }
+
+    /// "Automatic": forgets the chosen OS, so the next connection detects it.
+    public func useAutomaticOS() {
+        update {
+            $0.osBadge = nil
+            $0.osBadgeIsManual = false
+        }
+    }
+
     /// `.identity` when the host links an identity, or when the user picked identity mode and
     /// the host has neither an identity nor direct credentials yet; otherwise `.direct`. Switching to `.identity` clears the direct
     /// username, password and key; switching to `.direct` clears the identity.
