@@ -35,5 +35,30 @@ Re-run `xcodegen generate` whenever files are added or removed under `Sources/` 
 - Vault key: login keychain, generic password, service `com.cwland.TermiusReimagined`,
   account `local-vault-key`, not synchronized.
 
+## Your own OS logos (optional)
+
+Host badges show a generic symbol per OS. To use real logos, put image files in
+`~/Library/Application Support/TermiusReimagined/Badges/` (the app creates the empty folder at
+launch). Name each file `<name>.svg` or `<name>.png` (SVG is used when both exist):
+
+| OS | File name |
+| --- | --- |
+| Ubuntu | `ubuntu` |
+| Debian | `debian` |
+| Raspberry Pi OS | `raspberry-pi` |
+| Fedora | `fedora` |
+| RHEL / CentOS / Rocky / Alma | `rhel` |
+| Alpine | `alpine` |
+| Arch | `arch` |
+| macOS | `macos` |
+| FreeBSD | `freebsd` |
+| Other Linux | `linux` |
+| Synology DSM | `synology` |
+| Home Assistant OS | `home-assistant` |
+
+Logos are drawn in white on the badge's colored square (as a template: only the image's shape and
+transparency are used, so use logos with a transparent background). They are read once per
+launch: quit and reopen the app after adding or changing files. The repository ships no logo files.
+
 The app is ad-hoc signed, so the first launch after each rebuild may ask for access to the
 vault key in your keychain: click "Always Allow".

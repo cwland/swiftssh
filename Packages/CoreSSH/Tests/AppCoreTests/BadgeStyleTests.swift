@@ -29,4 +29,22 @@ final class BadgeStyleTests: XCTestCase {
         XCTAssertEqual(BadgeStyle.hexColor(for: .homeAssistant), "#2C5D84")
         XCTAssertEqual(BadgeStyle.hexColor(for: .fedora), "#5B6475")
     }
+
+    func testLogoFileNameForEveryBadge() {
+        let expected: [OSBadge: String] = [
+            .ubuntu: "ubuntu", .debian: "debian", .raspberryPiOS: "raspberry-pi", .fedora: "fedora",
+            .rhel: "rhel", .alpine: "alpine", .arch: "arch", .macOS: "macos", .freeBSD: "freebsd",
+            .linux: "linux", .synology: "synology", .homeAssistant: "home-assistant",
+        ]
+        XCTAssertEqual(Set(expected.keys), Set(OSBadge.allCases))
+        for badge in OSBadge.allCases {
+            XCTAssertEqual(BadgeStyle.logoFileName(for: badge), expected[badge], "\(badge)")
+        }
+        XCTAssertEqual(Set(OSBadge.allCases.map { BadgeStyle.logoFileName(for: $0) }).count, OSBadge.allCases.count)
+    }
+
+    func testLogoFileExtensionsPreferSVG() {
+        XCTAssertEqual(BadgeStyle.logoFileExtensions, ["svg", "png"])
+        XCTAssertEqual(BadgeStyle.logoFolderName, "Badges")
+    }
 }

@@ -60,6 +60,7 @@ final class AppEnvironment {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return
         }
+        BadgeLogoStore.createDirectoryIfNeeded()
         var keyWasCreated = false
         do {
             let fileURL = try Self.vaultFileURL()

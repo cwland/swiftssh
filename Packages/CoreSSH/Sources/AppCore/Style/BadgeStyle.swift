@@ -24,4 +24,28 @@ public enum BadgeStyle {
         case .none, .fedora, .rhel, .alpine, .arch, .freeBSD, .linux: "#5B6475"
         }
     }
+
+    /// Folder (inside Application Support/TermiusReimagined) holding optional user-supplied logos.
+    public static let logoFolderName = "Badges"
+
+    /// Logo file extensions, in order of preference.
+    public static let logoFileExtensions = ["svg", "png"]
+
+    /// Base file name (without extension) of the optional user-supplied logo for a badge.
+    public static func logoFileName(for badge: OSBadge) -> String {
+        switch badge {
+        case .ubuntu: "ubuntu"
+        case .debian: "debian"
+        case .raspberryPiOS: "raspberry-pi"
+        case .fedora: "fedora"
+        case .rhel: "rhel"
+        case .alpine: "alpine"
+        case .arch: "arch"
+        case .macOS: "macos"
+        case .freeBSD: "freebsd"
+        case .linux: "linux"
+        case .synology: "synology"
+        case .homeAssistant: "home-assistant"
+        }
+    }
 }

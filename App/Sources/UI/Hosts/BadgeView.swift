@@ -2,7 +2,9 @@ import SwiftUI
 import AppCore
 import CoreModels
 
-/// A host's OS badge: a generic SF Symbol in a colored rounded square (never a distro logo).
+/// A host's OS badge: a colored rounded square with the user's own logo for that OS (from the
+/// Badges folder, drawn as a white template image) or, without one, a generic SF Symbol. The app
+/// ships no distro logos.
 struct BadgeView: View {
     let badge: OSBadge?
     var size: CGFloat = Theme.badgeSize
@@ -12,9 +14,19 @@ struct BadgeView: View {
             .fill(Color(hex: BadgeStyle.hexColor(for: badge)))
             .frame(width: size, height: size)
             .overlay {
-                Image(systemName: BadgeStyle.symbol(for: badge))
-                    .font(.system(size: size * 0.42, weight: .medium))
-                    .foregroundStyle(Color.white)
+                if let logo = BadgeLogoStore.shared.logo(for: badge) {
+                    Image(nsImage: logo)
+                        .renderingMode(.template)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .foregroundStyle(Color.white)
+                        .padding(size * 0.2)
+                } else {
+                    Image(systemName: BadgeStyle.symbol(for: badge))
+                        .font(.system(size: size * 0.42, weight: .medium))
+                        .foregroundStyle(Color.white)
+                }
             }
     }
 }
