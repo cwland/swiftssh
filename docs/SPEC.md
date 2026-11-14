@@ -2,7 +2,7 @@
 
 ## 1. Project Overview & Goals
 Build a native macOS SSH client and terminal emulator inspired by the design, workflow, and visual polish of **Termius**. 
-- **Target Platform:** macOS 14.0+ (Sonoma/Sequoia) built with Swift and SwiftUI (with AppKit bridging where required for low-level terminal rendering and window management).
+- **Target Platform:** macOS 15.0+ (Sequoia and later) built with Swift and SwiftUI (with AppKit bridging where required for low-level terminal rendering and window management).
 - **Future-Proofing:** Architect the data models, SSH networking engine, and iCloud sync layer as a shared Swift Package (`CoreSSH`) so an iOS/iPadOS companion app can be built on top of the exact same core later.
 - **Scope:** Focus strictly on core SSH, SFTP, host management, snippets, port forwarding, and seamless cross-Mac credential syncing via Apple's iCloud ecosystem. Exclude team collaboration features, multiplayer terminals, and custom cloud accounts.
 

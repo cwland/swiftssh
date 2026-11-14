@@ -40,7 +40,7 @@ Success: Cory can uninstall Termius. Every Mac shows the same hosts, credentials
 
 ## 3. Constraints
 
-- macOS 14+ (Sonoma and later). Swift 6 toolchain, SwiftUI with AppKit where needed.
+- macOS 15+ (Sequoia and later). Swift 6 toolchain, SwiftUI with AppKit where needed.
 - No paid Apple Developer account: the app runs as a locally signed build. No CloudKit and no iCloud Keychain.
 - The development sandbox is Linux. It can build and test code that doesn't depend on Apple-only frameworks. SwiftUI, SwiftData, Security/Keychain and LocalAuthentication only run on Cory's Mac.
 - The sandbox can commit to the repo but cannot `git push`; Cory pushes.

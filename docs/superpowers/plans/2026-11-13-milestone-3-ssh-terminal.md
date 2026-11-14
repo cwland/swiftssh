@@ -6,11 +6,11 @@
 
 **Architecture:** A new `SSHCore` library in `Packages/CoreSSH` defines one `TerminalSession` abstraction with two engines: `CitadelSession` (pure Swift SSH) and `SystemSSHSession` (`/usr/bin/ssh` in a pseudo-terminal). `AppCore` gains connection planning, a known-hosts trust store, OS detection and a `SessionManager` that drives sessions as state machines. The app shows sessions as tabs using SwiftTerm's `TerminalView`. Both engines are integration-tested on Linux against a real local `sshd`.
 
-**Tech Stack:** Swift 6, Citadel 0.9.x (SwiftNIO SSH), SwiftTerm, OpenSSH client tools, SwiftUI/AppKit (macOS 15+).
+**Tech Stack:** Swift 6, Citadel 0.12.1 (SwiftNIO SSH), SwiftTerm, OpenSSH client tools, SwiftUI/AppKit (macOS 15+).
 
 **Spec:** `docs/superpowers/specs/2026-11-13-termius-reimagined-design.md` §8 (Terminal tab), §9 (SSH behavior), §11 milestone 3. **Design change approved by Cory (2026-11-13):** two engines ("do both") and a macOS 15 minimum.
 
-## Spike findings (Linux, OpenSSH 9.6 server, Citadel 0.9.2)
+## Spike findings (Linux, OpenSSH 9.6 server, Citadel 0.12.1)
 
 - Citadel: password login, Ed25519 key login (`Curve25519.Signing.PrivateKey(sshEd25519:decryptionKey:)`), `executeCommand`, `withPTY` all work. RSA key login fails (`allAuthenticationOptionsFailed`) — Citadel signs only with legacy `ssh-rsa` (SHA-1).
 - `withPTY` and `withTTY` are `@available(macOS 15.0, *)`.
@@ -21,7 +21,7 @@
 ## Global Constraints
 
 - Deployment targets: `Packages/CoreSSH` platforms `.macOS(.v15), .iOS(.v18)`; app `MACOSX_DEPLOYMENT_TARGET: "15.0"`.
-- Dependencies: `https://github.com/orlandos-nl/Citadel.git` `.upToNextMinor(from: "0.9.2")`; `https://github.com/migueldeicaza/SwiftTerm.git` latest release at implementation time (record the version in the commit). `SSHCore` depends on Citadel; only the app depends on SwiftTerm.
+- Dependencies: `https://github.com/orlandos-nl/Citadel.git` `.upToNextMinor(from: "0.12.1")`; `https://github.com/migueldeicaza/SwiftTerm.git` latest release at implementation time (record the version in the commit). `SSHCore` depends on Citadel; only the app depends on SwiftTerm.
 - `AppCore` still builds and tests on Linux; `SSHCore` builds on Linux too. Linux test command: `swift test -Xlinker --allow-shlib-undefined` (sandbox-only flag, never in Package.swift).
 - Engine choice: `systemSSH` when the effective credential is an RSA key, or the host's `useSystemSSH == true`; otherwise `citadel`. Quick connect without a saved host uses `citadel`.
 - Terminal type `xterm-256color`. Initial PTY size comes from the terminal view; resizes are forwarded.
