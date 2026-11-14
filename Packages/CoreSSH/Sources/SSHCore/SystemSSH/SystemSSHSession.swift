@@ -42,6 +42,7 @@ public final class SystemSSHSession: TerminalSession {
     private let sshPath: String
     private let keyscanPath: String
     private let commandTimeout: Duration
+    private let terminalModeProbe: TerminalModeProbe
     private let eventContinuation: AsyncStream<SessionEvent>.Continuation
     private let inputQueue = DispatchQueue(label: "SystemSSHSession.input")
     /// Resolved once `.connected` or `.closed` was emitted; `start` waits for it.
@@ -69,8 +70,14 @@ public final class SystemSSHSession: TerminalSession {
         var cols = 80
         var rows = 24
         var hostKeyAlgorithms: String?
+        /// This session's own known_hosts file (deleted with the other temp files).
+        var knownHostsFile: URL?
+        /// The expanded control socket path (`ssh -G`), found on the first `runCommand`.
+        var controlSocket: String?
         /// This session's entry in the control master registry, while ssh runs.
         var controlKey: String?
+        /// Output chunks received so far (for the session-start fallback).
+        var outputChunks = 0
     }
 
     public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator,
@@ -81,9 +88,14 @@ public final class SystemSSHSession: TerminalSession {
                   sshPath: sshPath, keyscanPath: keyscanPath, commandTimeout: .seconds(15))
     }
 
-    /// `commandTimeout` bounds `runCommand`; only tests change it.
+    /// Reads a terminal's mode; tests inject one to exercise the session-start fallback.
+    typealias TerminalModeProbe = @Sendable (PTYProcess) -> PTYProcess.TerminalMode
+
+    /// `commandTimeout` bounds `runCommand`; only tests change it and `terminalModeProbe`.
     init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, knownHostsLines: @escaping @Sendable () async -> [String],
-         runtime: SSHRuntimeDirectory, sshPath: String, keyscanPath: String, commandTimeout: Duration) {
+         runtime: SSHRuntimeDirectory, sshPath: String, keyscanPath: String, commandTimeout: Duration,
+         terminalModeProbe: @escaping TerminalModeProbe = { $0.terminalMode }) {
+        self.terminalModeProbe = terminalModeProbe
         self.plan = plan
         self.host = Self.normalizedHost(plan.host)
         self.hostKeys = hostKeys
@@ -141,14 +153,20 @@ public final class SystemSSHSession: TerminalSession {
     /// throws. Output above 1 MB or a run longer than 15 s kills the command's ssh and throws
     /// (`.connectionFailed("Command output too large")` / `.timedOut`).
     public func runCommand(_ command: String) async throws -> String {
-        let (algorithms, ended) = state.withLock { state in
-            (state.sessionStarted && state.ssh != nil ? state.hostKeyAlgorithms : nil, state.ended)
+        let (algorithms, knownHosts, ended) = state.withLock { state in
+            (state.sessionStarted && state.ssh != nil ? state.hostKeyAlgorithms : nil, state.knownHostsFile, state.ended)
         }
         guard !ended else { throw SessionError.connectionFailed("Session closed") }
-        guard let algorithms else { throw SessionError.connectionFailed("The session is not connected.") }
+        guard let algorithms, let knownHosts else { throw SessionError.connectionFailed("The session is not connected.") }
+        // Only ever through the session's control master (ControlMaster=no): never a fresh connection.
+        guard let socket = await controlSocketPath(knownHosts: knownHosts),
+              FileManager.default.fileExists(atPath: socket) else {
+            throw SessionError.connectionFailed("Session closed")
+        }
 
-        let arguments = Self.optionArguments(port: plan.port, username: plan.username, runtime: runtime)
-            + ["-o", "HostKeyAlgorithms=\(algorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]
+        let arguments = Self.commandArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
+                                              knownHosts: knownHosts, controlSocket: socket,
+                                              hostKeyAlgorithms: algorithms, command: command)
         let process: PTYProcess
         do {
             process = try PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
@@ -213,8 +231,12 @@ public final class SystemSSHSession: TerminalSession {
     // MARK: Connecting
 
     private func connect() async {
-        guard Self.isSafeHost(host), Self.isSafeUsername(plan.username), (1...65_535).contains(plan.port) else {
-            finish(.failed(.connectionFailed("Invalid host, port or user name")))
+        guard Self.isSafeHost(host) else {
+            finish(.failed(.connectionFailed("Invalid host name")))
+            return
+        }
+        guard Self.isSafeUsername(plan.username), (1...65_535).contains(plan.port) else {
+            finish(.failed(.connectionFailed("Invalid port or user name")))
             return
         }
         do {
@@ -243,22 +265,16 @@ public final class SystemSSHSession: TerminalSession {
         }
         guard !isEnded else { return }
 
-        // 3. known_hosts: the vault's lines for other hosts, plus exactly the key just trusted for this one.
-        let trustedLine = "\(candidate.hostPort) \(candidate.keyType) \(candidate.publicKeyBlob.base64EncodedString())"
-        let otherLines = await knownHostsLines().filter { line in
-            line.split(separator: " ", maxSplits: 1).first.map(String.init) != candidate.hostPort
-        }
-        do {
-            _ = try runtime.writeKnownHosts(otherLines + [trustedLine])
-        } catch {
-            finish(.failed(.connectionFailed("Could not write the known hosts file")))
-            return
-        }
+        // 3. This session's own known_hosts: the vault's lines for other hosts, plus exactly the key just
+        //    trusted for this one.
+        let lines = Self.knownHostsFile(vault: await knownHostsLines(), trusted: candidate)
 
-        // 4. Key and secret files.
+        // 4. known_hosts, key and secret files.
+        let knownHostsFile: URL
         var keyFile: URL?
         var secretFile: URL?
         do {
+            knownHostsFile = try track(runtime.writeKnownHosts(lines))
             switch plan.credential {
             case .password(let password):
                 secretFile = try track(runtime.writeSecret(password))
@@ -279,8 +295,14 @@ public final class SystemSSHSession: TerminalSession {
 
         // 5. Launch ssh.
         let algorithms = Self.hostKeyAlgorithms(for: candidate.keyType)
-        let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username,
-                                          runtime: runtime, keyFile: keyFile, hostKeyAlgorithms: algorithms)
+        let auth: AuthArguments
+        switch plan.credential {
+        case .password: auth = .password
+        case .privateKey: auth = keyFile.map(AuthArguments.key) ?? .none
+        case .none: auth = .none
+        }
+        let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
+                                          knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms)
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
@@ -301,6 +323,7 @@ public final class SystemSSHSession: TerminalSession {
             guard !state.ended else { return false }
             state.ssh = ssh
             state.hostKeyAlgorithms = algorithms
+            state.knownHostsFile = knownHostsFile
             state.controlKey = controlKey
             Self.controlMasters.retain(controlKey)
             for bytes in state.backlog { inputQueue.async { ssh.write(bytes) } }
@@ -318,7 +341,7 @@ public final class SystemSSHSession: TerminalSession {
         }
         if interactive { startGate.resolve(()) }
 
-        Task { await self.watchForSessionStart(ssh) }
+        Task { await self.watchForSessionStart(ssh, secretFile: secretFile) }
         for await chunk in ssh.output { received(chunk) }
         sshExited(status: ssh.exitStatus)
     }
@@ -373,19 +396,37 @@ public final class SystemSSHSession: TerminalSession {
     }
 
     /// Polls the terminal mode until ssh starts the session (canonical mode off) or exits.
-    private func watchForSessionStart(_ ssh: PTYProcess) async {
+    ///
+    /// If the mode can't be read, falls back to: with askpass, the helper has consumed the secret file
+    /// and output arrived after that; without askpass, the first output once 2 s have passed.
+    private func watchForSessionStart(_ ssh: PTYProcess, secretFile: URL?) async {
+        let clock = ContinuousClock()
+        let launched = clock.now
+        var outputMark: Int?
         while true {
-            let (ended, started) = state.withLock { ($0.ended, $0.sessionStarted) }
+            let (ended, started, chunks) = state.withLock { ($0.ended, $0.sessionStarted, $0.outputChunks) }
             if ended || started { return }
-            switch ssh.isCanonicalMode {
-            case .none:
-                return // ssh exited
-            case .some(false):
+            switch terminalModeProbe(ssh) {
+            case .exited:
+                return
+            case .raw:
                 sessionStarted()
                 return
-            case .some(true):
-                try? await Task.sleep(for: .milliseconds(20))
+            case .canonical:
+                break
+            case .unavailable:
+                if outputMark == nil {
+                    if let secretFile {
+                        if !FileManager.default.fileExists(atPath: secretFile.path) { outputMark = chunks }
+                    } else if clock.now - launched >= .seconds(2) {
+                        outputMark = chunks
+                    }
+                } else if let mark = outputMark, chunks > mark {
+                    sessionStarted()
+                    return
+                }
             }
+            try? await Task.sleep(for: .milliseconds(20))
         }
     }
 
@@ -411,6 +452,7 @@ public final class SystemSSHSession: TerminalSession {
     private func received(_ chunk: [UInt8]) {
         state.withLock { state in
             guard !state.ended else { return }
+            state.outputChunks += 1
             if !state.sessionStarted {
                 state.preSessionOutput = Self.appendingTail(state.preSessionOutput, chunk)
             }
@@ -488,7 +530,7 @@ public final class SystemSSHSession: TerminalSession {
 
     /// `ssh -O exit` for this host's control socket, bounded.
     private func stopControlMaster() async {
-        let arguments = ["-p", String(plan.port), "-l", plan.username,
+        let arguments = ["-F", "/dev/null", "-p", String(plan.port), "-l", plan.username,
                          "-o", "ControlPath=\(Self.controlPath(runtime))",
                          "-O", "exit", "--", host]
         guard let process = try? PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
@@ -498,32 +540,93 @@ public final class SystemSSHSession: TerminalSession {
 
     // MARK: Command line
 
-    /// The interactive session's arguments (after the executable), exactly as the global constraints
-    /// specify, plus `HostKeyAlgorithms` limited to the trusted key's type.
+    /// How ssh may authenticate, by credential.
+    enum AuthArguments: Equatable {
+        /// Public key only, with this key file.
+        case key(URL)
+        /// Password or keyboard-interactive only (the user's default keys are never tried).
+        case password
+        /// No restriction (ssh asks in the terminal).
+        case none
+    }
+
+    /// The interactive session's arguments (after the executable): the global constraints' flags, plus
+    /// `-F /dev/null`, `ConnectTimeout`, the per-credential authentication restrictions and
+    /// `HostKeyAlgorithms` limited to the trusted key's type.
     static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
-                             keyFile: URL?, hostKeyAlgorithms: String) -> [String] {
-        var arguments = ["-tt"] + optionArguments(port: port, username: username, runtime: runtime)
-        if let keyFile {
-            arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path]
+                             knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String) -> [String] {
+        var arguments = ["-tt"] + optionArguments(port: port, username: username, knownHosts: knownHosts,
+                                                  controlMaster: "auto", controlPath: controlPath(runtime))
+        switch auth {
+        case .key(let keyFile):
+            arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path,
+                          "-o", "PreferredAuthentications=publickey",
+                          "-o", "PasswordAuthentication=no",
+                          "-o", "KbdInteractiveAuthentication=no"]
+        case .password:
+            arguments += ["-o", "PubkeyAuthentication=no",
+                          "-o", "PreferredAuthentications=keyboard-interactive,password"]
+        case .none:
+            break
         }
         arguments += ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "--", host]
         return arguments
     }
 
-    /// Port, user and the `-o` options shared by the session and its commands. Paths are double-quoted
-    /// because ssh splits `-o` values at spaces ("Application Support").
-    static func optionArguments(port: Int, username: String, runtime: SSHRuntimeDirectory) -> [String] {
+    /// A command through the existing control master only (`ControlMaster=no`, the exact socket).
+    static func commandArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
+                                 knownHosts: URL, controlSocket: String, hostKeyAlgorithms: String,
+                                 command: String) -> [String] {
+        optionArguments(port: port, username: username, knownHosts: knownHosts,
+                        controlMaster: "no", controlPath: quoted(controlSocket))
+            + ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]
+    }
+
+    /// `-F /dev/null` (the user's ssh configuration never applies), port, user and the shared `-o` options.
+    /// Paths are double-quoted because ssh splits `-o` values at spaces ("Application Support").
+    static func optionArguments(port: Int, username: String, knownHosts: URL, controlMaster: String,
+                                controlPath: String) -> [String] {
         [
+            "-F", "/dev/null",
             "-p", String(port), "-l", username,
-            "-o", "UserKnownHostsFile=\(quoted(runtime.knownHostsURL.path))",
+            "-o", "UserKnownHostsFile=\(quoted(knownHosts.path))",
             "-o", "StrictHostKeyChecking=yes",
             "-o", "GlobalKnownHostsFile=/dev/null",
-            "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\(controlPath(runtime))",
+            "-o", "ControlMaster=\(controlMaster)",
+            "-o", "ControlPath=\(controlPath)",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=30",
             "-o", "ConnectTimeout=15",
         ]
+    }
+
+    /// The control socket path with `%C` expanded, as ssh computes it (`ssh -G`). Cached.
+    private func controlSocketPath(knownHosts: URL) async -> String? {
+        if let cached = state.withLock({ $0.controlSocket }) { return cached }
+        let arguments = ["-G"] + Self.optionArguments(port: plan.port, username: plan.username, knownHosts: knownHosts,
+                                                      controlMaster: "no", controlPath: Self.controlPath(runtime))
+            + ["--", host]
+        guard let process = try? PTYProcess(executable: sshPath, arguments: arguments, environment: [:],
+                                            cols: 200, rows: 24, rawMode: true),
+              case .finished(let output, 0) = await Self.collect(process, limit: 1_048_576, timeout: .seconds(5))
+        else { return nil }
+        let path = String(decoding: output, as: UTF8.self).split(whereSeparator: \.isNewline)
+            .first { $0.hasPrefix("controlpath ") }
+            .map { String($0.dropFirst("controlpath ".count)) }
+        guard let path, path.hasPrefix(runtime.controlDirectory.path + "/") else { return nil }
+        state.withLock { $0.controlSocket = path }
+        return path
+    }
+
+    /// Builds a session's known_hosts lines: every vault line whose host field names this host (any
+    /// comma-separated entry, case-insensitive) is replaced by exactly the trusted key.
+    static func knownHostsFile(vault: [String], trusted: HostKeyCandidate) -> [String] {
+        let hostPort = trusted.hostPort.lowercased()
+        let others = vault.filter { line in
+            guard let field = line.split(separator: " ", maxSplits: 1).first else { return false }
+            return !field.split(separator: ",").contains { $0.lowercased() == hostPort }
+        }
+        return others + ["\(trusted.hostPort) \(trusted.keyType) \(trusted.publicKeyBlob.base64EncodedString())"]
     }
 
     /// `"<controlDirectory>/%C"`: short enough for the Unix socket path limit.
@@ -642,10 +745,12 @@ public final class SystemSSHSession: TerminalSession {
         return host
     }
 
-    /// No whitespace or control characters, and nothing ssh or ssh-keyscan could read as an option.
+    /// Host name or IP address characters only (letters, digits, `.`, `-`, `_`, `:` and `%` for IPv6 zones),
+    /// not starting with `-`: no wildcard, list, marker, whitespace, control or non-ASCII character can
+    /// reach ssh, ssh-keyscan or the known_hosts file (the rules of `KnownHostsStore.isSafeHostPort`).
     static func isSafeHost(_ host: String) -> Bool {
-        !host.isEmpty && !host.hasPrefix("-")
-            && host.unicodeScalars.allSatisfy { $0.value > 0x20 && $0.value != 0x7F }
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_:%".unicodeScalars)
+        return !host.isEmpty && !host.hasPrefix("-") && host.unicodeScalars.allSatisfy { allowed.contains($0) }
     }
 
     static func isSafeUsername(_ username: String) -> Bool {

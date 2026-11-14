@@ -50,6 +50,40 @@ final class PTYProcessTests: XCTestCase {
         XCTAssertEqual(process.exitStatus, 128 + SIGKILL)
     }
 
+    func testTerminateWhileAWriteIsBlocked() async throws {
+        // The child never reads, so a large write fills the terminal's input buffer and cannot finish. (In
+        // canonical mode Linux drops input beyond its line buffer instead of blocking, so use raw mode.)
+        let process = try PTYProcess(executable: "/bin/sleep", arguments: ["60"], environment: [:], cols: 80, rows: 24,
+                                     rawMode: true)
+        let recorder = ByteRecorder(process.output)
+        let writing = Task.detached { process.write([UInt8](repeating: UInt8(ascii: "x"), count: 1_048_576)) }
+        try await Task.sleep(for: .milliseconds(300))
+        let started = Date()
+        let terminated = TestFlag()
+        Task.detached {
+            process.terminate()
+            process.resize(cols: 100, rows: 30) // must not wait for the writer either
+            terminated.set()
+        }
+        try await waitUntil(timeout: 3) { terminated.value && recorder.finished }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        await writing.value // the blocked write gives up once the child is gone
+        XCTAssertEqual(process.exitStatus, 128 + SIGHUP)
+    }
+
+    func testCanonicalModeIsReported() async throws {
+        let process = try PTYProcess(executable: "/bin/sh", arguments: ["-c", "read a; stty raw -echo; echo raw; read b"],
+                                     environment: [:], cols: 80, rows: 24)
+        let recorder = ByteRecorder(process.output)
+        XCTAssertEqual(process.terminalMode, .canonical)
+        process.write(Array("go\n".utf8))
+        try await waitUntil { recorder.text.contains("raw") }
+        XCTAssertEqual(process.terminalMode, .raw)
+        process.terminate()
+        try await waitUntil(timeout: 5) { recorder.finished }
+        XCTAssertEqual(process.terminalMode, .exited)
+    }
+
     func testEnvironmentIsOnlyTheGivenOnesPlusBasics() async throws {
         setenv("TR_PARENT_ONLY_VARIABLE", "leak", 1)
         defer { unsetenv("TR_PARENT_ONLY_VARIABLE") }

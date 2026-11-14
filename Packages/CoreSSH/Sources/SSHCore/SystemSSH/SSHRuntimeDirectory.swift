@@ -6,7 +6,7 @@ import Glibc
 import Foundation
 
 /// The private directory for system ssh's temporary files: the askpass helper, one-time secret files,
-/// temporary private keys and the generated `known_hosts` file. ssh's control sockets live in a separate,
+/// temporary private keys and each session's generated `known_hosts` file. ssh's control sockets live in a separate,
 /// short `controlDirectory` (`/tmp/tr-<uid>`), because Unix socket paths are limited to 104 bytes on macOS
 /// and the app's run directory is far too deep for `<dir>/<40-character %C>`.
 ///
@@ -29,7 +29,6 @@ public struct SSHRuntimeDirectory: Sendable {
     }
 
     public var askpassURL: URL { root.appendingPathComponent("askpass") }
-    public var knownHostsURL: URL { root.appendingPathComponent("known_hosts") }
 
     /// The askpass helper. ssh runs it with the prompt as its argument; it prints the one-time secret
     /// (never the prompt) and deletes the file, so a second ask fails.
@@ -48,7 +47,7 @@ public struct SSHRuntimeDirectory: Sendable {
         }
         var info = stat()
         guard lstat(root.path, &info) == 0 else { throw SSHRuntimeError.failed("inspect the runtime directory", errno) }
-        guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR), info.st_uid == geteuid() else {
+        guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR), info.st_uid == getuid() else {
             throw SSHRuntimeError.unsafeDirectory
         }
         guard chmod(root.path, 0o700) == 0 else { throw SSHRuntimeError.failed("protect the runtime directory", errno) }
@@ -105,13 +104,14 @@ public struct SSHRuntimeDirectory: Sendable {
         return url
     }
 
-    /// Atomically replaces `known_hosts` with the given lines (0600). Lines containing a line break are
-    /// skipped, so a line can never smuggle in another entry.
+    /// Writes a session's own known_hosts file, `<uuid>.known_hosts` (0600). Lines containing a line break
+    /// are skipped, so a line can never smuggle in another entry.
     public func writeKnownHosts(_ lines: [String]) throws -> URL {
         let safe = lines.filter { !$0.contains(where: { $0 == "\n" || $0 == "\r" }) }
         let text = safe.map { $0 + "\n" }.joined()
-        try replace(knownHostsURL, contents: Data(text.utf8), mode: 0o600)
-        return knownHostsURL
+        let url = root.appendingPathComponent("\(UUID().uuidString).known_hosts")
+        try create(url, contents: Data(text.utf8), mode: 0o600)
+        return url
     }
 
     /// Removes a file; a missing file is not an error.

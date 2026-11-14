@@ -9,11 +9,14 @@ import Synchronization
 /// A child process running in a pseudo-terminal (`forkpty`).
 ///
 /// - The child gets only the given environment plus `PATH`, `HOME`, `USER`, `LANG` (inherited when set)
-///   and `TERM=xterm-256color`. It inherits no file descriptors besides the terminal, and its signal
+///   and `TERM=xterm-256color`. It closes every descriptor from 3 up to `RLIMIT_NOFILE`, and its signal
 ///   mask and common signal dispositions are reset to the defaults.
 /// - Output is read on a dedicated thread and delivered in order. The stream ends when the terminal's
 ///   last slave descriptor is closed (EIO or EOF on the master), after which the child is reaped and
 ///   `exitStatus` is set.
+/// - The master descriptor is non-blocking. Reads and writes wait with `poll` and never hold the state
+///   lock while waiting, so `terminate()`, `kill()` and `resize` are never stuck behind a full terminal.
+///   A use count keeps the descriptor open while a write is in progress.
 public final class PTYProcess: Sendable {
     /// Terminal output, in order. Finishes after the child exited and was reaped.
     public let output: AsyncStream<[UInt8]>
@@ -23,10 +26,27 @@ public final class PTYProcess: Sendable {
     private let masterFD: Int32
     private let continuation: AsyncStream<[UInt8]>.Continuation
     private let state = Mutex(State())
+    /// Serializes writers (never taken by signalling or resizing).
+    private let writeLock = NSLock()
+
+    /// What `terminalMode` found.
+    enum TerminalMode: Sendable, Equatable {
+        /// Line mode (the default; ssh before its session starts).
+        case canonical
+        /// Canonical mode is off (ssh's session has started).
+        case raw
+        /// The child is gone.
+        case exited
+        /// The mode could not be read (`tcgetattr` failed).
+        case unavailable
+    }
 
     private struct State {
-        /// The master descriptor is still open (it is closed once, by the reader, after the child exited).
+        /// The child's terminal is still usable (false once the reader saw the end of the stream).
         var fdOpen = true
+        /// Writers currently using the descriptor; it is closed when the last one is done.
+        var fdUsers = 0
+        var fdClosed = false
         /// The child exited (it may not be reaped yet, but its process ID is still reserved).
         var exited = false
         var exitStatus: Int32?
@@ -46,11 +66,7 @@ public final class PTYProcess: Sendable {
         let path = CStringArray([executable])
         let argv = CStringArray([executable] + arguments)
         let envp = CStringArray(Self.childEnvironment(environment).map { "\($0.key)=\($0.value)" }.sorted())
-        let inherited = Self.openDescriptors().filter { $0 > 2 }
-        let closeList = UnsafeMutablePointer<Int32>.allocate(capacity: max(inherited.count, 1))
-        closeList.initialize(from: inherited, count: inherited.count)
-        defer { closeList.deallocate() }
-        let closeCount = inherited.count
+        let descriptorLimit = Self.descriptorLimit()
         guard let pathPointer = path.pointer[0] else { throw POSIXError(.ENOMEM) }
         let argvPointer = argv.pointer
         let envpPointer = envp.pointer
@@ -64,11 +80,14 @@ public final class PTYProcess: Sendable {
         let child = rawMode ? forkpty(&master, nil, &terminal, &size) : forkpty(&master, nil, nil, &size)
         if child == 0 {
             // Child.
-            var i = 0
-            while i < closeCount {
-                close(closeList[i])
-                i += 1
+            var fd: Int32 = 3
+            while fd < descriptorLimit {
+                close(fd)
+                fd += 1
             }
+            #if os(Linux)
+            closefrom(descriptorLimit) // anything above the loop's cap
+            #endif
             signal(SIGPIPE, SIG_DFL)
             signal(SIGHUP, SIG_DFL)
             signal(SIGINT, SIG_DFL)
@@ -83,8 +102,9 @@ public final class PTYProcess: Sendable {
         guard child > 0 else {
             throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        // Not inherited by later children (other sessions' processes).
+        // Not inherited by later children (other sessions' processes); never blocks.
         _ = fcntl(master, F_SETFD, FD_CLOEXEC)
+        _ = fcntl(master, F_SETFL, fcntl(master, F_GETFL) | O_NONBLOCK)
 
         pid = child
         masterFD = master
@@ -98,21 +118,26 @@ public final class PTYProcess: Sendable {
     /// stream has ended.
     public var exitStatus: Int32? { state.withLock { $0.exitStatus } }
 
-    /// Writes all bytes to the terminal (the child's input). Does nothing after the child ended.
+    /// Writes all bytes to the terminal (the child's input), waiting while the terminal is full. Gives up
+    /// once the child has ended. Concurrent writers are serialized.
     public func write(_ bytes: [UInt8]) {
-        guard !bytes.isEmpty else { return }
-        state.withLock { state in
-            guard state.fdOpen else { return }
-            var offset = 0
-            while offset < bytes.count {
-                let written = bytes[offset...].withUnsafeBytes { systemWrite(masterFD, $0.baseAddress, $0.count) }
-                if written > 0 {
-                    offset += written
-                } else if written < 0 && errno == EINTR {
-                    continue
-                } else {
-                    return
-                }
+        guard !bytes.isEmpty, acquireDescriptor() else { return }
+        defer { releaseDescriptor() }
+        writeLock.lock()
+        defer { writeLock.unlock() }
+        var offset = 0
+        while offset < bytes.count {
+            let written = bytes[offset...].withUnsafeBytes { systemWrite(masterFD, $0.baseAddress, $0.count) }
+            if written > 0 {
+                offset += written
+            } else if written < 0 && errno == EINTR {
+                continue
+            } else if written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                guard state.withLock({ $0.fdOpen }) else { return }
+                let events = waitForDescriptor(Int16(POLLOUT), milliseconds: 50)
+                if events & Int16(POLLHUP | POLLERR) != 0 { return } // the child closed its terminal
+            } else {
+                return // EIO: the child closed its terminal
             }
         }
     }
@@ -139,14 +164,14 @@ public final class PTYProcess: Sendable {
         signalGroup(SIGKILL)
     }
 
-    /// True while the terminal is in canonical (line) mode. Programs that take over the terminal, such
-    /// as ssh once its session has started, switch canonical mode off.
-    var isCanonicalMode: Bool? {
-        state.withLock { state -> Bool? in
-            guard state.fdOpen else { return nil }
+    /// The terminal's line mode. Programs that take over the terminal, such as ssh once its session has
+    /// started, switch canonical mode off.
+    var terminalMode: TerminalMode {
+        state.withLock { state -> TerminalMode in
+            guard state.fdOpen else { return .exited }
             var attributes = termios()
-            guard tcgetattr(masterFD, &attributes) == 0 else { return nil }
-            return (attributes.c_lflag & tcflag_t(ICANON)) != 0
+            guard tcgetattr(masterFD, &attributes) == 0 else { return .unavailable }
+            return (attributes.c_lflag & tcflag_t(ICANON)) != 0 ? .canonical : .raw
         }
     }
 
@@ -169,6 +194,8 @@ public final class PTYProcess: Sendable {
                 continuation.yield(Array(buffer[0..<count]))
             } else if count < 0 && errno == EINTR {
                 continue
+            } else if count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                _ = waitForDescriptor(Int16(POLLIN), milliseconds: 100)
             } else {
                 break // EIO (Linux) or EOF (macOS): every slave descriptor is closed.
             }
@@ -184,9 +211,42 @@ public final class PTYProcess: Sendable {
         state.withLock { state in
             state.exitStatus = code
             state.fdOpen = false
-            close(masterFD)
+            if state.fdUsers == 0 { closeDescriptor(&state) }
         }
         continuation.finish()
+    }
+
+    private func acquireDescriptor() -> Bool {
+        state.withLock { state in
+            guard state.fdOpen else { return false }
+            state.fdUsers += 1
+            return true
+        }
+    }
+
+    private func releaseDescriptor() {
+        state.withLock { state in
+            state.fdUsers -= 1
+            if !state.fdOpen && state.fdUsers == 0 { closeDescriptor(&state) }
+        }
+    }
+
+    private func closeDescriptor(_ state: inout State) {
+        guard !state.fdClosed else { return }
+        state.fdClosed = true
+        close(masterFD)
+    }
+
+    /// Waits until the descriptor is ready or the time is up. Where `poll` can't watch a terminal device,
+    /// it sleeps briefly instead, so callers simply retry. Returns the reported events.
+    private func waitForDescriptor(_ events: Int16, milliseconds: Int32) -> Int16 {
+        var entry = pollfd(fd: masterFD, events: events, revents: 0)
+        let result = poll(&entry, 1, milliseconds)
+        if (result < 0 && errno != EINTR) || (result > 0 && (entry.revents & Int16(POLLNVAL)) != 0) {
+            usleep(10_000)
+            return 0
+        }
+        return result > 0 ? entry.revents : 0
     }
 
     private static func exitCode(_ status: Int32) -> Int32 {
@@ -209,20 +269,16 @@ public final class PTYProcess: Sendable {
         return environment
     }
 
-    /// The process's open file descriptors, so the child can close them (it must not inherit other
-    /// sessions' terminals, sockets or pipes).
-    private static func openDescriptors() -> [Int32] {
-        #if os(Linux)
-        let directory = "/proc/self/fd"
+    /// The soft `RLIMIT_NOFILE`, capped at 65536 for the close loop (on Linux, `closefrom` covers the rest).
+    private static func descriptorLimit() -> Int32 {
+        var limit = rlimit()
+        #if canImport(Darwin)
+        let result = getrlimit(RLIMIT_NOFILE, &limit)
         #else
-        let directory = "/dev/fd"
+        let result = getrlimit(__rlimit_resource_t(RLIMIT_NOFILE.rawValue), &limit)
         #endif
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory)) ?? []
-        let listed = names.compactMap { Int32($0) }
-        if !listed.isEmpty { return listed }
-        // Fallback: every descriptor number below a sane limit.
-        let limit = min(Int32(clamping: sysconf(Int32(_SC_OPEN_MAX))), 4096)
-        return Array(0..<max(limit, 3))
+        guard result == 0 else { return 4096 }
+        return Int32(min(limit.rlim_cur, 65_536))
     }
 }
 
