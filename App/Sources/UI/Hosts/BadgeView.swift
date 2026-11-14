@@ -2,9 +2,11 @@ import SwiftUI
 import AppCore
 import CoreModels
 
-/// A host's OS badge: a colored rounded square with the user's own logo for that OS (from the
-/// Badges folder, drawn as a white template image) or, without one, a generic SF Symbol. The app
-/// ships no distro logos.
+/// A host's OS badge: a colored rounded square with the logo for that OS (from the Badges
+/// folder, set in Settings → OS Icons or dropped in by hand) or, without one, a generic SF Symbol.
+/// Color and white/original drawing come from the OS Icons settings. Reads through the observable
+/// `BadgeLogoStore.shared`, so every badge redraws as soon as a setting or logo changes.
+/// The app ships no distro logos.
 struct BadgeView: View {
     let badge: OSBadge?
     var size: CGFloat = Theme.badgeSize
@@ -12,13 +14,14 @@ struct BadgeView: View {
     var cornerRadius: CGFloat?
 
     var body: some View {
+        let store = BadgeLogoStore.shared
         RoundedRectangle(cornerRadius: cornerRadius ?? Theme.badgeCornerRadius * size / Theme.badgeSize, style: .continuous)
-            .fill(Color(hex: BadgeStyle.hexColor(for: badge)))
+            .fill(Color(hex: store.hexColor(for: badge)))
             .frame(width: size, height: size)
             .overlay {
-                if let logo = BadgeLogoStore.shared.logo(for: badge) {
+                if let logo = store.logo(for: badge) {
                     Image(nsImage: logo)
-                        .renderingMode(.template)
+                        .renderingMode(store.showsInWhite(for: badge) ? .template : .original)
                         .resizable()
                         .interpolation(.high)
                         .scaledToFit()
