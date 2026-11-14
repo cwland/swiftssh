@@ -48,4 +48,41 @@ public enum BadgeStyle {
         case .homeAssistant: "home-assistant"
         }
     }
+
+    /// File name of a logo installed from Settings (always PNG).
+    public static func installedLogoFileName(for badge: OSBadge) -> String {
+        logoFileName(for: badge) + ".png"
+    }
+
+    /// Every file name the app reads as the logo for `badge`, in order of preference.
+    public static func logoFileNames(for badge: OSBadge) -> [String] {
+        logoFileExtensions.map { logoFileName(for: badge) + "." + $0 }
+    }
+
+    /// Per-OS appearance settings inside the Badges folder (see `BadgeSettings`).
+    public static let settingsFileName = "settings.json"
+
+    /// Rows of Settings → OS Icons, in order.
+    public static let settingsOrder: [OSBadge] = [
+        .ubuntu, .debian, .raspberryPiOS, .fedora, .rhel, .alpine, .arch, .macOS, .freeBSD, .linux,
+        .synology, .homeAssistant,
+    ]
+
+    /// Row name in Settings → OS Icons.
+    public static func settingsName(for badge: OSBadge) -> String {
+        switch badge {
+        case .ubuntu: "Ubuntu"
+        case .debian: "Debian"
+        case .raspberryPiOS: "Raspberry Pi"
+        case .fedora: "Fedora"
+        case .rhel: "RHEL"
+        case .alpine: "Alpine"
+        case .arch: "Arch"
+        case .macOS: "macOS"
+        case .freeBSD: "FreeBSD"
+        case .linux: "Linux"
+        case .synology: "Synology"
+        case .homeAssistant: "Home Assistant"
+        }
+    }
 }
