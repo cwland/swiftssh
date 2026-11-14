@@ -399,4 +399,31 @@ final class SSHKeyImporterTests: XCTestCase {
             }
         }
     }
+
+    // MARK: normalizePastedKey
+
+    func testNormalizePastedKeyRestoresSmartDashedArmorLines() {
+        let smart = "\u{2014}\u{2014}-BEGIN OPENSSH PRIVATE KEY\u{2014}\u{2014}-\nAAAA\u{2013}BBBB\n\u{2013}\u{2013}\u{2013}END OPENSSH PRIVATE KEY\u{2014}--\n"
+        XCTAssertEqual(
+            SSHKeyImporter.normalizePastedKey(smart),
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\u{2013}BBBB\n-----END OPENSSH PRIVATE KEY-----\n"
+        )
+    }
+
+    func testNormalizePastedKeyLeavesCleanTextUnchanged() {
+        let clean = "-----BEGIN RSA PRIVATE KEY-----\r\nProc-Type: 4,ENCRYPTED\r\nabc\r\n-----END RSA PRIVATE KEY-----"
+        XCTAssertEqual(SSHKeyImporter.normalizePastedKey(clean), clean)
+        XCTAssertEqual(SSHKeyImporter.normalizePastedKey(""), "")
+        XCTAssertEqual(SSHKeyImporter.normalizePastedKey("--not armor\u{2014}"), "--not armor\u{2014}")
+    }
+
+    func testNormalizePastedKeyMakesSmartDashedKeyImportable() throws {
+        let generated = SSHKeyGenerator.ed25519(comment: "c")
+        let smart = generated.privateKey
+            .replacingOccurrences(of: "-----BEGIN", with: "\u{2014}\u{2014}-BEGIN")
+            .replacingOccurrences(of: "KEY-----", with: "KEY\u{2014}\u{2014}-")
+        XCTAssertThrowsError(try SSHKeyImporter.inspect(privateKey: smart))
+        let inspected = try SSHKeyImporter.inspect(privateKey: SSHKeyImporter.normalizePastedKey(smart))
+        XCTAssertEqual(inspected.keyType, .ed25519)
+    }
 }

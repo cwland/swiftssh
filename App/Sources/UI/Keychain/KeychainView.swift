@@ -513,7 +513,7 @@ private struct ImportKeySheet: View {
             return
         }
         do {
-            let imported = try SSHKeyImporter.inspect(privateKey: text)
+            let imported = try SSHKeyImporter.inspect(privateKey: SSHKeyImporter.normalizePastedKey(text))
             inspection = .valid(derivedPublicKey: imported.publicKey != nil, isEncrypted: imported.isEncrypted)
         } catch {
             inspection = .invalid(error.localizedDescription)
@@ -540,7 +540,8 @@ private struct ImportKeySheet: View {
 
     private func importKey() {
         let trimmedLabel = self.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        let privateKey = privateKeyText
+        // Undo smart-dash substitution on the armor lines before importing.
+        let privateKey = SSHKeyImporter.normalizePastedKey(privateKeyText)
         let secret: String? = self.passphrase.isEmpty ? nil : self.passphrase
         let publicKey = publicKeyText.trimmingCharacters(in: .whitespacesAndNewlines)
         isImporting = true

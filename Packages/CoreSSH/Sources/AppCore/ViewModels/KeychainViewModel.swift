@@ -54,10 +54,20 @@ public final class KeychainViewModel {
     // MARK: Usage
 
     public func usageSummary(identityID: UUID) -> String {
-        Self.summary(count: usingIdentity(identityID).count)
+        Self.summary(count: usageCount(identityID: identityID))
     }
 
     public func usageSummary(sshKeyID: UUID) -> String {
+        Self.summary(count: usageCount(sshKeyID: sshKeyID))
+    }
+
+    /// Hosts that use the identity directly or inherit it through a group default.
+    public func usageCount(identityID: UUID) -> Int {
+        usingIdentity(identityID).count
+    }
+
+    /// Hosts that use the key directly or through a linked identity.
+    public func usageCount(sshKeyID: UUID) -> Int {
         let hosts = vault.all(SavedHost.self)
         let directory = HostDirectory(hosts: hosts, groups: vault.all(HostGroup.self))
         let identityIDs = Set(vault.identitiesUsing(sshKeyID: sshKeyID).map(\.id))
@@ -69,7 +79,7 @@ public final class KeychainViewModel {
                 used.insert(host.id)
             }
         }
-        return Self.summary(count: used.count)
+        return used.count
     }
 
     private func usingIdentity(_ id: UUID) -> Set<UUID> {
@@ -103,6 +113,22 @@ public final class KeychainViewModel {
 
     public func update(_ identity: Identity) async throws {
         try await vault.save(identity)
+    }
+
+    /// Synchronous save for editors: applies `edited`'s label, username, password (empty = none)
+    /// and key (cleared if the key no longer exists) to the currently stored identity. Does
+    /// nothing when the identity is missing or deleted, so a late edit never resurrects it.
+    public func updateNow(_ edited: Identity) {
+        guard var current = vault.get(Identity.self, id: edited.id) else { return }
+        current.label = edited.label
+        current.username = edited.username
+        current.password = edited.password.flatMap { $0.isEmpty ? nil : $0 }
+        if let keyID = edited.sshKeyID, vault.get(SSHKey.self, id: keyID) != nil {
+            current.sshKeyID = keyID
+        } else {
+            current.sshKeyID = nil
+        }
+        vault.saveNow(current)
     }
 
     public func deleteIdentity(id: UUID) async throws {

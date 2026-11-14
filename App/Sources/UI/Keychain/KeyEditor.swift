@@ -129,8 +129,10 @@ private struct KeyEditorContent: View {
                     .frame(maxWidth: .infinity)
             }
             .controlSize(.large)
-            if usageSummary != "Not used" {
-                Text("\(usageSummary). Deleting it removes it from those hosts.")
+            if usageCount > 0 {
+                Text(usageCount == 1
+                     ? "Used by 1 host. Deleting it removes it from that host."
+                     : "Used by \(usageCount) hosts. Deleting it removes it from those hosts.")
                     .font(.system(size: 12))
                     .foregroundStyle(Color.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,12 +217,31 @@ private struct KeyEditorContent: View {
         return model.usageSummary(sshKeyID: draft.id)
     }
 
+    private var usageCount: Int {
+        _ = vault.revision
+        return model.usageCount(sshKeyID: draft.id)
+    }
+
     private var deleteMessage: String {
-        let summary = usageSummary
-        if summary == "Not used" {
-            return "\u{201C}\(draft.label)\u{201D} isn't used by any host. It will be removed from this vault."
+        let name = "\u{201C}\(draft.label)\u{201D}"
+        let hosts: String
+        switch usageCount {
+        case 0:
+            hosts = "\(name) isn't used by any host. It will be removed from this vault."
+        case 1:
+            hosts = "Used by 1 host. That host will no longer use \(name)."
+        case let count:
+            hosts = "Used by \(count) hosts. Those hosts will no longer use \(name)."
         }
-        return "\(summary). Those hosts and any identity using \u{201C}\(draft.label)\u{201D} will no longer have a key."
+        let identityCount = vault.identitiesUsing(sshKeyID: draft.id).count
+        switch identityCount {
+        case 0:
+            return hosts
+        case 1:
+            return hosts + " Also used by 1 identity; it'll lose the key."
+        default:
+            return hosts + " Also used by \(identityCount) identities; they'll lose the key."
+        }
     }
 
     // MARK: Actions

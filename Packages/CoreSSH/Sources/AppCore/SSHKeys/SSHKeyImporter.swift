@@ -36,6 +36,33 @@ public enum SSHKeyImportError: Error, Equatable, LocalizedError {
 /// Identifies OpenSSH, PKCS#1 and PKCS#8 private keys and authorized_keys lines. Never decrypts:
 /// encrypted keys are reported as such, with the public key when the format stores it in the clear.
 public enum SSHKeyImporter {
+    /// Undoes text substitutions (smart dashes) that can hit a key typed or pasted into a text
+    /// view: on armor lines (`-----BEGIN …-----` / `-----END …-----`) any leading or trailing run
+    /// of "-", U+2013 or U+2014 becomes exactly five hyphens. Other lines are left unchanged.
+    public static func normalizePastedKey(_ text: String) -> String {
+        let dashes: Set<Character> = ["-", "\u{2013}", "\u{2014}"]
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+            var body = Substring(line)
+            var carriageReturn = ""
+            if body.hasSuffix("\r") {
+                body = body.dropLast()
+                carriageReturn = "\r"
+            }
+            let core = body.drop(while: { dashes.contains($0) })
+            guard core.count < body.count else { return String(line) }
+            var end = core.endIndex
+            while end > core.startIndex, dashes.contains(core[core.index(before: end)]) {
+                end = core.index(before: end)
+            }
+            let label = core[core.startIndex..<end]
+            guard end < core.endIndex, label.hasPrefix("BEGIN ") || label.hasPrefix("END ") else {
+                return String(line)
+            }
+            return "-----" + label + "-----" + carriageReturn
+        }
+        return lines.joined(separator: "\n")
+    }
+
     public static func inspect(privateKey: String) throws -> ImportedKey {
         let armor = try PEMArmor(privateKey)
         switch armor.label {

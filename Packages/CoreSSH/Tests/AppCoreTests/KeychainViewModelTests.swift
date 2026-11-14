@@ -136,4 +136,79 @@ final class KeychainViewModelTests: XCTestCase {
         XCTAssertEqual(vm.identities.count, 2)
         XCTAssertEqual(vm.keys.count, 2)
     }
+
+    // MARK: updateNow
+
+    func testUpdateNowMergesEditableFieldsOntoStoredIdentity() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "s"))
+        let stored = try await vault.save(Identity(label: "old", username: "u"))
+        var edited = stored
+        edited.label = "new"
+        edited.username = "root"
+        edited.password = "pw"
+        edited.sshKeyID = key.id
+        vm.updateNow(edited)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: stored.id))
+        XCTAssertEqual(saved.label, "new")
+        XCTAssertEqual(saved.username, "root")
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+        XCTAssertGreaterThan(saved.updatedAt, stored.updatedAt)
+        await vault.flush()
+        XCTAssertNil(vault.lastSaveError)
+    }
+
+    func testUpdateNowClearsMissingKeyAndEmptyPassword() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let stored = try await vault.save(Identity(label: "i", username: "u", password: "pw"))
+        var edited = stored
+        edited.password = ""
+        edited.sshKeyID = UUID()
+        vm.updateNow(edited)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: stored.id))
+        XCTAssertNil(saved.password)
+        XCTAssertNil(saved.sshKeyID)
+    }
+
+    func testUpdateNowIsNoOpAfterDelete() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let stored = try await vault.save(Identity(label: "i", username: "u"))
+        try await vm.deleteIdentity(id: stored.id)
+        let revision = vault.revision
+        var edited = stored
+        edited.label = "resurrected?"
+        vm.updateNow(edited)
+        XCTAssertNil(vault.get(Identity.self, id: stored.id))
+        XCTAssertTrue(vm.identities.isEmpty)
+        XCTAssertEqual(vault.revision, revision)
+    }
+
+    func testUpdateNowIgnoresUnknownIdentity() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        vm.updateNow(Identity(label: "ghost", username: "g"))
+        XCTAssertTrue(vm.identities.isEmpty)
+    }
+
+    // MARK: usageCount
+
+    func testUsageCountsMatchSummaries() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "s"))
+        let identity = try await vault.save(Identity(label: "i", username: "u", sshKeyID: key.id))
+        XCTAssertEqual(vm.usageCount(identityID: identity.id), 0)
+        XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 0)
+        _ = try await vault.save(SavedHost(label: "h1", address: "a", identityID: identity.id))
+        XCTAssertEqual(vm.usageCount(identityID: identity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 1)
+        _ = try await vault.save(SavedHost(label: "h2", address: "b", sshKeyID: key.id))
+        XCTAssertEqual(vm.usageCount(identityID: identity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 2)
+        XCTAssertEqual(vm.usageSummary(sshKeyID: key.id), "Used by 2 hosts")
+    }
 }

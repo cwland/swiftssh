@@ -84,6 +84,12 @@ private struct IdentityEditorContent: View {
         .onChange(of: draft) { _, edited in
             save(edited)
         }
+        .onChange(of: vault.revision) { _, _ in
+            dropMissingKey()
+        }
+        .onAppear {
+            dropMissingKey()
+        }
         .confirmationDialog("Delete this identity?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete identity", role: .destructive) { deleteIdentity() }
             Button("Cancel", role: .cancel) {}
@@ -186,34 +192,28 @@ private struct IdentityEditorContent: View {
     }
 
     private var deleteMessage: String {
-        let summary = usageSummary
-        if summary == "Not used" {
-            return "\u{201C}\(draft.label)\u{201D} isn't used by any host. It will be removed from this vault."
+        let name = "\u{201C}\(draft.label)\u{201D}"
+        switch model.usageCount(identityID: draft.id) {
+        case 0:
+            return "\(name) isn't used by any host. It will be removed from this vault."
+        case 1:
+            return "Used by 1 host. That host will no longer use \(name)."
+        case let count:
+            return "Used by \(count) hosts. Those hosts will no longer use \(name)."
         }
-        return "\(summary). Those hosts will no longer use \u{201C}\(draft.label)\u{201D}."
     }
 
     // MARK: Actions
 
-    /// Applies the edited fields to the stored identity and saves it. A key that no longer
-    /// exists is saved as no key.
+    /// Saves synchronously, merged onto the stored identity; a deleted identity stays deleted.
     private func save(_ edited: Identity) {
-        guard var current = vault.get(Identity.self, id: edited.id) else { return }
-        current.label = edited.label
-        current.username = edited.username
-        current.password = edited.password
-        if let keyID = edited.sshKeyID, vault.get(SSHKey.self, id: keyID) != nil {
-            current.sshKeyID = keyID
-        } else {
-            current.sshKeyID = nil
-        }
-        let toSave = current
-        Task {
-            do {
-                try await model.update(toSave)
-            } catch {
-                present(error)
-            }
+        model.updateNow(edited)
+    }
+
+    /// Drops a key reference whose key was deleted, so the Picker never holds an invalid tag.
+    private func dropMissingKey() {
+        if let keyID = draft.sshKeyID, vault.get(SSHKey.self, id: keyID) == nil {
+            draft.sshKeyID = nil
         }
     }
 
