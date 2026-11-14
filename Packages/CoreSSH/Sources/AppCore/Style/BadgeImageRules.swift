@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 import CoreModels
 
 /// Why a badge image couldn't be used, with the message shown in Settings.
