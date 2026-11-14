@@ -59,7 +59,7 @@ struct RootView: View {
     }
 }
 
-/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts and Keychain
+/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts, Keychain and Logs
 /// view models so search, filters and the open group survive switching sidebar items and tabs.
 /// They are built once, on appear, rather than in `init` (which runs on every parent body
 /// evaluation).
@@ -70,6 +70,7 @@ private struct ReadyArea: View {
 
     @State private var hostsModel: HostsViewModel?
     @State private var keychainModel: KeychainViewModel?
+    @State private var logsModel: LogsViewModel?
 
     var body: some View {
         Group {
@@ -82,7 +83,8 @@ private struct ReadyArea: View {
                     vault: vault,
                     sessions: sessions,
                     hostsModel: hostsModel,
-                    keychainModel: keychainModel
+                    keychainModel: keychainModel,
+                    logsModel: logsModel
                 )
             }
         }
@@ -92,6 +94,9 @@ private struct ReadyArea: View {
             }
             if keychainModel == nil {
                 keychainModel = KeychainViewModel(vault: vault)
+            }
+            if logsModel == nil {
+                logsModel = LogsViewModel(vault: vault)
             }
         }
         .onChange(of: sessions.tabs.map(\.id)) { _, openIDs in
@@ -106,6 +111,7 @@ private struct MainArea: View {
     let sessions: SessionManager
     let hostsModel: HostsViewModel?
     let keychainModel: KeychainViewModel?
+    let logsModel: LogsViewModel?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -138,7 +144,13 @@ private struct MainArea: View {
             } else {
                 Theme.contentBackground
             }
-        case .snippets, .knownHosts, .logs:
+        case .logs:
+            if let logsModel {
+                LogsView(model: logsModel)
+            } else {
+                Theme.contentBackground
+            }
+        case .snippets, .knownHosts:
             PlaceholderView("Coming in a later milestone")
         }
     }
