@@ -43,7 +43,7 @@ final class ModelsTests: XCTestCase {
     }
 
     func testOldVaultHostWithoutFlagDecodes() throws {
-        var h = Host(label: "Old", address: "10.0.0.2")
+        var h = Host(label: "Old", address: "10.0.0.2", updatedAt: Date(timeIntervalSince1970: 1_700_000_000.123))
         h.useSystemSSH = true
         let data = try CoreJSON.encoder.encode(h)
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
