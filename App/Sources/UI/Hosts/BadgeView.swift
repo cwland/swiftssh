@@ -8,9 +8,11 @@ import CoreModels
 struct BadgeView: View {
     let badge: OSBadge?
     var size: CGFloat = Theme.badgeSize
+    /// nil scales the standard radius with `size`.
+    var cornerRadius: CGFloat?
 
     var body: some View {
-        RoundedRectangle(cornerRadius: Theme.badgeCornerRadius * size / Theme.badgeSize, style: .continuous)
+        RoundedRectangle(cornerRadius: cornerRadius ?? Theme.badgeCornerRadius * size / Theme.badgeSize, style: .continuous)
             .fill(Color(hex: BadgeStyle.hexColor(for: badge)))
             .frame(width: size, height: size)
             .overlay {

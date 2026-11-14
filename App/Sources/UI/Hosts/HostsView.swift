@@ -188,7 +188,7 @@ struct HostsView: View {
     private var columns: [GridItem] {
         switch model.layout {
         case .grid:
-            Array(repeating: GridItem(.flexible(), spacing: 16), count: 3)
+            Theme.cardGridColumns
         case .list:
             [GridItem(.flexible())]
         }
@@ -197,7 +197,7 @@ struct HostsView: View {
     private var groupsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Groups")
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: Theme.cardSpacing) {
                 ForEach(model.visibleGroups) { group in
                     GroupCardView(group: group, hostCount: model.hostCount(in: group))
                         .onTapGesture(count: 2) {
@@ -222,7 +222,7 @@ struct HostsView: View {
     private var hostsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Hosts")
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: Theme.cardSpacing) {
                 ForEach(model.visibleHosts) { host in
                     HostCardView(
                         host: host,

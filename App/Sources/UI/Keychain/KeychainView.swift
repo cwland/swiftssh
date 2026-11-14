@@ -109,14 +109,12 @@ struct KeychainView: View {
         }
     }
 
-    private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 16), count: 3)
-    }
+    private var columns: [GridItem] { Theme.cardGridColumns }
 
     private var identitiesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Identities")
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: Theme.cardSpacing) {
                 ForEach(model.identities) { identity in
                     KeychainCardView(
                         symbol: "person.fill",
@@ -136,7 +134,7 @@ struct KeychainView: View {
     private var keysSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Keys")
-            LazyVGrid(columns: columns, spacing: 16) {
+            LazyVGrid(columns: columns, spacing: Theme.cardSpacing) {
                 ForEach(model.keys) { key in
                     KeychainCardView(
                         symbol: "key.fill",
@@ -222,7 +220,8 @@ struct KeychainView: View {
     }
 }
 
-/// An identity or key card: symbol badge, label, a subtitle line and the usage summary.
+/// An identity or key card: symbol badge, label, and one subtitle line with the detail and the
+/// usage summary ("alice · Used by 3 hosts").
 private struct KeychainCardView: View {
     let symbol: String
     let title: String
@@ -231,43 +230,10 @@ private struct KeychainCardView: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(spacing: 14) {
-            RoundedRectangle(cornerRadius: Theme.badgeCornerRadius, style: .continuous)
-                .fill(Color(hex: "#5B6475"))
-                .frame(width: Theme.badgeSize, height: Theme.badgeSize)
-                .overlay {
-                    Image(systemName: symbol)
-                        .font(.system(size: Theme.badgeSize * 0.42, weight: .medium))
-                        .foregroundStyle(Color.white)
-                }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 19))
-                    .foregroundStyle(Color.primary)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.system(size: 15))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(usage)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 0)
+        CardRow(title: title, subtitle: usage.isEmpty ? subtitle : "\(subtitle) \u{00B7} \(usage)",
+                isSelected: isSelected) {
+            SymbolBadge(symbol: symbol, background: Color(hex: "#5B6475"))
         }
-        .padding(.horizontal, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: Theme.cardHeight)
-        .background {
-            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .fill(Theme.cardBackground)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
     }
 }
 

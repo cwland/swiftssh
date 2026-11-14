@@ -25,9 +25,19 @@ enum Theme {
     static let contentBackground = Color.dynamic(light: "#EEF0F2", dark: .windowBackground)
     static let searchFieldBackground = Color.dynamic(light: "#E4E7EB", dark: .quaternaryLabel)
     static let accent = Color(hex: "#3B82F6")
-    static let cardBackground = Color.dynamic(light: "#FFFFFF", dark: .controlBackground)
-    static let cardCornerRadius: CGFloat = 14
-    static let cardHeight: CGFloat = 96
+    /// Cards stand apart from the content area: white on the light grey background, one step
+    /// lighter than the background in Dark Aqua.
+    static let cardBackground = Color.dynamic(light: "#FFFFFF", dark: .raisedSurface)
+    static let cardCornerRadius: CGFloat = 12
+    static let cardHeight: CGFloat = 60
+    static let cardPadding: CGFloat = 12
+    static let cardBadgeSize: CGFloat = 40
+    static let cardBadgeCornerRadius: CGFloat = 9
+    static let cardTitleFontSize: CGFloat = 15
+    static let cardSubtitleFontSize: CGFloat = 12
+    /// Host, group and keychain grids: as many columns of at least this width as fit (N → 3 → 2 → 1).
+    static let cardMinimumWidth: CGFloat = 240
+    static let cardSpacing: CGFloat = 16
     static let badgeSize: CGFloat = 60
     static let badgeCornerRadius: CGFloat = 12
     static let detailsPanelWidth: CGFloat = 380
@@ -48,12 +58,15 @@ extension Color {
     /// provider closure captures only `Sendable` data.)
     enum DarkSystemColor: Sendable {
         case windowBackground, controlBackground, quaternaryLabel
+        /// A light translucent layer: one step lighter than whatever dark background it sits on.
+        case raisedSurface
 
         var nsColor: NSColor {
             switch self {
             case .windowBackground: NSColor.windowBackgroundColor
             case .controlBackground: NSColor.controlBackgroundColor
             case .quaternaryLabel: NSColor.quaternaryLabelColor
+            case .raisedSurface: NSColor(white: 1, alpha: 0.08)
             }
         }
     }
@@ -86,5 +99,70 @@ extension Color {
             Double((value >> 8) & 0xFF) / 255,
             Double(value & 0xFF) / 255
         )
+    }
+}
+
+extension Theme {
+    /// The adaptive card grid used by Hosts, groups and Keychain.
+    static var cardGridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: cardSpacing)]
+    }
+}
+
+/// Termius-style card: a badge, then a single-line title (15 pt) and subtitle (12 pt).
+struct CardRow<Badge: View>: View {
+    let title: String
+    let subtitle: String
+    var isSelected = false
+    @ViewBuilder let badge: () -> Badge
+
+    var body: some View {
+        HStack(spacing: Theme.cardPadding) {
+            badge()
+                .frame(width: Theme.cardBadgeSize, height: Theme.cardBadgeSize)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: Theme.cardTitleFontSize))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text(subtitle)
+                    .font(.system(size: Theme.cardSubtitleFontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+        }
+        .padding(.horizontal, Theme.cardPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: Theme.cardHeight)
+        .background {
+            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+                .fill(Theme.cardBackground)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+                .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
+    }
+}
+
+/// A rounded-square symbol badge for cards that have no OS badge (groups, identities, keys).
+struct SymbolBadge: View {
+    let symbol: String
+    let background: Color
+    var foreground: Color = .white
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: Theme.cardBadgeCornerRadius, style: .continuous)
+            .fill(background)
+            .overlay {
+                Image(systemName: symbol)
+                    .font(.system(size: Theme.cardBadgeSize * 0.42, weight: .medium))
+                    .foregroundStyle(foreground)
+            }
     }
 }
