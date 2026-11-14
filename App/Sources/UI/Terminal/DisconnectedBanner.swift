@@ -1,10 +1,11 @@
 import SwiftUI
 
 /// Shown at the top of a terminal whose session ended: why, and a Reconnect button (Cmd+R, from
-/// the Session menu).
+/// the Session menu). When the failure is fixed in Settings → 1Password, also "Open 1Password Setup".
 struct DisconnectedBanner: View {
     /// nil for a normal remote close.
     let message: String?
+    var showsOnePasswordSetup = false
     let reconnect: () -> Void
 
     var body: some View {
@@ -17,6 +18,9 @@ struct DisconnectedBanner: View {
                 .lineLimit(3)
                 .textSelection(.enabled)
             Spacer(minLength: 8)
+            if showsOnePasswordSetup {
+                OpenOnePasswordSetupButton()
+            }
             Button("Reconnect", action: reconnect)
                 .help("Reconnect (\u{2318}R)")
         }

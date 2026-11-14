@@ -9,6 +9,8 @@ struct TermiusReimaginedApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(environment: environment)
+                .environment(environment.settingsNavigation)
+                .environment(environment.onePassword)
                 .frame(minWidth: 1100, minHeight: 700)
                 .task {
                     appDelegate.environment = environment
@@ -22,9 +24,13 @@ struct TermiusReimaginedApp: App {
             SessionCommands(environment: environment)
         }
 
-        // Cmd+, — Termius-style sidebar of panes (Connection, OS Icons).
+        // Cmd+, — Termius-style sidebar of panes (Connection, 1Password, OS Icons).
         Settings {
-            SettingsView(connectionSettings: environment.connectionSettings)
+            SettingsView(connectionSettings: environment.connectionSettings,
+                         navigation: environment.settingsNavigation,
+                         onePassword: environment.onePassword)
+                .environment(environment.settingsNavigation)
+                .environment(environment.onePassword)
         }
         .windowResizability(.contentMinSize)
     }

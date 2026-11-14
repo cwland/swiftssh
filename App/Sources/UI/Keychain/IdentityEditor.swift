@@ -153,23 +153,47 @@ private struct IdentityEditorContent: View {
                 TextField("Username", text: $draft.username, prompt: Text("e.g. root"))
                     .textFieldStyle(.roundedBorder)
             }
-            FieldColumn(title: "Password") {
-                RevealableSecureField(title: "Password", text: $passwordText)
+            LoginMethodPicker(method: loginMethod)
+            if draft.agentKey != nil {
+                OnePasswordAgentKeyPicker(choice: $draft.agentKey)
+            } else {
+                passwordAndKeyFields
             }
-            FieldColumn(title: "Key") {
-                Picker("Key", selection: $draft.sshKeyID) {
-                    Text("None").tag(UUID?.none)
-                    ForEach(availableKeys) { key in
-                        Text(key.label.isEmpty ? "Untitled key" : key.label)
-                            .tag(UUID?.some(key.id))
+        }
+    }
+
+    /// The stored password and key are kept while the agent is used (the agent takes precedence),
+    /// so switching back restores them.
+    private var loginMethod: Binding<LoginMethod> {
+        Binding(get: { LoginMethod(agentKey: draft.agentKey) },
+                set: { method in
+                    switch method {
+                    case .passwordOrKey:
+                        draft.agentKey = nil
+                    case .onePasswordAgent:
+                        if draft.agentKey == nil { draft.agentKey = AgentKeyChoice(publicKey: nil) }
                     }
+                })
+    }
+
+    @ViewBuilder
+    private var passwordAndKeyFields: some View {
+        FieldColumn(title: "Password") {
+            OnePasswordPasswordField(title: "Password", text: $passwordText)
+        }
+        FieldColumn(title: "Key") {
+            Picker("Key", selection: $draft.sshKeyID) {
+                Text("None").tag(UUID?.none)
+                ForEach(availableKeys) { key in
+                    Text(key.label.isEmpty ? "Untitled key" : key.label)
+                        .tag(UUID?.some(key.id))
                 }
-                .labelsHidden()
-                if availableKeys.isEmpty {
-                    Text("No keys yet. Generate or import one with New.")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
+            }
+            .labelsHidden()
+            if availableKeys.isEmpty {
+                Text("No keys yet. Generate or import one with New.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -208,6 +232,8 @@ private struct IdentityEditorContent: View {
     /// Saves synchronously, merged onto the stored identity; a deleted identity stays deleted.
     private func save(_ edited: Identity) {
         model.updateNow(edited)
+        // `updateNow` doesn't merge `agentKey` yet (core follow-up), so save it here.
+        AgentKeyStore.saveIdentityAgentKey(edited.agentKey, vault: vault, identityID: edited.id)
     }
 
     /// Drops a key reference whose key was deleted, so the Picker never holds an invalid tag.
