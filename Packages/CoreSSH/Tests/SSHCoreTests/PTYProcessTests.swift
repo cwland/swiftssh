@@ -1,0 +1,113 @@
+import Foundation
+import XCTest
+@testable import SSHCore
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
+final class PTYProcessTests: XCTestCase {
+    func testRunsCommandAndCollectsOutput() async throws {
+        let process = try PTYProcess(executable: "/bin/echo", arguments: ["hello"], environment: [:], cols: 80, rows: 24)
+        let output = await collect(process)
+        XCTAssertTrue(String(decoding: output, as: UTF8.self).contains("hello\r\n"))
+        XCTAssertEqual(process.exitStatus, 0)
+    }
+
+    func testWriteAndResize() async throws {
+        // The script waits for a first line so the resize is guaranteed to land before `stty size`.
+        let process = try PTYProcess(executable: "/bin/sh",
+                                     arguments: ["-c", "read go; stty size; read x; echo got:$x"],
+                                     environment: [:], cols: 80, rows: 24)
+        let recorder = ByteRecorder(process.output)
+        process.resize(cols: 90, rows: 30)
+        process.write(Array("go\n".utf8))
+        try await waitUntil { recorder.text.contains("30 90") }
+        process.write(Array("z\n".utf8))
+        try await waitUntil { recorder.finished }
+        XCTAssertTrue(recorder.text.contains("got:z"), recorder.text)
+        XCTAssertEqual(process.exitStatus, 0)
+    }
+
+    func testTerminateEndsStream() async throws {
+        let process = try PTYProcess(executable: "/bin/sleep", arguments: ["30"], environment: [:], cols: 80, rows: 24)
+        let recorder = ByteRecorder(process.output)
+        let started = Date()
+        process.terminate()
+        try await waitUntil(timeout: 5) { recorder.finished }
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        XCTAssertEqual(process.exitStatus, 128 + SIGHUP)
+    }
+
+    func testTerminateKillsProcessIgnoringHangup() async throws {
+        let process = try PTYProcess(executable: "/bin/sh", arguments: ["-c", "trap '' HUP; echo ready; sleep 30"],
+                                     environment: [:], cols: 80, rows: 24)
+        let recorder = ByteRecorder(process.output)
+        try await waitUntil { recorder.text.contains("ready") }
+        process.terminate()
+        try await waitUntil(timeout: 6) { recorder.finished }
+        XCTAssertEqual(process.exitStatus, 128 + SIGKILL)
+    }
+
+    func testEnvironmentIsOnlyTheGivenOnesPlusBasics() async throws {
+        setenv("TR_PARENT_ONLY_VARIABLE", "leak", 1)
+        defer { unsetenv("TR_PARENT_ONLY_VARIABLE") }
+        let process = try PTYProcess(executable: "/usr/bin/env", arguments: [], environment: ["TR_GIVEN": "yes"],
+                                     cols: 80, rows: 24)
+        let text = String(decoding: await collect(process), as: UTF8.self)
+        let names = Set(text.components(separatedBy: "\r\n").compactMap { $0.split(separator: "=").first.map(String.init) })
+        XCTAssertTrue(text.contains("TR_GIVEN=yes"), text)
+        XCTAssertTrue(text.contains("TERM=xterm-256color"), text)
+        XCTAssertFalse(text.contains("TR_PARENT_ONLY_VARIABLE"), text)
+        XCTAssertTrue(names.isSubset(of: ["TR_GIVEN", "TERM", "PATH", "HOME", "USER", "LANG"]), "\(names)")
+    }
+
+    #if os(Linux)
+    func testChildDoesNotInheritOpenDescriptors() async throws {
+        var fds: [Int32] = [0, 0]
+        XCTAssertEqual(pipe(&fds), 0) // not close-on-exec
+        defer { close(fds[0]); close(fds[1]) }
+        let process = try PTYProcess(executable: "/bin/ls", arguments: ["/proc/self/fd"], environment: [:], cols: 80, rows: 24)
+        let text = String(decoding: await collect(process), as: UTF8.self)
+        let listed = Set(text.split(whereSeparator: { $0.isWhitespace }).map(String.init))
+        XCTAssertGreaterThan(fds[1], 3)
+        // Only stdio and the directory descriptor ls opens itself.
+        XCTAssertTrue(listed.isSubset(of: ["0", "1", "2", "3"]), "leaked descriptors: \(listed)")
+    }
+    #endif
+
+    func testSignalDispositionsAreReset() async throws {
+        let previous = signal(SIGPIPE, SIG_IGN)
+        defer { signal(SIGPIPE, previous) }
+        // `yes | head -1`: yes must die of SIGPIPE (default disposition) rather than loop on EPIPE.
+        let process = try PTYProcess(executable: "/bin/sh", arguments: ["-c", "yes | head -1; echo done"],
+                                     environment: [:], cols: 80, rows: 24)
+        let recorder = ByteRecorder(process.output)
+        try await waitUntil(timeout: 5) { recorder.finished }
+        XCTAssertTrue(recorder.text.contains("done"))
+    }
+
+    private func collect(_ process: PTYProcess) async -> [UInt8] {
+        var bytes: [UInt8] = []
+        for await chunk in process.output { bytes.append(contentsOf: chunk) }
+        return bytes
+    }
+}
+
+/// Collects a byte stream in the background.
+final class ByteRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [UInt8] = []
+    private var done = false
+
+    init(_ stream: AsyncStream<[UInt8]>) {
+        Task {
+            for await chunk in stream { self.lock.withLock { self.bytes.append(contentsOf: chunk) } }
+            self.lock.withLock { self.done = true }
+        }
+    }
+
+    var text: String { lock.withLock { String(decoding: bytes, as: UTF8.self) } }
+    var finished: Bool { lock.withLock { done } }
+}
