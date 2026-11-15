@@ -121,6 +121,7 @@ final class AppEnvironment {
             let watcher = ConnectionWatcher { [weak sessions] in sessions?.checkConnections() }
             watcher.start()
             connectionWatcher = watcher
+            OnePasswordApp.watchAgentSigning(sessions, focus: onePassword.promptFocus)
             state = .ready(vault)
             startSync(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {

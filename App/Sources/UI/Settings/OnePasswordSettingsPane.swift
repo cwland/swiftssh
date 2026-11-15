@@ -29,6 +29,8 @@ struct OnePasswordSettingsPane: View {
                     keysStep
                 }
 
+                PromptFocusToggle(settings: setup.settings)
+
                 AdvancedOverrides(setup: setup)
             }
             .padding(24)
@@ -527,5 +529,20 @@ private struct AdvancedOverrides: View {
     private static func nonEmpty(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// "Bring 1Password's prompt to the front": `OnePasswordSettings.bringsPromptForward`.
+private struct PromptFocusToggle: View {
+    @Bindable var settings: OnePasswordSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Bring 1Password\u{2019}s Touch ID prompt to the front", isOn: $settings.bringsPromptForward)
+            Text("When 1Password asks you to approve a sign-in, it gets the keyboard focus so the prompt can be answered right away, and this app takes the focus back afterwards. Turn this off if it brings 1Password\u{2019}s main window forward.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
