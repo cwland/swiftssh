@@ -365,9 +365,16 @@ final class AppEnvironment {
         sessions?.setViewMode(workspace.viewMode == .split ? .focus : .split, for: workspace.id)
     }
 
-    /// Cmd+S: saves the shown workspace to its template (a new one the first time).
+    /// Cmd+S on a never-saved workspace: its window's tab bar asks for the name, then saves.
+    var namingWorkspaceID: UUID?
+
+    /// Cmd+S: saves the shown workspace to its template; the first time, asks for its name first.
     func saveSelectedWorkspace(in scope: WindowScope?) throws {
         guard let workspace = selectedWorkspace(in: commandScope(scope)) else { return }
+        guard workspaceTemplates.hasSavedCopy(of: workspace) else {
+            namingWorkspaceID = workspace.id
+            return
+        }
         try saveWorkspace(workspace)
     }
 

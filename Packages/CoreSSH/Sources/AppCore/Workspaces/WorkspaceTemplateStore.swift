@@ -139,6 +139,13 @@ public final class WorkspaceTemplateStore {
         try write(updated)
     }
 
+    /// Whether saving the workspace updates an existing template (else it is a first save, which asks
+    /// for a name).
+    public func hasSavedCopy(of workspace: Workspace) -> Bool {
+        guard let id = workspace.templateID else { return false }
+        return templates.contains { $0.id == id }
+    }
+
     /// Renames an open workspace (a blank name becomes "Workspace") and, when it came from or was saved
     /// to a template still here, that template too: the saved copy keeps the same name, so the rename
     /// alone doesn't count as an unsaved change.

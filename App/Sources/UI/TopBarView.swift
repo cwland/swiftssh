@@ -43,6 +43,11 @@ struct TopBarView: View {
     var renameWorkspace: (Workspace, String) throws -> Void = { workspace, name in workspace.name = name }
     /// Settings → "Ask to save workspaces when closing".
     var asksToSaveWorkspaces: () -> Bool = { false }
+    /// Whether saving updates an existing saved copy; a first save asks for a name.
+    var hasSavedCopy: (Workspace) -> Bool = { _ in true }
+    /// ⌘S on a never-saved workspace (from the menu): the window showing it asks for the name.
+    var namingRequest: UUID? = nil
+    var clearNamingRequest: () -> Void = {}
     /// Opens a saved workspace (each pane connects).
     var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
 
@@ -57,6 +62,11 @@ struct TopBarView: View {
     @State private var renamingWorkspaceID: UUID?
     /// A workspace with unsaved changes waiting for Save / Don't Save / Cancel before it closes.
     @State private var closingWorkspaceID: UUID?
+    /// A workspace's first save: its name is asked for (prefilled) before it is saved.
+    @State private var namingWorkspaceID: UUID?
+    @State private var nameText = ""
+    /// The first save came from the close prompt: the workspace closes once saved.
+    @State private var closeAfterNaming = false
     @State private var templateToRename: WorkspaceTemplate?
     @State private var templateToDelete: WorkspaceTemplate?
     @State private var errorTitle = ""
@@ -140,6 +150,11 @@ struct TopBarView: View {
             Button("Save") {
                 if let workspace = closingWorkspace {
                     closingWorkspaceID = nil
+                    if !hasSavedCopy(workspace) {
+                        // After this alert has gone, so the name alert can show.
+                        DispatchQueue.main.async { beginNaming(workspace, thenClose: true) }
+                        return
+                    }
                     do {
                         try saveWorkspace(workspace)
                         closeWorkspace(workspace.id)
@@ -159,6 +174,19 @@ struct TopBarView: View {
         } message: {
             Text("Its layout, sizes and tab names can be reopened from Saved Workspaces. Closing ends all its sessions.")
         }
+        .alert("Save Workspace", isPresented: namingBinding) {
+            TextField("Workspace name", text: $nameText)
+            Button("Save") { finishNaming() }
+                .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {
+                namingWorkspaceID = nil
+                closeAfterNaming = false
+            }
+        } message: {
+            Text("Saved workspaces open again from \u{201C}+\u{201D} \u{2192} Saved Workspaces.")
+        }
+        .onChange(of: namingRequest) { takeNamingRequest() }
+        .onAppear { takeNamingRequest() }
         .savedWorkspaceDialogs(store: workspaceTemplates, renaming: $templateToRename,
                                deleting: $templateToDelete) { error, title in
             present(error, title: title)
@@ -310,7 +338,48 @@ struct TopBarView: View {
         Binding(get: { closingWorkspaceID != nil }, set: { if !$0 { closingWorkspaceID = nil } })
     }
 
+    /// Opens the name prompt for a workspace's first save.
+    private func beginNaming(_ workspace: Workspace, thenClose: Bool) {
+        nameText = workspace.name
+        closeAfterNaming = thenClose
+        namingWorkspaceID = workspace.id
+    }
+
+    /// Saves under the typed name (blank keeps "Workspace"), then closes it when the close prompt asked.
+    private func finishNaming() {
+        guard let id = namingWorkspaceID, let workspace = sessions?.workspace(id) else {
+            namingWorkspaceID = nil
+            return
+        }
+        let thenClose = closeAfterNaming
+        namingWorkspaceID = nil
+        closeAfterNaming = false
+        do {
+            try renameWorkspace(workspace, nameText)
+            try saveWorkspace(workspace)
+            if thenClose { closeWorkspace(workspace.id) }
+        } catch {
+            present(error, title: "The workspace couldn\u{2019}t be saved")
+        }
+    }
+
+    /// ⌘S from the menu on a never-saved workspace of this window.
+    private func takeNamingRequest() {
+        guard let id = namingRequest, let workspace = sessions?.workspace(id),
+              workspace.windowID == windowID else { return }
+        clearNamingRequest()
+        beginNaming(workspace, thenClose: false)
+    }
+
+    private var namingBinding: Binding<Bool> {
+        Binding(get: { namingWorkspaceID != nil }, set: { if !$0 { namingWorkspaceID = nil } })
+    }
+
     private func save(_ workspace: Workspace) {
+        guard hasSavedCopy(workspace) else {
+            beginNaming(workspace, thenClose: false)
+            return
+        }
         do {
             try saveWorkspace(workspace)
         } catch {

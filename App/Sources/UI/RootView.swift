@@ -83,6 +83,9 @@ struct RootView: View {
                 closeWorkspace: { environment.closeWorkspace($0) },
                 renameWorkspace: { try environment.renameWorkspace($0, to: $1) },
                 asksToSaveWorkspaces: { environment.connectionSettings.askToSaveWorkspaces },
+                hasSavedCopy: { environment.workspaceTemplates.hasSavedCopy(of: $0) },
+                namingRequest: environment.namingWorkspaceID,
+                clearNamingRequest: { environment.namingWorkspaceID = nil },
                 openTemplate: { try environment.openWorkspaceTemplate($0) }
             )
             Group {

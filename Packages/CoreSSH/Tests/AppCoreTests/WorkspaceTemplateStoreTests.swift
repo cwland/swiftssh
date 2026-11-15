@@ -225,6 +225,16 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertEqual(store.templates.first?.name, "Prod 2")
     }
 
+    func testHasSavedCopyOnlyWhileItsTemplateExists() async throws {
+        let (ws, _, _) = try sampleWorkspace()
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        XCTAssertFalse(store.hasSavedCopy(of: ws), "never saved: the first save asks for a name")
+        let template = try store.save(ws, sessions: manager)
+        XCTAssertTrue(store.hasSavedCopy(of: ws))
+        try store.delete(template.id)
+        XCTAssertFalse(store.hasSavedCopy(of: ws), "its template was deleted: saving makes a new one")
+    }
+
     func testRenamingANeverSavedWorkspaceOnlyRenamesIt() async throws {
         let (ws, _, _) = try sampleWorkspace()
         let store = WorkspaceTemplateStore(fileURL: fileURL)
