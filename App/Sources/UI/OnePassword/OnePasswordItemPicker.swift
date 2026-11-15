@@ -195,6 +195,7 @@ struct OnePasswordItemPicker: View {
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+            OnePasswordErrorDetails(error: error)
             HStack(spacing: 8) {
                 if let retry {
                     Button("Try Again", action: retry)
