@@ -72,16 +72,20 @@ public struct ConnectionPlan: Sendable {
     /// so `credential` stays `.none` until the session manager turns this into `.agent(socketPath:publicKey:)`
     /// at connect time.
     public var agentKey: AgentKeyChoice?
+    /// `TERM` for the remote shell (both engines).
+    public var terminalType: TerminalType
 
     /// An `.agent` credential always gets `.systemSSH`, whatever `engine` says.
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,
                 credential: SSHCredential, engine: SSHEngine, startupScript: String?,
-                keepAlive: KeepAlivePolicy = .normal, agentKey: AgentKeyChoice? = nil) {
+                keepAlive: KeepAlivePolicy = .normal, agentKey: AgentKeyChoice? = nil,
+                terminalType: TerminalType = .default) {
         self.hostID = hostID; self.label = label; self.host = host; self.port = port
         self.username = username; self.credential = credential; self.engine = engine
         self.startupScript = startupScript
         self.keepAlive = keepAlive
         self.agentKey = agentKey
+        self.terminalType = terminalType
         if case .agent = credential { self.engine = .systemSSH }
     }
 }

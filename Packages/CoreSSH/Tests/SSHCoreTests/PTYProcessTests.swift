@@ -97,6 +97,13 @@ final class PTYProcessTests: XCTestCase {
         XCTAssertTrue(names.isSubset(of: ["TR_GIVEN", "TERM", "PATH", "HOME", "USER", "LANG"]), "\(names)")
     }
 
+    func testTerminalTypeSetsTERM() async throws {
+        let process = try PTYProcess(executable: "/bin/sh", arguments: ["-c", "echo term=$TERM"], environment: [:],
+                                     terminalType: .vt100, cols: 80, rows: 24)
+        let text = String(decoding: await collect(process), as: UTF8.self)
+        XCTAssertTrue(text.contains("term=vt100\r\n"), text)
+    }
+
     #if os(Linux)
     func testChildDoesNotInheritOpenDescriptors() async throws {
         var fds: [Int32] = [0, 0]

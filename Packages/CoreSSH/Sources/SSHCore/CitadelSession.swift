@@ -18,7 +18,6 @@ import Synchronization
 public final class CitadelSession: TerminalSession {
     public let events: AsyncStream<SessionEvent>
 
-    static let terminalType = "xterm-256color"
     static let commandOutputLimit = 1_048_576
     static let unresponsiveMessage = "The server stopped responding."
     /// The connection ended underneath the terminal (socket closed or reset) without the shell exiting.
@@ -376,7 +375,7 @@ public final class CitadelSession: TerminalSession {
     private func runShell(on connection: Connection, cols: Int, rows: Int, opening: OneShot<ShellOpening>) async {
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
-            term: Self.terminalType,
+            term: plan.terminalType.rawValue,
             terminalCharacterWidth: cols,
             terminalRowHeight: rows,
             terminalPixelWidth: 0,

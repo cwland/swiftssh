@@ -75,7 +75,7 @@ struct TerminalTabView: View {
             defaultThemeID: terminalSettings.defaultThemeID,
             prefersDark: colorScheme == .dark
         )
-        return TerminalAppearance(theme: theme, fontSize: terminalSettings.fontSize)
+        return terminalSettings.appearance(theme: theme)
     }
 
     // MARK: Auto-reconnect
