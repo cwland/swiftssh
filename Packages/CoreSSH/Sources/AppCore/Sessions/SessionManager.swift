@@ -972,6 +972,18 @@ public final class SessionManager {
     }
 
     /// The tab's session when the tab is connected and it can take input.
+    /// Why `runCommand(_:inTab:)` failed before reaching the server.
+    public struct TabNotConnected: LocalizedError {
+        public var errorDescription: String? { "This tab is not connected." }
+    }
+
+    /// Runs `command` on a separate exec channel of the tab's connection (nothing is typed into the
+    /// terminal). Throws `TabNotConnected` unless the tab is connected.
+    public func runCommand(_ command: String, inTab tabID: UUID) async throws -> String {
+        guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { throw TabNotConnected() }
+        return try await attempt.session.runCommand(command)
+    }
+
     private static func liveAttempt(of tab: TerminalTab) -> SessionAttempt? {
         guard tab.state == .connected else { return nil }
         return tab.attempt

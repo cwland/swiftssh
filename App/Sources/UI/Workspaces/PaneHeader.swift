@@ -185,6 +185,7 @@ struct PaneContextMenu: View {
         Divider()
         Button("Change Theme\u{2026}") { actions.changeTheme(paneID) }
         Button("Snippets\u{2026}") { actions.showSnippets(paneID) }
+        Button("History\u{2026}") { actions.showHistory(paneID) }
         Divider()
         Button("Close") { actions.close(paneID) }
     }
@@ -200,6 +201,7 @@ struct PaneActions {
     let setIncludedInBroadcast: @MainActor (UUID, Bool) -> Void
     let changeTheme: @MainActor (UUID) -> Void
     let showSnippets: @MainActor (UUID) -> Void
+    let showHistory: @MainActor (UUID) -> Void
     let toggleBroadcast: @MainActor () -> Void
     /// Focus mode with this pane as the large terminal.
     let enterFocusMode: @MainActor (UUID) -> Void

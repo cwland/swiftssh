@@ -32,6 +32,8 @@ struct WorkspaceView: View {
     var changeTheme: (UUID) -> Void = { _ in }
     /// "Snippets…" in a pane's menu: open `TerminalSidePanel(tabID: paneID, kind: .snippets)`.
     var showSnippets: (UUID) -> Void = { _ in }
+    /// "History…" in a pane's menu: open `TerminalSidePanel(tabID: paneID, kind: .history)`.
+    var showHistory: (UUID) -> Void = { _ in }
     /// Closes one pane (its × and menu, the connection screen's Close, the reconnect popup's Close
     /// Terminal): end the session (`sessions.closePane`) and release its terminal view.
     var closePane: (UUID) -> Void
@@ -213,6 +215,7 @@ struct WorkspaceView: View {
         let closePane = closePane
         let changeTheme = changeTheme
         let showSnippets = showSnippets
+        let showHistory = showHistory
         let rename = $renamingPaneID
         let renameText = $renameText
         return PaneActions(
@@ -234,6 +237,10 @@ struct WorkspaceView: View {
             showSnippets: { id in
                 sessions.focusPane(id)
                 showSnippets(id)
+            },
+            showHistory: { id in
+                sessions.focusPane(id)
+                showHistory(id)
             },
             toggleBroadcast: {
                 sessions.toggleBroadcast(in: workspace.id)

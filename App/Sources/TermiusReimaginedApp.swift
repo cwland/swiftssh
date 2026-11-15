@@ -63,6 +63,7 @@ private struct SessionCommands: Commands {
     let environment: AppEnvironment
     @FocusedValue(\.windowScope) private var scope
     @FocusedValue(\.snippetsPanelToggle) private var snippetsPanel
+    @FocusedValue(\.historyPanelToggle) private var historyPanel
 
     var body: some Commands {
         // Replaces the standard File > Close (Cmd+W).
@@ -112,6 +113,11 @@ private struct SessionCommands: Commands {
             }
             .keyboardShortcut(".", modifiers: .command)
             .disabled(snippetsPanel?.toggle == nil)
+            Button(historyPanel?.isOpen == true ? "Hide History" : "Show History") {
+                historyPanel?.toggle?()
+            }
+            .keyboardShortcut("y", modifiers: .command)
+            .disabled(historyPanel?.toggle == nil)
             Divider()
             Button("Show Previous Tab") {
                 environment.selectAdjacentTab(by: -1, in: scope)

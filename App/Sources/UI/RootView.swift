@@ -75,6 +75,10 @@ struct RootView: View {
                     environment.sessions?.select(tabID: tabID, inWindow: windowID)
                     sidePanel = TerminalSidePanel(tabID: tabID, kind: .snippets)
                 },
+                showHistory: { tabID in
+                    environment.sessions?.select(tabID: tabID, inWindow: windowID)
+                    sidePanel = TerminalSidePanel(tabID: tabID, kind: .history)
+                },
                 duplicateInNewWindow: { tabID in
                     openWindow(id: TerminalWindowRequest.sceneID, value: TerminalWindowRequest(sourceTabID: tabID))
                 },
@@ -254,6 +258,7 @@ private struct ReadyArea: View {
                               closeSidePanel: { sidePanel = nil },
                               changeTheme: { sidePanel = TerminalSidePanel(tabID: $0, kind: .theme) },
                               showSnippets: { sidePanel = TerminalSidePanel(tabID: $0, kind: .snippets) },
+                              showHistory: { sidePanel = TerminalSidePanel(tabID: $0, kind: .history) },
                               closePane: { environment.closeTab(tabID: $0) },
                               editHost: isTerminalWindow ? nil : { editHost(of: $0) },
                               editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
@@ -326,6 +331,7 @@ private struct ReadyArea: View {
         }
         // Cmd+.: the snippets panel of this window's selected tab.
         .focusedSceneValue(\.snippetsPanelToggle, snippetsPanelToggle)
+        .focusedSceneValue(\.historyPanelToggle, panelToggle(.history))
     }
 
     /// "Edit host" on the connection screen: Vaults → Hosts with the tab's host's Host Details open. The tab stays open. Main window only.
@@ -377,9 +383,12 @@ private struct ReadyArea: View {
 
     /// Opens the snippets panel on the selected tab, or a workspace's focused pane (closing Change
     /// Theme), or closes it.
-    private var snippetsPanelToggle: SnippetsPanelToggle {
+    private var snippetsPanelToggle: SnippetsPanelToggle { panelToggle(.snippets) }
+
+    /// Opens or closes `kind`'s panel on the selected tab or a workspace's focused pane.
+    private func panelToggle(_ kind: TerminalSidePanel.Kind) -> SnippetsPanelToggle {
         guard let tabID = selectedWorkspace?.focusedPaneID ?? selectedTab?.id else { return SnippetsPanelToggle() }
-        let panel = TerminalSidePanel(tabID: tabID, kind: .snippets)
+        let panel = TerminalSidePanel(tabID: tabID, kind: kind)
         let binding = $sidePanel
         return SnippetsPanelToggle(isOpen: sidePanel == panel) {
             binding.wrappedValue = binding.wrappedValue == panel ? nil : panel

@@ -147,6 +147,23 @@ final class SessionManagerSnippetsTests: XCTestCase {
         await waitUntil("sent") { s.sends == ["uptime\r"] }
     }
 
+    // MARK: runCommand (shell history)
+
+    func testRunCommandUsesTheTabsConnection() async throws {
+        let (tab, _) = try await connectedTab()
+        let output = try await manager.runCommand("cat history", inTab: tab.id)
+        XCTAssertEqual(output, "Linux\nID=ubuntu\n")
+    }
+
+    func testRunCommandNeedsAConnectedTab() async throws {
+        do {
+            _ = try await manager.runCommand("x", inTab: UUID())
+            XCTFail("expected an error")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "This tab is not connected.")
+        }
+    }
+
     func testNewlinesBecomeReturns() async throws {
         let (tab, s) = try await connectedTab()
         manager.deliver("cd /srv\nls\r\npwd", as: .paste, toTab: tab.id)

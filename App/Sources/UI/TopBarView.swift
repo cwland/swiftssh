@@ -27,6 +27,8 @@ struct TopBarView: View {
     var changeTheme: (UUID) -> Void = { _ in }
     /// Snippets…: opens the snippets panel over the tab (after selecting it).
     var showSnippets: (UUID) -> Void = { _ in }
+    /// History…: opens the shell history panel over the tab (after selecting it).
+    var showHistory: (UUID) -> Void = { _ in }
     /// Duplicate in New Window.
     var duplicateInNewWindow: (UUID) -> Void = { _ in }
     /// Saved workspaces for the "+" menu; nil hides that submenu.
@@ -410,6 +412,9 @@ struct TopBarView: View {
         }
         Button("Snippets\u{2026}") {
             showSnippets(tab.id)
+        }
+        Button("History\u{2026}") {
+            showHistory(tab.id)
         }
         Button("Rename\u{2026}") {
             renameText = tab.customTitle ?? tab.title

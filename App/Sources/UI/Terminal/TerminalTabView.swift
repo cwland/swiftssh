@@ -86,6 +86,14 @@ struct TerminalTabView: View {
                                           isBracketedPasteActive: { store.isBracketedPasteActive(tabID: tab.id) },
                                           close: closeSidePanel)
                             .transition(.move(edge: .trailing))
+                    case .history:
+                        HistorySidePanel(tab: tab, sessions: sessions, vault: vault,
+                                         editSnippet: editSnippet,
+                                         focusTerminal: { store.focus(tabID: tab.id) },
+                                         pasteIntoTerminal: { store.paste($0, tabID: tab.id) },
+                                         isBracketedPasteActive: { store.isBracketedPasteActive(tabID: tab.id) },
+                                         close: closeSidePanel)
+                            .transition(.move(edge: .trailing))
                     case nil:
                         EmptyView()
                     }
@@ -210,6 +218,7 @@ struct TerminalSidePanel: Equatable {
     enum Kind: Equatable {
         case theme
         case snippets
+        case history
     }
 
     let tabID: UUID
@@ -227,10 +236,20 @@ private struct SnippetsPanelToggleKey: FocusedValueKey {
     typealias Value = SnippetsPanelToggle
 }
 
+/// Cmd+Y (Session menu): the same for the shell history panel.
+private struct HistoryPanelToggleKey: FocusedValueKey {
+    typealias Value = SnippetsPanelToggle
+}
+
 extension FocusedValues {
     var snippetsPanelToggle: SnippetsPanelToggle? {
         get { self[SnippetsPanelToggleKey.self] }
         set { self[SnippetsPanelToggleKey.self] = newValue }
+    }
+
+    var historyPanelToggle: SnippetsPanelToggle? {
+        get { self[HistoryPanelToggleKey.self] }
+        set { self[HistoryPanelToggleKey.self] = newValue }
     }
 }
 
