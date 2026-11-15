@@ -153,7 +153,7 @@ struct GroupDetailsPanel: View {
     }
 
     /// "Startup snippet" for the group's hosts that use Default: Default (the parents' snippet) or one
-    /// snippet without `{{placeholders}}`. Saves at once.
+    /// snippet without `{{placeholders}}`, and how many hosts that reaches. Saves at once.
     private var startupSnippetField: some View {
         let candidates = model.startupCandidates()
         let selected = model.startupSnippetID(ofGroup: group.id)
@@ -177,6 +177,11 @@ struct GroupDetailsPanel: View {
             }
             .labelsHidden()
             .help("A snippet typed into the terminal when this group\u{2019}s hosts connect")
+            // Hosts set to None on v0.10 read as Default now, so say who will run it.
+            Text(model.startupSnippetReachSummary(ofGroup: group.id))
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if model.hiddenStartupSnippetCount > 0 {
                 Text("Snippets with {{placeholders}} can\u{2019}t run at startup.")
                     .font(.system(size: 12))

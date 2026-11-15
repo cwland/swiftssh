@@ -84,6 +84,25 @@ public struct HostDirectory: Sendable {
         inheritedStartupSnippet(fromGroup: host.groupID, isAvailable: isAvailable)
     }
 
+    /// How many hosts use Default for their startup snippet and get it from `groupID`, or would
+    /// once it has one: hosts in the group or its subgroups without an available snippet of their
+    /// own and not set to None, for which no group closer to them has an available snippet.
+    /// Cycle-safe, like `inheritedStartupSnippet(fromGroup:isAvailable:)`.
+    public func hostsUsingDefaultStartupSnippet(ofGroup groupID: UUID, isAvailable: (UUID) -> Bool) -> Int {
+        hosts.reduce(0) { count, host in
+            if let own = host.startupSnippetID, isAvailable(own) { return count }
+            if host.startupSnippetOff == true { return count }
+            var visited: Set<UUID> = []
+            var next = host.groupID
+            while let id = next, visited.insert(id).inserted, let group = groupsByID[id] {
+                if id == groupID { return count + 1 }
+                if let snippetID = group.startupSnippetID, isAvailable(snippetID) { return count }
+                next = group.parentID
+            }
+            return count
+        }
+    }
+
     /// The first group from `groupID` up the parent chain whose `startupSnippetID` is available (a
     /// missing snippet counts as unset, so the walk goes on), with that group's name; nil = none.
     /// Cycle-safe; the walk ends at a deleted or missing group, as for tmux.

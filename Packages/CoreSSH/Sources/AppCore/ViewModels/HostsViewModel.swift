@@ -416,6 +416,25 @@ public final class HostsViewModel {
             inherited, snippetName: inherited.flatMap { vault.get(Snippet.self, id: $0.snippetID)?.name })
     }
 
+    /// How many hosts use Default and take their startup snippet from this group (or would, once
+    /// it has one); see `HostDirectory.hostsUsingDefaultStartupSnippet(ofGroup:isAvailable:)`.
+    public func hostsUsingDefaultStartupSnippet(ofGroup id: UUID) -> Int {
+        _ = vault.revision
+        let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
+        return directory.hostsUsingDefaultStartupSnippet(ofGroup: id) { vault.get(Snippet.self, id: $0) != nil }
+    }
+
+    /// The Group panel's line under "Startup snippet": "12 hosts use Default and will run it." (or
+    /// "would run a snippet chosen here." while the group uses Default itself).
+    public func startupSnippetReachSummary(ofGroup id: UUID) -> String {
+        let count = hostsUsingDefaultStartupSnippet(ofGroup: id)
+        guard count > 0 else { return "No hosts use Default here, so none run it." }
+        let hosts = count == 1 ? "1 host uses" : "\(count) hosts use"
+        return startupSnippetID(ofGroup: id) == nil
+            ? "\(hosts) Default and would run a snippet chosen here."
+            : "\(hosts) Default and will run it."
+    }
+
     /// nil = Default (the parent's). Saves through the vault (syncs) only when it changes; a missing
     /// group is left alone.
     public func setStartupSnippet(_ snippetID: UUID?, forGroup id: UUID) async throws {
