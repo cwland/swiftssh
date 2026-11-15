@@ -1826,6 +1826,7 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         XCTAssertEqual(tab.connectionLog.map(\.text), ["Resolving web.example\u{2026}", "Connecting to 10.0.0.5:22\u{2026}"])
         XCTAssertEqual(statuses(tab), [.done, .inProgress])
         XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertFalse(tab.hadLiveSession)
         XCTAssertNil(tab.connectionFailure)
         XCTAssertEqual(tab.state, .connecting)
 
@@ -1862,6 +1863,7 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         let tab = try manager.open(hostID: host().id)
         await waitUntil("failed") { tab.connectionFailure != nil }
         let firstIDs = tab.connectionLog.map(\.id)
+        XCTAssertTrue(tab.hadLiveSession)
 
         factory.onStart = { @Sendable s in
             s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
@@ -1959,6 +1961,7 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         XCTAssertEqual(tab.connectionLog.map(\.step), [.connecting(address: "10.0.0.5", port: 22)])
         XCTAssertEqual(statuses(tab), [.inProgress])
         XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertTrue(tab.hadLiveSession, "the tab was live once; attempts don't reset it")
         XCTAssertNil(tab.connectionFailure)
         XCTAssertTrue(Set(firstIDs).isDisjoint(with: tab.connectionLog.map(\.id)))
         if case .reconnecting = tab.autoReconnect {} else { XCTFail("\(String(describing: tab.autoReconnect))") }

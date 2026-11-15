@@ -178,6 +178,9 @@ struct ConnectionScreen: View {
                 Button("Edit host", action: editHost)
                     .buttonStyle(ConnectionScreenButtonStyle(foreground: foreground))
             }
+            if phase == .failed, tab.suggestedAction == .openOnePasswordSetup {
+                OpenOnePasswordSetupButton()
+            }
             if phase == .failed {
                 Button("Start over", action: startOver)
                     .buttonStyle(ConnectionScreenButtonStyle(foreground: foreground, prominent: true))

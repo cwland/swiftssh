@@ -118,7 +118,8 @@ struct TerminalTabView: View {
         if isAutoReconnecting { return false }
         switch tab.state {
         case .connecting, .awaitingHostKey, .awaitingPassword: return true
-        case .disconnected: return !tab.hasEverConnected
+        // A tab that was live once keeps its scrollback and the banner (incl. "Couldn't reconnect…").
+        case .disconnected: return !tab.hadLiveSession
         case .connected: return false
         }
     }

@@ -52,6 +52,9 @@ public final class TerminalTab: Identifiable {
     }
     /// Whether this attempt reached `.connected` (the terminal went live).
     public fileprivate(set) var hasEverConnected = false
+    /// Whether this tab's terminal has ever been live (any attempt). Never reset by a new attempt, so
+    /// a tab that dropped keeps its scrollback and banner instead of the connection screen.
+    public fileprivate(set) var hadLiveSession = false
 
     /// The log as text for "Copy logs": a header (host label, user@host:port, engine, date) and one
     /// line per step with its time and status. Never contains secrets: only names, addresses, ports,
@@ -1016,6 +1019,7 @@ public final class SessionManager {
             current?.state = .connected
             current?.finishCurrentStep(as: .done)
             current?.hasEverConnected = true
+            current?.hadLiveSession = true
             // ssh asks in the terminal (no stored secret): the user may have to type a password, so this
             // try is no longer automatic.
             if let current, case .reconnecting = current.autoReconnect, case .none = attempt.plan.credential {
