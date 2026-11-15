@@ -3,10 +3,10 @@ import AppKit
 
 /// Keeps a click inside this view from moving the window.
 ///
-/// The top bar sits in the hidden title bar, where AppKit starts a window drag for a mouse-down on any
-/// spot SwiftUI doesn't claim (for example the see-through parts of an unselected tab), so a tab drag
-/// sometimes moved the whole window. Behind a tab, this watches mouse-downs before AppKit handles them
-/// and makes the window unmovable until the button is released; the tab's own drag (reorder, drop on a terminal)
+/// The top bar sits in the hidden title bar, where the window server moves the window for a mouse-down
+/// in the draggable region, so a tab drag sometimes moved the whole window. Behind a tab, this view
+/// cuts the tab out of that region (`mouseDownCanMoveWindow`), and as a fallback makes the window
+/// unmovable until the button is released; the tab's own drag (reorder, drop on a terminal)
 /// is unaffected. Empty parts of the bar still move the window.
 struct WindowDragBlocker: NSViewRepresentable {
     /// The blockers on screen, for `covers(_:in:)`.
@@ -31,6 +31,12 @@ struct WindowDragBlocker: NSViewRepresentable {
 
         /// Transparent to clicks.
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        /// The window server moves the window by itself (before the app sees the click) for a
+        /// mouse-down in the title bar's draggable region, made of views that answer true here.
+        /// NSView answers true for any non-opaque view, so this one must say no: that cuts the tab
+        /// out of the region behind it (the top bar's `WindowDragArea`).
+        override var mouseDownCanMoveWindow: Bool { false }
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
             super.viewWillMove(toWindow: newWindow)
