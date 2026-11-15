@@ -5,7 +5,8 @@ import SwiftTerm
 
 // SwiftUI and SwiftTerm both define `Color`; this file always qualifies it.
 
-extension RGBColor {
+// Qualified: legacy QuickDraw headers (via AppKit) also declare a C `RGBColor`.
+extension AppCore.RGBColor {
     /// sRGB, opaque.
     var nsColor: NSColor {
         NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)

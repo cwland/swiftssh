@@ -23,7 +23,8 @@ public struct HostDirectory: Sendable {
     }
 
     /// The host's own theme id, then each group's `defaultThemeID` up the parent chain
-    /// (nearest first, cycle-safe, deleted groups skipped). nil levels are left out.
+    /// (nearest first, cycle-safe; the walk ends at a deleted or missing group, as for the other
+    /// inherited settings). nil levels are left out.
     /// A resolver walks this to skip ids its catalog doesn't know.
     public func themeIDChain(for host: Host) -> [String] {
         var chain: [String] = host.themeID.map { [$0] } ?? []
