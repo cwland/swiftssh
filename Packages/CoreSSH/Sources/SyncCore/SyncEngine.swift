@@ -35,12 +35,18 @@ public struct PlainRecord: Codable, Equatable, Sendable {
 /// `nil`, 409 on `PUT /vault` to `SyncError.vaultAlreadyExists`, and on rewrap 404 to
 /// `SyncError.noVault` and 409 (stale `oldWrappedKey`) to `SyncError.vaultChanged`.
 public protocol SyncTransport: Sendable {
+    /// Checks that a sync server answers (no API key needed). Default: does nothing.
+    func health() async throws
     func getVault() async throws -> VaultMetadata?
     func putVault(_ metadata: VaultMetadata) async throws
     func rewrap(_ request: RewrapRequest) async throws -> VaultMetadata
     func fetch(since: Int64, limit: Int) async throws -> RecordsPage
     /// Returns the server's stored copy of every submitted id.
     func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord]
+}
+
+extension SyncTransport {
+    public func health() async throws {}
 }
 
 /// The app's local database as the engine sees it.
@@ -208,6 +214,27 @@ public actor SyncEngine {
             try await store.setSyncState(state)
             report.pushed += try await push(key: key)
             // From seq 0 a rewind can't be reported again; at most one resync per call.
+            _ = try await pull(key: key, state: &state, report: &report)
+        }
+        return report
+    }
+
+    /// Pulls everything newer than `syncState.lastSeq` without pushing anything (e.g. a merge join
+    /// that must see the vault's records before deciding what to upload). Same checks as `sync()`;
+    /// a server rewind resets `lastSeq` to 0, marks every local record dirty and pulls again.
+    public func pull() async throws -> SyncReport {
+        await beginOperation()
+        defer { endOperation() }
+        guard let key = vaultKey?.symmetricKey else { throw SyncError.locked }
+        var state = await store.syncState
+        guard let vault = try await transport.getVault(), vault.vaultID == state.vaultID else {
+            throw SyncError.vaultChanged
+        }
+        var report = SyncReport(pushed: 0, pulled: 0)
+        if try await pull(key: key, state: &state, report: &report) {
+            try await store.markAllDirty()
+            state.lastSeq = 0
+            try await store.setSyncState(state)
             _ = try await pull(key: key, state: &state, report: &report)
         }
         return report

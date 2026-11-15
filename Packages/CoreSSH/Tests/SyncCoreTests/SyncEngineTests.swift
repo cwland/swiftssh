@@ -673,6 +673,41 @@ final class SyncEngineTests: XCTestCase {
         let total = await transport.storedRecords.count
         XCTAssertEqual(total, 1_200)
     }
+
+    func testPullAppliesServerRecordsWithoutPushingDirtyOnes() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        let nas = host("nas")
+        try await a.store.insert(nas)
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        _ = try await a.engine.sync()
+
+        let b = device("mac-b", transport)
+        let local = host("laptop")
+        try await b.store.insert(local)
+        _ = try await b.engine.join(passphrase: passphrase, mode: .merge)
+        let report = try await b.engine.pull()
+
+        XCTAssertEqual(report, SyncReport(pushed: 0, pulled: 1))
+        let pulled = try await b.store.model(Host.self, id: nas.id)
+        XCTAssertEqual(pulled?.label, "nas")
+        let stored = await transport.storedRecords
+        XCTAssertEqual(stored.map(\.id), [nas.id])
+        let stillDirty = await b.store.isDirty(local.id)
+        XCTAssertTrue(stillDirty)
+        let state = await b.store.syncState
+        XCTAssertEqual(state.lastSeq, 1)
+    }
+
+    func testPullWhileLockedThrows() async throws {
+        let transport = InMemoryTransport()
+        do {
+            _ = try await device("mac-a", transport).engine.pull()
+            XCTFail("expected .locked")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .locked)
+        }
+    }
 }
 
 private actor SinceRecorder {
