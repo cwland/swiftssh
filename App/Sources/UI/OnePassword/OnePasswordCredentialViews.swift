@@ -35,9 +35,14 @@ struct LoginMethodPicker: View {
 struct OnePasswordPasswordField: View {
     let title: String
     @Binding var text: String
+    /// Gets a reference picked from 1Password instead of `text`, so the editor can ask whether to
+    /// remove replaced secrets first. nil: the reference goes straight into `text`.
+    var pick: ((String) -> Void)? = nil
 
     @Environment(OnePasswordSetup.self) private var onePassword: OnePasswordSetup?
     @State private var showPicker = false
+    /// The reference chosen in the sheet, handed on once the sheet is gone (an alert may follow).
+    @State private var pickedReference: String?
     /// Set once "Pick from 1Password…" was tapped; until then (and without an `op://` value) no hint shows.
     @State private var pickerRequested = false
 
@@ -69,14 +74,24 @@ struct OnePasswordPasswordField: View {
             // Opening Host Details checks nothing unless the field already holds a reference.
             if SecretReference.isReference(text) { onePassword?.refreshCLIStatus() }
         }
-        .sheet(isPresented: $showPicker) {
+        .sheet(isPresented: $showPicker, onDismiss: handOnPickedReference) {
             OnePasswordItemPicker(client: onePassword?.makeClient(),
                                   onItemsLoaded: { onePassword?.remember(items: $0) }) { reference in
-                text = reference
+                pickedReference = reference
                 showPicker = false
             } cancel: {
                 showPicker = false
             }
+        }
+    }
+
+    private func handOnPickedReference() {
+        guard let reference = pickedReference else { return }
+        pickedReference = nil
+        if let pick {
+            pick(reference)
+        } else {
+            text = reference
         }
     }
 }

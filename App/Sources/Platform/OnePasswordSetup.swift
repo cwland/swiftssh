@@ -240,8 +240,13 @@ final class OnePasswordSetup {
     }
 
     func copyInstallCommand() {
+        Self.copy(OnePasswordLinks.homebrewInstallCommand)
+    }
+
+    /// Puts `text` on the clipboard (commands the checklist and Host Details offer).
+    static func copy(_ text: String) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(OnePasswordLinks.homebrewInstallCommand, forType: .string)
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     /// Writes a one-off `.command` script (0700, in the temporary folder) that runs

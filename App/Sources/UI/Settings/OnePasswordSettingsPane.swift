@@ -42,6 +42,9 @@ struct OnePasswordSettingsPane: View {
 
     private var checked: Bool { setup.hasChecked }
 
+    /// "Settings → Developer" etc., inside 1Password.
+    private var developer: String { OnePasswordLinks.developerSettingsPath }
+
     // MARK: 1. App
 
     private var appStep: some View {
@@ -49,13 +52,18 @@ struct OnePasswordSettingsPane: View {
                   status: !checked ? .unknown : setup.isAppInstalled ? .done : .missing) {
             if setup.isAppInstalled {
                 StepDetail(setup.appURL?.path ?? OnePasswordLinks.appPath, monospaced: true)
-            } else {
-                StepDetail("1Password 8 for Mac is needed for the SSH agent and the CLI.")
             }
-        } actions: {
-            if !setup.isAppInstalled {
-                Button("Download 1Password") { setup.openDownloadPage() }
+            SubStep(1, "Install 1Password 8 for Mac.") {
+                if !setup.isAppInstalled {
+                    Button("Download 1Password") { setup.openDownloadPage() }
+                }
             }
+            SubStep(2, "Open 1Password and sign in to your account.") {
+                if setup.isAppInstalled {
+                    Button("Open 1Password") { setup.openOnePassword() }
+                }
+            }
+            SubStep(3, "Unlock 1Password. Keep it unlocked while you connect.")
         }
     }
 
@@ -64,29 +72,25 @@ struct OnePasswordSettingsPane: View {
     private var agentStep: some View {
         SetupStep(number: 2, title: "SSH agent", status: agentStatus) {
             if setup.isAgentBlocked {
-                StepDetail("macOS is blocking access to 1Password\u{2019}s agent. If macOS asks whether Termius Reimagined may access data from other apps, click Allow \u{2014} or turn it on in System Settings \u{2192} Privacy & Security \u{2192} App Management.")
-                if let path = setup.agentSocketPath {
-                    StepDetail(path, monospaced: true)
-                }
-            } else if let path = setup.agentSocketPath {
-                StepDetail(path, monospaced: true)
-                if let failure = setup.agentFailure {
-                    StepDetail("The agent is not answering (is 1Password running with \u{201C}Use the SSH agent\u{201D} on?): \(failure)")
-                }
-            } else {
-                StepDetail("In 1Password, open \(OnePasswordLinks.developerSettingsPath) and turn on \u{201C}Use the SSH agent\u{201D}.")
+                StepNote("macOS is blocking access to 1Password\u{2019}s agent. Do steps 3 to 6. If macOS asks to allow access to data from other apps, click Allow.")
+            } else if setup.agentSocketPath != nil, let failure = setup.agentFailure {
+                StepNote("The agent isn\u{2019}t answering. Is 1Password open, with \u{201C}Use the SSH agent\u{201D} on? (\(failure))")
             }
-        } actions: {
-            if setup.isAgentBlocked {
-                Button("Open Privacy Settings") { setup.openPrivacySettings() }
-                Button("Recheck") { setup.refresh() }
-            } else if setup.agentSocketPath == nil || setup.agentFailure != nil {
+            if let path = setup.agentSocketPath {
+                StepDetail(path, monospaced: true)
+            }
+            SubStep(1, "In 1Password, open \(developer).") {
                 Button("Open 1Password") { setup.openOnePassword() }
                     .disabled(checked && !setup.isAppInstalled)
-                    .help("Opens 1Password; then go to \(OnePasswordLinks.developerSettingsPath)")
-                if setup.agentFailure != nil {
-                    Button("Recheck") { setup.refresh() }
-                }
+            }
+            SubStep(2, "Turn on \u{201C}Use the SSH agent\u{201D}.")
+            SubStep(3, "macOS 27 or later: open System Settings \u{2192} Privacy & Security \u{2192} Files & Folders.") {
+                Button("Open Privacy Settings") { setup.openPrivacySettings() }
+            }
+            SubStep(4, "Under Termius Reimagined, turn on \u{201C}Data shared by 1Password\u{201D}.")
+            SubStep(5, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(6, "Click Recheck.") {
+                Button("Recheck") { setup.refresh() }
             }
         }
     }
@@ -105,27 +109,34 @@ struct OnePasswordSettingsPane: View {
             if let path = setup.cliPath {
                 StepDetail(setup.cliVersion.map { "\(path) \u{2014} version \($0)" } ?? path, monospaced: true)
             } else {
-                StepDetail("Needed only to fill passwords from 1Password. Install it, then come back \u{2014} this list updates by itself.")
-                Text(OnePasswordLinks.homebrewInstallCommand)
-                    .font(.system(size: 12, design: .monospaced))
-                    .textSelection(.enabled)
+                StepNote("Needed only to fill passwords from 1Password.")
+            }
+            SubStep(1, "Install the CLI with Homebrew, or download the installer.") {
+                if !setup.isCLIReady {
+                    if setup.homebrewPath != nil {
+                        Button("Install with Homebrew") { setup.installWithHomebrew() }
+                            .help("Opens Terminal and runs \u{201C}\(OnePasswordLinks.homebrewInstallCommand)\u{201D}")
+                    }
+                    Button("Download installer") { setup.openCLIDownloadPage() }
+                }
+            }
+            if !setup.isCLIReady {
+                CopyableCommand(command: OnePasswordLinks.homebrewInstallCommand)
+                    .padding(.leading, SubStepMetrics.indent)
                 if let error = setup.installError {
                     Text(error)
                         .font(.system(size: 12))
                         .foregroundStyle(.red)
                         .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, SubStepMetrics.indent)
                 }
             }
-        } actions: {
-            if !setup.isCLIReady {
-                if setup.homebrewPath != nil {
-                    Button("Install with Homebrew") { setup.installWithHomebrew() }
-                        .help("Opens Terminal and runs \u{201C}\(OnePasswordLinks.homebrewInstallCommand)\u{201D}")
-                }
-                Button("Download installer") { setup.openCLIDownloadPage() }
-                Button("Copy command") { setup.copyInstallCommand() }
-                    .help(OnePasswordLinks.homebrewInstallCommand)
+            SubStep(2, "Come back here. This step turns green by itself.")
+            SubStep(3, "If Terminal says \u{201C}No accounts configured\u{201D}, open Files & Folders.") {
+                Button("Open Privacy Settings") { setup.openPrivacySettings() }
             }
+            SubStep(4, "Under Terminal, turn on \u{201C}Data shared by 1Password\u{201D}.")
+            SubStep(5, "Quit Terminal (Cmd+Q) and open it again.")
         }
     }
 
@@ -133,33 +144,47 @@ struct OnePasswordSettingsPane: View {
 
     private var integrationStep: some View {
         SetupStep(number: 4, title: "CLI connected to the app", status: integrationStatus) {
-            StepDetail("In 1Password \u{2192} \(OnePasswordLinks.developerSettingsPath), turn on \u{201C}Integrate with 1Password CLI\u{201D}. Test may show a 1Password or Touch ID prompt.")
-            switch setup.cliTest {
-            case .idle:
-                EmptyView()
-            case .running:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Waiting for 1Password\u{2026}")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-            case .passed:
-                Text("Connected.")
+            SubStep(1, "In 1Password, open Settings \u{2192} Security and turn on Touch ID.") {
+                Button("Open 1Password") { setup.openOnePassword() }
+                    .disabled(checked && !setup.isAppInstalled)
+            }
+            SubStep(2, "Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.")
+            SubStep(3, "Quit 1Password (Cmd+Q) and open it again.")
+            SubStep(4, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(5, "Click Test, then approve 1Password\u{2019}s prompt if one appears.") {
+                Button("Test") { setup.testCLI() }
+                    .disabled(!setup.isCLIReady || setup.cliTest == .running)
+            }
+            testResult
+                .padding(.leading, SubStepMetrics.indent)
+            StepNote("1Password remembers an approval for about 10 minutes, so it won\u{2019}t ask every time.")
+        }
+    }
+
+    @ViewBuilder
+    private var testResult: some View {
+        switch setup.cliTest {
+        case .idle:
+            EmptyView()
+        case .running:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Waiting for 1Password\u{2026}")
                     .font(.system(size: 12))
-                    .foregroundStyle(.green)
-            case .failed(let error):
+                    .foregroundStyle(.secondary)
+            }
+        case .passed:
+            Text("Connected.")
+                .font(.system(size: 12))
+                .foregroundStyle(.green)
+        case .failed(let error):
+            VStack(alignment: .leading, spacing: 4) {
                 Text(error.message)
                     .font(.system(size: 12))
                     .foregroundStyle(.red)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-        } actions: {
-            Button("Test") { setup.testCLI() }
-                .disabled(!setup.isCLIReady || setup.cliTest == .running)
-            if case .failed = setup.cliTest, setup.isAppInstalled {
-                Button("Open 1Password") { setup.openOnePassword() }
+                OnePasswordErrorDetails(error: error)
             }
         }
     }
@@ -176,36 +201,71 @@ struct OnePasswordSettingsPane: View {
 
     private var keysStep: some View {
         SetupStep(number: 5, title: "Keys in 1Password", status: keysStatus) {
-            switch setup.agentKeys {
-            case .unknown:
-                StepDetail("Shown once the SSH agent is found.")
-            case .loading:
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Asking the agent\u{2026}")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                }
-            case .blocked:
-                StepDetail("macOS is blocking access to the agent (see step 2).")
-            case .failed(let message):
-                Text(message)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-            case .loaded(let keys) where keys.isEmpty:
-                StepDetail("Add or import an SSH key in 1Password (New Item \u{2192} SSH Key).")
-            case .loaded(let keys):
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(keys, id: \.publicKeyLine) { key in
-                        AgentKeyRow(key: key)
-                    }
-                }
+            agentKeyList
+            SubStep(1, "In 1Password, choose New Item \u{2192} SSH Key.") {
+                Button("Open 1Password") { setup.openOnePassword() }
+                    .disabled(checked && !setup.isAppInstalled)
             }
-        } actions: {
-            if setup.agentSocketPath != nil {
-                Button("Recheck") { setup.refresh() }
+            SubStep(2, "Generate a key (Ed25519) and save it in the **Private** vault.")
+            SubStep(3, "The agent offers only Private-vault keys. Another vault? See below.")
+            SubStep(4, "Put the public key on each server: copy this, replace PORT, USER and HOST.")
+            CopyableCommand(command: OnePasswordLinks.keyInstallCommand())
+                .padding(.leading, SubStepMetrics.indent)
+            SubStep(5, "Run it in Terminal. It asks for the server\u{2019}s password once.")
+            StepNote("Host Details fills in PORT, USER and HOST: \u{201C}Copy key-install command\u{201D} on a host that uses the 1Password SSH agent. Terminal needs \u{201C}Data shared by 1Password\u{201D} too (step 3).")
+            StepNote("Synology: turn on Control Panel \u{2192} User & Group \u{2192} Advanced \u{2192} Enable user home service, and run chmod 755 ~ on the NAS.")
+            otherVault
+        }
+    }
+
+    /// Keys in a vault other than Private: 1Password's agent.toml lists the vaults the agent offers.
+    private var otherVault: some View {
+        DisclosureGroup("Keys in another vault?") {
+            VStack(alignment: .leading, spacing: 6) {
+                SubStep(1, "Run this in Terminal. It creates the agent\u{2019}s config file and opens it.")
+                CopyableCommand(command: OnePasswordLinks.agentConfigCommand)
+                    .padding(.leading, SubStepMetrics.indent)
+                SubStep(2, "Paste this. Put your vault\u{2019}s name in place of \u{201C}Your vault name\u{201D}.")
+                CopyableCommand(command: OnePasswordLinks.agentConfigExample)
+                    .padding(.leading, SubStepMetrics.indent)
+                SubStep(3, "Save the file, then click Recheck.") {
+                    Button("Recheck") { setup.refresh() }
+                }
+                SubStep(4, "Key still missing? Quit 1Password (Cmd+Q) and open it again.")
+                StepNote("Once this file exists, 1Password offers only the vaults listed. Keep \u{201C}Private\u{201D} if you still want it.")
+            }
+            .padding(.top, 6)
+        }
+        .font(.system(size: 12, weight: .medium))
+    }
+
+    @ViewBuilder
+    private var agentKeyList: some View {
+        switch setup.agentKeys {
+        case .unknown:
+            StepDetail("Your keys show here once the SSH agent is found.")
+        case .loading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Asking the agent\u{2026}")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        case .blocked:
+            StepDetail("macOS is blocking access to the agent (see step 2).")
+        case .failed(let message):
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        case .loaded(let keys) where keys.isEmpty:
+            StepDetail("The agent offers no keys yet. Follow the steps below, then Recheck in step 2.")
+        case .loaded(let keys):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(keys, id: \.publicKeyLine) { key in
+                    AgentKeyRow(key: key)
+                }
             }
         }
     }
@@ -224,13 +284,18 @@ struct OnePasswordSettingsPane: View {
 
 private enum SetupStepStatus { case done, missing, blocked, unknown }
 
-/// One checklist row: status symbol, number and title, details, then its buttons.
-private struct SetupStep<Detail: View, Actions: View>: View {
+private enum SubStepMetrics {
+    /// Where a sub-step's text starts: lines that belong to it (commands, results) line up there.
+    static let numberWidth: CGFloat = 18
+    static let indent: CGFloat = numberWidth + 6
+}
+
+/// One checklist row: status symbol, number and title, then its contents (sub-steps, notes).
+private struct SetupStep<Content: View>: View {
     let number: Int
     let title: String
     let status: SetupStepStatus
-    @ViewBuilder let detail: Detail
-    @ViewBuilder let actions: Actions
+    @ViewBuilder let content: Content
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.cardPadding) {
@@ -241,13 +306,10 @@ private struct SetupStep<Detail: View, Actions: View>: View {
                 .accessibilityLabel(accessibilityStatus)
             VStack(alignment: .leading, spacing: 6) {
                 Text("\(number). \(title)")
-                    .font(.system(size: Theme.cardTitleFontSize))
-                detail
-                HStack(spacing: 8) {
-                    actions
-                }
-                .controlSize(.small)
+                    .font(.system(size: Theme.cardTitleFontSize, weight: .semibold))
+                content
             }
+            .controlSize(.small)
             Spacer(minLength: 0)
         }
         .padding(Theme.cardPadding)
@@ -286,7 +348,44 @@ private struct SetupStep<Detail: View, Actions: View>: View {
     }
 }
 
-/// Secondary 12 pt text that wraps.
+/// "1. One short instruction" with the buttons for that instruction right after it.
+/// The text takes **bold** markdown.
+private struct SubStep<Actions: View>: View {
+    let number: Int
+    let text: String
+    let actions: Actions
+
+    init(_ number: Int, _ text: String, @ViewBuilder actions: () -> Actions) {
+        self.number = number
+        self.text = text
+        self.actions = actions()
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(number).")
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: SubStepMetrics.numberWidth, alignment: .trailing)
+            Text(LocalizedStringKey(text))
+                .font(.system(size: 12))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            HStack(spacing: 6) {
+                actions
+            }
+            .fixedSize()
+        }
+    }
+}
+
+extension SubStep where Actions == EmptyView {
+    init(_ number: Int, _ text: String) {
+        self.init(number, text) { EmptyView() }
+    }
+}
+
+/// Secondary 12 pt text that wraps (paths, versions, statuses).
 private struct StepDetail: View {
     let text: String
     var monospaced = false
@@ -302,6 +401,29 @@ private struct StepDetail: View {
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// A short note with an info symbol, indented with the sub-steps.
+private struct StepNote: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: SubStepMetrics.numberWidth, alignment: .trailing)
+            Text(text)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 

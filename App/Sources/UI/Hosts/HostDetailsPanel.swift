@@ -44,6 +44,8 @@ private struct HostDetailsContent: View {
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
+    /// A credential change waiting for "Remove" / "Keep" (it makes saved secrets unneeded).
+    @State private var pendingChange: PendingCredentialChange?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,6 +88,9 @@ private struct HostDetailsContent: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
+        }
+        .credentialChangeConfirmation($pendingChange) { change, removingReplaced in
+            details.apply(change, removingReplaced: removingReplaced)
         }
     }
 
@@ -300,6 +305,15 @@ private struct HostDetailsContent: View {
                     .foregroundStyle(.secondary)
             }
         }
+        if let identity = selectedIdentity, identity.agentKey != nil {
+            KeyInstallCommandButton(port: details.effectivePort, username: identity.username,
+                                    address: details.address)
+        }
+    }
+
+    private var selectedIdentity: Identity? {
+        guard let id = details.identityID else { return nil }
+        return details.availableIdentities.first { $0.id == id }
     }
 
     @ViewBuilder
@@ -312,12 +326,16 @@ private struct HostDetailsContent: View {
         switch loginMethod.wrappedValue {
         case .onePasswordAgent:
             OnePasswordAgentKeyPicker(choice: $details.agentKey)
+            KeyInstallCommandButton(port: details.effectivePort, username: details.username,
+                                    address: details.address)
         case .passwordOrKey:
             FieldColumn(title: "Password") {
-                OnePasswordPasswordField(title: "Password", text: $details.password)
+                OnePasswordPasswordField(title: "Password", text: $details.password) { reference in
+                    request(.passwordReference(reference))
+                }
             }
             FieldColumn(title: "Key") {
-                Picker("Key", selection: $details.sshKeyID) {
+                Picker("Key", selection: keySelection) {
                     Text("None").tag(UUID?.none)
                     ForEach(details.availableKeys) { key in
                         Text(key.label).tag(UUID?.some(key.id))
@@ -330,9 +348,8 @@ private struct HostDetailsContent: View {
 
     // MARK: 1Password agent
 
-    /// Switching to Identity, or linking one, clears `agentKey` (in `HostDetailsViewModel`). The stored
-    /// password and key are kept while the agent is used (the agent takes precedence), so switching
-    /// back restores them.
+    /// Switching to Identity, or linking one, clears `agentKey` (in `HostDetailsViewModel`). Switching
+    /// to the agent asks whether to remove the saved password and key link (`request`).
     private var loginMethod: Binding<LoginMethod> {
         Binding(get: { LoginMethod(agentKey: details.agentKey) },
                 set: { method in
@@ -340,9 +357,33 @@ private struct HostDetailsContent: View {
                     case .passwordOrKey:
                         details.agentKey = nil
                     case .onePasswordAgent:
-                        if details.agentKey == nil { details.agentKey = AgentKeyChoice(publicKey: nil) }
+                        if details.agentKey == nil { request(.agent(AgentKeyChoice(publicKey: nil))) }
                     }
                 })
+    }
+
+    /// Choosing a key asks whether to remove a saved password; "None" just unlinks the key.
+    private var keySelection: Binding<UUID?> {
+        Binding(get: { details.sshKeyID },
+                set: { keyID in
+                    guard let keyID else {
+                        details.sshKeyID = nil
+                        return
+                    }
+                    if keyID != details.sshKeyID { request(.key(keyID)) }
+                })
+    }
+
+    /// Applies `change` at once when it replaces nothing; otherwise asks first (Cancel changes nothing).
+    private func request(_ change: CredentialChange) {
+        let replaced = details.secretsReplaced(by: change)
+        if replaced.isEmpty {
+            details.apply(change, removingReplaced: false)
+        } else {
+            let name = details.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            pendingChange = PendingCredentialChange(change: change, replaced: replaced,
+                                                    name: name.isEmpty ? details.address : name)
+        }
     }
 
     private func reuseHintCard(_ hint: String) -> some View {

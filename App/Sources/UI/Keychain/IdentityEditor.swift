@@ -43,6 +43,8 @@ private struct IdentityEditorContent: View {
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
+    /// A credential change waiting for "Remove" / "Keep" (it makes saved secrets unneeded).
+    @State private var pendingChange: PendingCredentialChange?
 
     init(model: KeychainViewModel, vault: LocalVault, initial: Identity, onClose: @escaping () -> Void) {
         self.model = model
@@ -100,6 +102,9 @@ private struct IdentityEditorContent: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
+        }
+        .credentialChangeConfirmation($pendingChange) { change, removingReplaced in
+            apply(change, removingReplaced: removingReplaced)
         }
     }
 
@@ -162,8 +167,7 @@ private struct IdentityEditorContent: View {
         }
     }
 
-    /// The stored password and key are kept while the agent is used (the agent takes precedence),
-    /// so switching back restores them.
+    /// Switching to the agent asks whether to remove the saved password and key link (`request`).
     private var loginMethod: Binding<LoginMethod> {
         Binding(get: { LoginMethod(agentKey: draft.agentKey) },
                 set: { method in
@@ -171,18 +175,58 @@ private struct IdentityEditorContent: View {
                     case .passwordOrKey:
                         draft.agentKey = nil
                     case .onePasswordAgent:
-                        if draft.agentKey == nil { draft.agentKey = AgentKeyChoice(publicKey: nil) }
+                        if draft.agentKey == nil { request(.agent(AgentKeyChoice(publicKey: nil))) }
                     }
                 })
+    }
+
+    /// Choosing a key asks whether to remove a saved password; "None" just unlinks the key.
+    private var keySelection: Binding<UUID?> {
+        Binding(get: { draft.sshKeyID },
+                set: { keyID in
+                    guard let keyID else {
+                        draft.sshKeyID = nil
+                        return
+                    }
+                    if keyID != draft.sshKeyID { request(.key(keyID)) }
+                })
+    }
+
+    /// Applies `change` at once when it replaces nothing; otherwise asks first (Cancel changes nothing).
+    private func request(_ change: CredentialChange) {
+        // The view model reads the stored identity: save pending edits first.
+        save(draft)
+        let replaced = model.secretsReplaced(by: change, identityID: draft.id)
+        if replaced.isEmpty {
+            apply(change, removingReplaced: false)
+        } else {
+            let label = draft.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = label.isEmpty ? draft.username : label
+            pendingChange = PendingCredentialChange(change: change, replaced: replaced,
+                                                    name: name.isEmpty ? "this identity" : name)
+        }
+    }
+
+    /// Applies `change` through the view model, then takes over only the credential fields it saved.
+    /// Label and username stay as typed (never reset by a login-method switch).
+    private func apply(_ change: CredentialChange, removingReplaced: Bool) {
+        model.apply(change, identityID: draft.id, removingReplaced: removingReplaced)
+        guard let stored = vault.get(Identity.self, id: draft.id) else { return }
+        draft.password = stored.password
+        draft.sshKeyID = stored.sshKeyID
+        draft.agentKey = stored.agentKey
+        passwordText = stored.password ?? ""
     }
 
     @ViewBuilder
     private var passwordAndKeyFields: some View {
         FieldColumn(title: "Password") {
-            OnePasswordPasswordField(title: "Password", text: $passwordText)
+            OnePasswordPasswordField(title: "Password", text: $passwordText) { reference in
+                request(.passwordReference(reference))
+            }
         }
         FieldColumn(title: "Key") {
-            Picker("Key", selection: $draft.sshKeyID) {
+            Picker("Key", selection: keySelection) {
                 Text("None").tag(UUID?.none)
                 ForEach(availableKeys) { key in
                     Text(key.label.isEmpty ? "Untitled key" : key.label)
