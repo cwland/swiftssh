@@ -515,9 +515,9 @@ struct SnippetsView: View {
 
     private var removalMessage: String {
         if pendingRemoval.count == 1, let id = pendingRemoval.first, let snippet = vault.get(Snippet.self, id: id) {
-            return "\u{201C}\(SnippetCardView.displayName(of: snippet))\u{201D} will be removed from this vault."
+            return "\u{201C}\(SnippetCardView.displayName(of: snippet))\u{201D} will be removed from this vault. You can restore it from Settings \u{2192} Recently Deleted."
         }
-        return "They will be removed from this vault."
+        return "They will be removed from this vault. You can restore them from Settings \u{2192} Recently Deleted."
     }
 
     private func remove(_ ids: [UUID]) {

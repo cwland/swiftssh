@@ -81,7 +81,7 @@ struct GroupDetailsPanel: View {
             Button("Delete group", role: .destructive) { onDelete(group) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Its hosts and groups move up one level; nothing else is deleted.")
+            Text("Its hosts and groups move up one level; nothing else is deleted. You can restore the group from Settings \u{2192} Recently Deleted.")
         }
     }
 
