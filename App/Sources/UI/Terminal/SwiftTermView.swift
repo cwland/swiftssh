@@ -110,8 +110,8 @@ final class TerminalViewStore {
         entries[tab.id] = entry
         let view = entry.view
         view.updateHighlighting(TerminalHighlighting.settings.snapshot)
-        tab.outputSink = { [weak view] bytes in
-            view?.receive(bytes)
+        tab.outputSink = { [weak entry] bytes in
+            entry?.receiveOutput(bytes)
         }
         followSessionEnd(of: tab, view: view)
         return view
@@ -168,8 +168,10 @@ final class TerminalViewStore {
     }
 }
 
-/// Connects a terminal view to its tab's session: keystrokes go to `send`, size changes to
-/// `resize`; ⌘-clicked links open in their default app when `TerminalLinkFilter` allows them.
+/// Connects a terminal view to its tab's session: keystrokes go to `sendInput(fromTab:)` (which also
+/// types them into the other panes of a broadcasting workspace), session output to the view and to
+/// `noteOutput` (a workspace pane's "new output" dot), size changes to `resize`; ⌘-clicked links open
+/// in their default app when `TerminalLinkFilter` allows them.
 @MainActor
 final class TerminalBridge: TerminalViewDelegate {
     let view: SessionTerminalView
@@ -188,6 +190,13 @@ final class TerminalBridge: TerminalViewDelegate {
         }
     }
 
+    /// Session output for this tab: into the view (through keyword highlighting), and noted for the
+    /// pane status dot.
+    func receiveOutput(_ bytes: [UInt8]) {
+        view.receive(bytes)
+        sessions?.noteOutput(tabID: tabID)
+    }
+
     // MARK: TerminalViewDelegate
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
@@ -201,7 +210,7 @@ final class TerminalBridge: TerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        sessions?.send(tabID: tabID, Array(data))
+        sessions?.sendInput(fromTab: tabID, Array(data))
     }
 
     func scrolled(source: TerminalView, position: Double) {}
