@@ -29,6 +29,25 @@ public struct PlainRecord: Codable, Equatable, Sendable {
     public func decode<M: SyncableModel>(_: M.Type) throws -> M {
         try CoreJSON.decoder.decode(M.self, from: payload)
     }
+
+    /// `model` as a record that keeps the fields of `previous` (the stored copy) this app version
+    /// doesn't know, so an older app editing a record a newer one wrote doesn't erase the newer
+    /// settings. A field the model knows always takes the model's value, also when it is now empty
+    /// (cleared). Without such fields the payload is the model's plain encoding.
+    public init<M: SyncableModel>(_ model: M, deviceID: String, keepingUnknownFieldsOf previous: PlainRecord?) throws {
+        try self.init(model, deviceID: deviceID)
+        guard let previous, previous.type == M.recordType,
+              let old = try? JSONSerialization.jsonObject(with: previous.payload) as? [String: Any] else { return }
+        // The models use synthesized Codable: their stored properties are exactly their field names.
+        let known = Set(Mirror(reflecting: model).children.compactMap(\.label))
+        let unknown = old.filter { !known.contains($0.key) }
+        guard !unknown.isEmpty,
+              var merged = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else { return }
+        for (key, value) in unknown where merged[key] == nil {
+            merged[key] = value
+        }
+        payload = try JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys])
+    }
 }
 
 /// The sync server as the engine sees it. Implementations map HTTP 404 on `GET /vault` to

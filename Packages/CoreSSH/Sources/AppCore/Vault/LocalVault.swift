@@ -147,7 +147,7 @@ public final class LocalVault {
         var model = try existing.decode(M.self)
         model.deleted = true
         model.updatedAt = Timestamps.nextUpdate(previous: existing.updatedAt)
-        store(try PlainRecord(model, deviceID: deviceID))
+        store(try PlainRecord(model, deviceID: deviceID, keepingUnknownFieldsOf: existing))
         localChangeHandler?()
         try await enqueuePersist().value
     }
@@ -155,7 +155,8 @@ public final class LocalVault {
     private func apply<M: SyncableModel>(_ model: M) throws -> M {
         var stored = model
         stored.updatedAt = Timestamps.nextUpdate(previous: records[model.id]?.updatedAt)
-        store(try PlainRecord(stored, deviceID: deviceID))
+        // Fields a newer app version wrote are kept (forward-compatible sync).
+        store(try PlainRecord(stored, deviceID: deviceID, keepingUnknownFieldsOf: records[model.id]))
         localChangeHandler?()
         return stored
     }

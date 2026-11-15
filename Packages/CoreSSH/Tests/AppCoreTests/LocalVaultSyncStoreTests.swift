@@ -35,6 +35,63 @@ final class LocalVaultSyncStoreTests: XCTestCase {
         XCTAssertEqual(fresh, [a.id, pulled.id])
     }
 
+    // MARK: Fields from a newer app version (v0.10)
+
+    /// A record as a newer app version would write it: the host plus fields this build doesn't know.
+    private func futureRecord(_ host: Host, extra: [String: Any]) throws -> PlainRecord {
+        var record = try remote(host)
+        var json = try JSONSerialization.jsonObject(with: record.payload) as! [String: Any]
+        for (key, value) in extra { json[key] = value }
+        record.payload = try JSONSerialization.data(withJSONObject: json)
+        return record
+    }
+
+    private func json(of id: UUID, in vault: LocalVault) async throws -> [String: Any] {
+        let record = try XCTUnwrap(vault.syncDirtyRecords().first { $0.id == id })
+        return try JSONSerialization.jsonObject(with: record.payload) as! [String: Any]
+    }
+
+    func testSavingKeepsFieldsThisVersionDoesNotKnow() async throws {
+        let vault = try await open()
+        let host = Host(label: "web", address: "web.lan")
+        try await LocalVaultSyncStore(vault: vault).apply([
+            futureRecord(host, extra: ["futureColor": "teal", "futureFlags": ["a": true, "n": 3]]),
+        ])
+        var edited = try XCTUnwrap(vault.get(Host.self, id: host.id))
+        edited.label = "web 2"
+        try await vault.save(edited)
+        let saved = try await json(of: host.id, in: vault)
+        XCTAssertEqual(saved["label"] as? String, "web 2")
+        XCTAssertEqual(saved["futureColor"] as? String, "teal", "kept for the newer app")
+        let flags = try XCTUnwrap(saved["futureFlags"] as? [String: Any])
+        XCTAssertEqual(flags["a"] as? Bool, true)
+        XCTAssertEqual(flags["n"] as? Int, 3)
+        XCTAssertEqual(vault.get(Host.self, id: host.id)?.label, "web 2", "still reads back")
+    }
+
+    func testClearingAKnownFieldStillClearsIt() async throws {
+        let vault = try await open()
+        var host = Host(label: "web", address: "web.lan")
+        host.themeID = "dracula"
+        try await LocalVaultSyncStore(vault: vault).apply([futureRecord(host, extra: ["futureColor": "teal"])])
+        var edited = try XCTUnwrap(vault.get(Host.self, id: host.id))
+        edited.themeID = nil
+        try await vault.save(edited)
+        let saved = try await json(of: host.id, in: vault)
+        XCTAssertNil(saved["themeID"], "a field this version knows is cleared, not kept")
+        XCTAssertEqual(saved["futureColor"] as? String, "teal")
+        XCTAssertNil(vault.get(Host.self, id: host.id)?.themeID)
+    }
+
+    func testDeletingKeepsUnknownFieldsInTheTombstone() async throws {
+        let vault = try await open()
+        let host = Host(label: "web", address: "web.lan")
+        try await LocalVaultSyncStore(vault: vault).apply([futureRecord(host, extra: ["futureColor": "teal"])])
+        try await vault.delete(Host.self, id: host.id)
+        let saved = try await json(of: host.id, in: vault)
+        XCTAssertEqual(saved["futureColor"] as? String, "teal", "restoring it on a newer Mac gets everything back")
+    }
+
     func testVaultFileWithoutMergeJoinMarkerStillDecodes() async throws {
         let old = VaultFileContents(deviceID: "mac-a")
         var json = try JSONSerialization.jsonObject(with: CoreJSON.encoder.encode(old)) as! [String: Any]
