@@ -103,6 +103,8 @@ struct TopBarView: View {
                 }
                 // Before the spacer, so the tabs get all the room they want (up to their maximum).
                 .layoutPriority(0.5)
+                // With very many tabs the last ones are cut off here, never drawn under "+" and the bell.
+                .clipped()
             }
 
             if showsVaults {
@@ -654,12 +656,14 @@ private struct DropIndicator: View {
 }
 
 /// The tab bar items side by side, every one the same width: the room there is, shared equally, at most
-/// `maximumWidth` each. They shrink together as more open; past about 90 pt each (some ten tabs in a
-/// normal window) they keep shrinking, down to `minimumWidth` (badge and close button only), rather than
-/// running under "+" and the bell.
+/// `maximumWidth` each. They shrink together as more open; below `compactWidth` a pill shows only its
+/// title (no badge, close button or marks), and they keep shrinking down to `minimumWidth`. The strip
+/// never asks for more width than it is offered: past `minimumWidth` each, the last items are cut off
+/// at the strip's end (the bar clips it) rather than running under "+" and the bell.
 struct EqualWidthTabsLayout: Layout {
     static let maximumWidth: CGFloat = 220
-    static let minimumWidth: CGFloat = 48
+    static let compactWidth: CGFloat = 60
+    static let minimumWidth: CGFloat = 24
 
     var spacing: CGFloat
 
@@ -676,7 +680,9 @@ struct EqualWidthTabsLayout: Layout {
         let width = Self.itemWidth(available: proposal.width, count: subviews.count, spacing: spacing)
         let height = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: proposal.height)).height }
             .max() ?? 0
-        return CGSize(width: width * CGFloat(subviews.count) + spacing * CGFloat(subviews.count - 1), height: height)
+        let total = width * CGFloat(subviews.count) + spacing * CGFloat(subviews.count - 1)
+        let offered = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? total
+        return CGSize(width: min(total, offered), height: height)
     }
 
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
@@ -758,13 +764,17 @@ private struct SessionTabPill: View {
     let close: () -> Void
 
     @State private var isHovering = false
+    /// Narrower than `EqualWidthTabsLayout.compactWidth`: title only (close with ⌘W or the tab's menu).
+    @State private var isCompact = false
 
     private static let slotSize: CGFloat = 20
 
     var body: some View {
         HStack(spacing: 8) {
-            leadingSlot
-                .frame(width: Self.slotSize, height: Self.slotSize)
+            if !isCompact {
+                leadingSlot
+                    .frame(width: Self.slotSize, height: Self.slotSize)
+            }
 
             Text(tab.displayTitle.isEmpty ? "Untitled host" : tab.displayTitle)
                 .font(.system(size: Theme.tabFontSize))
@@ -774,12 +784,17 @@ private struct SessionTabPill: View {
                 .accessibilityAction(.default, select)
         }
         .foregroundStyle(Theme.topBarForeground)
-        .padding(.leading, 7)
-        .padding(.trailing, 12)
+        .padding(.leading, isCompact ? 6 : 7)
+        .padding(.trailing, isCompact ? 6 : 12)
         // Fills the width the bar gives every item (`EqualWidthTabsLayout`); the title truncates.
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 34)
+        .onGeometryChange(for: Bool.self) { $0.size.width < EqualWidthTabsLayout.compactWidth } action: {
+            isCompact = $0
+        }
         .background(TabPillBackground(isSelected: isSelected))
+        // Nothing draws past the pill's edge, however narrow it gets.
+        .clipShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         // Dragging the pill moves the tab, never the window.
         .background(WindowDragBlocker())
@@ -833,6 +848,8 @@ private struct WorkspaceTabPill: View {
     let save: () -> Void
 
     @State private var isHovering = false
+    /// Narrower than `EqualWidthTabsLayout.compactWidth`: name only (no close button, marks or dot).
+    @State private var isCompact = false
 
     private static let slotSize: CGFloat = 20
 
@@ -840,8 +857,10 @@ private struct WorkspaceTabPill: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            leadingSlot
-                .frame(width: Self.slotSize, height: Self.slotSize)
+            if !isCompact {
+                leadingSlot
+                    .frame(width: Self.slotSize, height: Self.slotSize)
+            }
 
             Text(workspace.name.isEmpty ? "Workspace" : workspace.name)
                 .font(.system(size: Theme.tabFontSize))
@@ -850,35 +869,22 @@ private struct WorkspaceTabPill: View {
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction(.default, select)
 
-            if workspace.isBroadcasting {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .help("Broadcasting input (\u{2318}B)")
-                    .accessibilityLabel("Broadcasting input")
-            }
-
-            if isUnsaved {
-                Button(action: save) {
-                    Circle()
-                        .fill(Color.gray)
-                        .frame(width: 7, height: 7)
-                        .frame(width: 14, height: 14)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(workspace.templateID == nil ? "Not saved: click to save this workspace (\u{2318}S)"
-                                                  : "Unsaved changes: click to save (\u{2318}S)")
-                .accessibilityLabel("Save workspace")
+            if !isCompact {
+                marks
             }
         }
         .foregroundStyle(Theme.topBarForeground)
-        .padding(.leading, 7)
-        .padding(.trailing, 12)
+        .padding(.leading, isCompact ? 6 : 7)
+        .padding(.trailing, isCompact ? 6 : 12)
         // Fills the width the bar gives every item (`EqualWidthTabsLayout`); the name truncates.
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 34)
+        .onGeometryChange(for: Bool.self) { $0.size.width < EqualWidthTabsLayout.compactWidth } action: {
+            isCompact = $0
+        }
         .background(TabPillBackground(isSelected: isSelected))
+        // Nothing draws past the pill's edge, however narrow it gets.
+        .clipShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         // Dragging the pill moves the tab, never the window.
         .background(WindowDragBlocker())
@@ -887,6 +893,32 @@ private struct WorkspaceTabPill: View {
         .help(workspace.name)
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Close workspace", close)
+    }
+
+    /// The broadcast mark and the unsaved dot (hidden while compact).
+    @ViewBuilder
+    private var marks: some View {
+        if workspace.isBroadcasting {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .help("Broadcasting input (\u{2318}B)")
+                .accessibilityLabel("Broadcasting input")
+        }
+
+        if isUnsaved {
+            Button(action: save) {
+                Circle()
+                    .fill(Color.gray)
+                    .frame(width: 7, height: 7)
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(workspace.templateID == nil ? "Not saved: click to save this workspace (\u{2318}S)"
+                                              : "Unsaved changes: click to save (\u{2318}S)")
+            .accessibilityLabel("Save workspace")
+        }
     }
 
     @ViewBuilder

@@ -241,12 +241,22 @@ final class AppEnvironment {
     /// (the workspace turns back into a plain tab when one is left). When that pane is the one before
     /// the last, the workspace has unsaved changes and "Ask to save workspaces when closing" is on, its
     /// window's tab bar first asks Save / Don't Save / Cancel (`closingPaneRequest`); the pane closes
-    /// after Save or Don't Save (`closeTabWithoutAsking`).
+    /// after Save or Don't Save (`closeTabWithoutAsking`). If no tab bar takes the request soon
+    /// (no window shows that workspace), the pane closes without asking, so a stale request never
+    /// blocks closing it again or pops up later in a window that opens.
     func closeTab(tabID: UUID) {
         guard let sessions else { return }
         if sessions.workspaceToSaveBeforeClosing(pane: tabID,
                                                  asksToSave: connectionSettings.askToSaveWorkspaces) != nil {
+            closingPaneRequestCount += 1
+            let request = closingPaneRequestCount
             closingPaneRequest = tabID
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: Self.closingPaneRequestTimeout)
+                guard let self, self.closingPaneRequestCount == request, self.closingPaneRequest == tabID else { return }
+                self.closingPaneRequest = nil
+                self.closeTabWithoutAsking(tabID: tabID)
+            }
             return
         }
         closeTabWithoutAsking(tabID: tabID)
@@ -254,6 +264,10 @@ final class AppEnvironment {
 
     /// A pane waiting for the tab bar's Save / Don't Save / Cancel before it closes (see `closeTab`).
     var closingPaneRequest: UUID?
+    /// Tells a request apart from a later one for the same pane (see `closeTab`).
+    @ObservationIgnored private var closingPaneRequestCount = 0
+    /// How long a tab bar has to take a `closingPaneRequest` before the pane closes without asking.
+    private static let closingPaneRequestTimeout: Duration = .milliseconds(300)
 
     /// Closes the tab or pane at once, never asking.
     func closeTabWithoutAsking(tabID: UUID) {

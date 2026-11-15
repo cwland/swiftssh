@@ -545,7 +545,6 @@ private struct HostDetailsContent: View {
     }
 }
 
-/// A white rounded card holding a column of fields.
 /// A snippet as the startup snippet pickers list it: "Name – Snippet group" when it is in a snippet
 /// group, else "Name".
 func startupSnippetPickerTitle(_ snippet: Snippet) -> String {
@@ -554,6 +553,7 @@ func startupSnippetPickerTitle(_ snippet: Snippet) -> String {
     return "\(name) \u{2013} \(group)"
 }
 
+/// A white rounded card holding a column of fields.
 struct DetailsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
