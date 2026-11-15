@@ -30,7 +30,44 @@ final class HTTPSyncTransportTests: XCTestCase {
         for request in [t.makeRequest(method: "GET", path: "/v1/vault"),
                         t.makeRequest(method: "POST", path: "/v1/records", body: Data("{}".utf8))] {
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer secret-key")
-            XCTAssertEqual(request.timeoutInterval, 30)
+            XCTAssertEqual(request.timeoutInterval, 20)
+        }
+    }
+
+    func testPathPrefixWithoutTrailingSlashIsKept() {
+        let request = transport("https://h/sync").makeRequest(method: "GET", path: "/v1/records")
+        XCTAssertEqual(request.url?.absoluteString, "https://h/sync/v1/records")
+    }
+
+    func testHealthRequestHasNoAuthorization() {
+        let request = transport("https://h/sync/", key: "secret-key")
+            .makeRequest(method: "GET", path: "/health", authenticated: false)
+        XCTAssertEqual(request.url?.absoluteString, "https://h/sync/health")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        XCTAssertEqual(request.timeoutInterval, 20)
+    }
+
+    func testUnauthorizedAndForbiddenMapToUnauthorized() {
+        XCTAssertEqual(HTTPSyncTransport.statusError(401, Data()) as? SyncTransportError, .unauthorized)
+        XCTAssertEqual(HTTPSyncTransport.statusError(403, Data()) as? SyncTransportError, .unauthorized)
+        XCTAssertNil(HTTPSyncTransport.statusError(204, Data()))
+        XCTAssertEqual(HTTPSyncTransport.statusError(502, Data(#"{"error":"Bad gateway"}"#.utf8)) as? SyncTransportError,
+                       .http(status: 502, message: "Bad gateway"))
+    }
+
+    func testConnectionFailureMapsToUnreachableWithoutTheKey() async {
+        // Port 1 on loopback: nothing listens, so the connection is refused at once.
+        let t = transport("http://127.0.0.1:1", key: "secret-key-123")
+        for call in [{ _ = try await t.getVault() }, { try await t.health() }] as [() async throws -> Void] {
+            do {
+                try await call()
+                XCTFail("expected unreachable")
+            } catch SyncTransportError.unreachable(let message) {
+                XCTAssertFalse(message.isEmpty)
+                XCTAssertFalse(message.contains("secret-key-123"))
+            } catch {
+                XCTFail("unexpected \(error)")
+            }
         }
     }
 }

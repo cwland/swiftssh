@@ -51,7 +51,7 @@ let package = Package(
             resources: [.copy("Resources/os-catalog.json"), .copy("Resources/os-catalog-app.json")]
         ),
         .target(name: "SyncTestSupport", dependencies: ["SyncCore", "CoreModels"]),
-        .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore", "SSHCore"]),
+        .testTarget(name: "AppCoreTests", dependencies: ["AppCore", "CoreModels", "SyncCore", "SSHCore", "SyncTestSupport"]),
         .testTarget(
             name: "SSHCoreTests",
             dependencies: [
