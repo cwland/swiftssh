@@ -39,6 +39,7 @@ public enum DroppedConnectionDetection: String, CaseIterable, Codable, Sendable 
 public final class ConnectionSettings {
     static let detectionKey = "connection.droppedConnectionDetection"
     static let autoReconnectKey = "connection.autoReconnect"
+    static let askToSaveWorkspacesKey = "workspaces.askToSaveOnClose"
 
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -51,10 +52,18 @@ public final class ConnectionSettings {
         didSet { defaults.set(autoReconnect, forKey: Self.autoReconnectKey) }
     }
 
-    /// A missing or unknown stored detection is `.normal`; a missing auto-reconnect choice is on.
+    /// "Ask to save workspaces when closing": closing a workspace with unsaved changes asks Save / Don't
+    /// Save / Cancel first.
+    public var askToSaveWorkspaces: Bool {
+        didSet { defaults.set(askToSaveWorkspaces, forKey: Self.askToSaveWorkspacesKey) }
+    }
+
+    /// A missing or unknown stored detection is `.normal`; missing auto-reconnect and ask-to-save
+    /// choices are on.
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         detection = defaults.string(forKey: Self.detectionKey).flatMap(DroppedConnectionDetection.init(rawValue:)) ?? .normal
         autoReconnect = defaults.object(forKey: Self.autoReconnectKey) as? Bool ?? true
+        askToSaveWorkspaces = defaults.object(forKey: Self.askToSaveWorkspacesKey) as? Bool ?? true
     }
 }

@@ -1,9 +1,9 @@
 import SwiftUI
 import AppCore
 
-/// Settings → Connection: how quickly a dropped connection is noticed. One radio row per
-/// `DroppedConnectionDetection` case; the choice is saved by `ConnectionSettings` and applies to
-/// sessions opened afterwards.
+/// Settings → Connection: reconnecting, how quickly a dropped connection is noticed (one radio row per
+/// `DroppedConnectionDetection` case, applied to sessions opened afterwards), and whether closing an
+/// unsaved workspace asks to save it. Saved by `ConnectionSettings`, on this Mac only.
 struct ConnectionSettingsPane: View {
     let settings: ConnectionSettings
 
@@ -44,6 +44,26 @@ struct ConnectionSettingsPane: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                Text("Workspaces")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                Toggle(isOn: Binding(get: { settings.askToSaveWorkspaces },
+                                     set: { settings.askToSaveWorkspaces = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ask to save workspaces when closing")
+                            .font(.system(size: Theme.cardTitleFontSize))
+                        Text("Closing a split view workspace with unsaved changes asks whether to save it first.")
+                            .font(.system(size: Theme.cardSubtitleFontSize))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)

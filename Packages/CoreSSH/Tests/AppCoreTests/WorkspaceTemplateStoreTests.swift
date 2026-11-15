@@ -205,6 +205,35 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertEqual(try store.save(opened, sessions: manager).layout, template.layout)
     }
 
+    func testRenamingAnOpenWorkspaceRenamesItsSavedCopyWithoutMarkingItUnsaved() async throws {
+        let (ws, _, _) = try sampleWorkspace()
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        let template = try store.save(ws, sessions: manager)
+        XCTAssertFalse(ws.hasUnsavedChanges)
+
+        try store.rename(ws, to: "  Staging ", sessions: manager)
+        XCTAssertEqual(ws.name, "Staging")
+        XCTAssertEqual(store.templates.first { $0.id == template.id }?.name, "Staging")
+        XCTAssertFalse(ws.hasUnsavedChanges, "the saved copy has the new name too")
+        XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates.first?.name, "Staging", "written to the file")
+
+        // Other unsaved changes stay unsaved.
+        manager.setViewMode(.split, for: ws.id)
+        XCTAssertTrue(ws.hasUnsavedChanges)
+        try store.rename(ws, to: "Prod 2", sessions: manager)
+        XCTAssertTrue(ws.hasUnsavedChanges)
+        XCTAssertEqual(store.templates.first?.name, "Prod 2")
+    }
+
+    func testRenamingANeverSavedWorkspaceOnlyRenamesIt() async throws {
+        let (ws, _, _) = try sampleWorkspace()
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        try store.rename(ws, to: "Lab", sessions: manager)
+        XCTAssertEqual(ws.name, "Lab")
+        XCTAssertTrue(store.templates.isEmpty)
+        XCTAssertTrue(ws.hasUnsavedChanges)
+    }
+
     func testOpenTemplateWithAMissingHostOpensItDisconnected() async throws {
         let a = host("A")
         let template = WorkspaceTemplate(id: UUID(), name: "W",

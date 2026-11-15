@@ -39,6 +39,10 @@ struct TopBarView: View {
     var saveWorkspace: (Workspace) throws -> Void = { _ in }
     /// Close Workspace: ends all its sessions.
     var closeWorkspace: (UUID) -> Void = { _ in }
+    /// Rename Workspace: renames it and, when it has a saved copy, that copy too.
+    var renameWorkspace: (Workspace, String) throws -> Void = { workspace, name in workspace.name = name }
+    /// Settings → "Ask to save workspaces when closing".
+    var asksToSaveWorkspaces: () -> Bool = { false }
     /// Opens a saved workspace (each pane connects).
     var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
 
@@ -51,6 +55,8 @@ struct TopBarView: View {
     @State private var renamingTabID: UUID?
     @State private var renameText = ""
     @State private var renamingWorkspaceID: UUID?
+    /// A workspace with unsaved changes waiting for Save / Don't Save / Cancel before it closes.
+    @State private var closingWorkspaceID: UUID?
     @State private var templateToRename: WorkspaceTemplate?
     @State private var templateToDelete: WorkspaceTemplate?
     @State private var errorTitle = ""
@@ -115,8 +121,11 @@ struct TopBarView: View {
             TextField("Workspace name", text: $renameText)
             Button("Rename") {
                 if let id = renamingWorkspaceID, let workspace = sessions?.workspace(id) {
-                    let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
-                    workspace.name = trimmed.isEmpty ? "Workspace" : trimmed
+                    do {
+                        try renameWorkspace(workspace, renameText)
+                    } catch {
+                        present(error, title: "The saved workspace couldn\u{2019}t be renamed")
+                    }
                 }
                 renamingWorkspaceID = nil
             }
@@ -125,7 +134,30 @@ struct TopBarView: View {
                 renamingWorkspaceID = nil
             }
         } message: {
-            Text("Save the workspace (\u{2318}S) to keep the new name in its template.")
+            Text("A saved workspace is renamed in Saved Workspaces too.")
+        }
+        .alert(closingWorkspaceTitle, isPresented: closeWorkspaceBinding) {
+            Button("Save") {
+                if let workspace = closingWorkspace {
+                    closingWorkspaceID = nil
+                    do {
+                        try saveWorkspace(workspace)
+                        closeWorkspace(workspace.id)
+                    } catch {
+                        present(error, title: "The workspace couldn\u{2019}t be saved")
+                    }
+                }
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Don\u{2019}t Save", role: .destructive) {
+                if let id = closingWorkspaceID { closeWorkspace(id) }
+                closingWorkspaceID = nil
+            }
+            Button("Cancel", role: .cancel) {
+                closingWorkspaceID = nil
+            }
+        } message: {
+            Text("Its layout, sizes and tab names can be reopened from Saved Workspaces. Closing ends all its sessions.")
         }
         .savedWorkspaceDialogs(store: workspaceTemplates, renaming: $templateToRename,
                                deleting: $templateToDelete) { error, title in
@@ -173,7 +205,7 @@ struct TopBarView: View {
                     workspace: workspace,
                     isSelected: selectedTabID.map { workspace.paneIDs.contains($0) } ?? false,
                     select: { selectItem(item) },
-                    close: { closeWorkspace(workspace.id) },
+                    close: { requestClose(workspace) },
                     save: { save(workspace) }
                 )
                 .overlay(alignment: dropIndicatorEdge(for: index, in: strip)) {
@@ -256,6 +288,28 @@ struct TopBarView: View {
         }
     }
 
+    /// Closes the workspace, first asking Save / Don't Save / Cancel when it has unsaved changes and
+    /// the setting is on.
+    private func requestClose(_ workspace: Workspace) {
+        if asksToSaveWorkspaces() && workspace.hasUnsavedChanges {
+            closingWorkspaceID = workspace.id
+        } else {
+            closeWorkspace(workspace.id)
+        }
+    }
+
+    private var closingWorkspace: Workspace? {
+        closingWorkspaceID.flatMap { sessions?.workspace($0) }
+    }
+
+    private var closingWorkspaceTitle: String {
+        "Save \u{201C}\(closingWorkspace?.name ?? "Workspace")\u{201D} before closing?"
+    }
+
+    private var closeWorkspaceBinding: Binding<Bool> {
+        Binding(get: { closingWorkspaceID != nil }, set: { if !$0 { closingWorkspaceID = nil } })
+    }
+
     private func save(_ workspace: Workspace) {
         do {
             try saveWorkspace(workspace)
@@ -324,7 +378,7 @@ struct TopBarView: View {
         }
         Divider()
         Button("Close Workspace") {
-            closeWorkspace(workspace.id)
+            requestClose(workspace)
         }
     }
 

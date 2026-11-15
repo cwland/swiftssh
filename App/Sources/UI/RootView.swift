@@ -81,6 +81,8 @@ struct RootView: View {
                 splitTab: { try environment.splitTab($0, at: $1) },
                 saveWorkspace: { try environment.saveWorkspace($0) },
                 closeWorkspace: { environment.closeWorkspace($0) },
+                renameWorkspace: { try environment.renameWorkspace($0, to: $1) },
+                asksToSaveWorkspaces: { environment.connectionSettings.askToSaveWorkspaces },
                 openTemplate: { try environment.openWorkspaceTemplate($0) }
             )
             Group {

@@ -70,4 +70,11 @@ final class ConnectionSettingsTests: XCTestCase {
         XCTAssertEqual(defaults.object(forKey: "connection.autoReconnect") as? Bool, true)
         XCTAssertTrue(ConnectionSettings(defaults: defaults).autoReconnect)
     }
+
+    func testAskToSaveWorkspacesDefaultsOnAndPersists() async {
+        let settings = ConnectionSettings(defaults: defaults)
+        XCTAssertTrue(settings.askToSaveWorkspaces)
+        settings.askToSaveWorkspaces = false
+        XCTAssertFalse(ConnectionSettings(defaults: defaults).askToSaveWorkspaces)
+    }
 }

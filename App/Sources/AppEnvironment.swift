@@ -372,6 +372,12 @@ final class AppEnvironment {
         return try workspaceTemplates.save(workspace, sessions: sessions)
     }
 
+    /// Renames an open workspace and its saved copy, if it has one.
+    func renameWorkspace(_ workspace: Workspace, to name: String) throws {
+        guard let sessions else { return }
+        try workspaceTemplates.rename(workspace, to: name, sessions: sessions)
+    }
+
     /// Opens a saved workspace (each pane connects) in the main window and shows it.
     func openWorkspaceTemplate(_ template: WorkspaceTemplate) throws {
         guard let sessions else { return }

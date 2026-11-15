@@ -135,6 +135,12 @@ public final class Workspace: Identifiable {
         refreshUnsavedChanges()
     }
 
+    /// The saved copy was renamed to the current name (other unsaved changes stay unsaved).
+    func markNameSaved() {
+        saved?.name = name
+        refreshUnsavedChanges()
+    }
+
     func refreshUnsavedChanges() {
         let unsaved = saved.map { $0 != snapshot() } ?? true
         if unsaved != hasUnsavedChanges { hasUnsavedChanges = unsaved }

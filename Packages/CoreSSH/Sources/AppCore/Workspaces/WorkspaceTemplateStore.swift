@@ -139,6 +139,16 @@ public final class WorkspaceTemplateStore {
         try write(updated)
     }
 
+    /// Renames an open workspace (a blank name becomes "Workspace") and, when it came from or was saved
+    /// to a template still here, that template too: the saved copy keeps the same name, so the rename
+    /// alone doesn't count as an unsaved change.
+    public func rename(_ workspace: Workspace, to name: String, sessions: SessionManager) throws {
+        sessions.renameWorkspace(workspace.id, to: name)
+        guard let templateID = workspace.templateID, templates.contains(where: { $0.id == templateID }) else { return }
+        try rename(templateID, to: workspace.name)
+        workspace.markNameSaved()
+    }
+
     /// Deletes a template. Unknown ids are ignored. Open workspaces made from it are left alone.
     public func delete(_ id: UUID) throws {
         guard templates.contains(where: { $0.id == id }) else { return }
