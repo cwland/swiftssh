@@ -116,6 +116,33 @@ public final class KeychainViewModel {
         vault.saveNow(current)
     }
 
+    /// The saved secrets of the identity that `change` makes unnecessary; empty when it is missing or deleted.
+    public func secretsReplaced(by change: CredentialChange, identityID: UUID) -> ReplacedSecrets {
+        guard let identity = vault.get(Identity.self, id: identityID) else {
+            return ReplacedSecrets(password: false, keyLink: false)
+        }
+        return Self.loginFields(of: identity).replaced(by: change)
+    }
+
+    /// Switches the identity's login to `change` and saves at once. With `removingReplaced`, the secrets
+    /// `secretsReplaced(by:identityID:)` reports are removed too; otherwise they stay stored. The username
+    /// and label are never touched, and a Keychain key item is never deleted. Does nothing when the
+    /// identity is missing or deleted.
+    public func apply(_ change: CredentialChange, identityID: UUID, removingReplaced: Bool) {
+        guard var identity = vault.get(Identity.self, id: identityID) else { return }
+        let before = identity
+        var fields = Self.loginFields(of: identity)
+        fields.apply(change, removingReplaced: removingReplaced)
+        identity.password = fields.password
+        identity.sshKeyID = fields.sshKeyID
+        identity.agentKey = fields.agentKey
+        if identity != before { vault.saveNow(identity) }
+    }
+
+    private static func loginFields(of identity: Identity) -> LoginFields {
+        LoginFields(password: identity.password, sshKeyID: identity.sshKeyID, agentKey: identity.agentKey)
+    }
+
     public func deleteIdentity(id: UUID) async throws {
         try await vault.deleteIdentity(id: id)
     }
