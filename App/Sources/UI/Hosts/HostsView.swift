@@ -212,7 +212,8 @@ struct HostsView: View {
                         }
                         .contextMenu {
                             Button("Theme\u{2026}") {
-                                themeGroupID = group.id
+                                // After the context menu has closed, so the popover can present.
+                                DispatchQueue.main.async { themeGroupID = group.id }
                             }
                             Button("Rename") {
                                 groupToRename = group

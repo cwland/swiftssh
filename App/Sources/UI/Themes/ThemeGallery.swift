@@ -52,7 +52,7 @@ struct ThemeGallery: View {
     }
 }
 
-/// One gallery card: the swatch tile, then the name with "Dark"/"Light" (or "Default · <name>")
+/// One gallery card: the swatch tile, then the name with "Dark"/"Light" (or "Uses <name>")
 /// under it. The selected card has an accent ring around its tile.
 struct ThemeCard: View {
     /// Drawn in the tile; nil = Automatic (light and dark split on the diagonal).
@@ -82,7 +82,7 @@ struct ThemeCard: View {
         swatchTheme = inherited
         title = "Default"
         let name = inherited?.name ?? "Automatic"
-        subtitle = "Default \u{00B7} \(name)"
+        subtitle = "Uses \(name)"
         helpText = inherited == nil
             ? "Default \u{2014} Automatic: Reimagined Light or Reimagined Dark, following the appearance"
             : "Default \u{2014} uses \(name)"
