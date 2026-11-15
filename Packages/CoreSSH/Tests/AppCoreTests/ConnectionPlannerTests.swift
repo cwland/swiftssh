@@ -351,6 +351,42 @@ final class ConnectionPlannerTests: XCTestCase {
         guard case .password("groupPW") = plan.credential else { return XCTFail("\(plan.credential)") }
     }
 
+    func testPublicCredentialResolutionReturnsTheGroupIdentitysUsernameAndAgentKey() async throws {
+        let vault = try await makeVault()
+        let choice = AgentKeyChoice(publicKey: nil)
+        let identity = try await vault.save(Identity(label: "g", username: "groupUser", agentKey: choice))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: identity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                  prefersIdentity: true))
+        let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
+        let resolved = CredentialResolution.resolve(host: host, directory: directory, vault: vault)
+        XCTAssertEqual(resolved.username, "groupUser")
+        XCTAssertEqual(resolved.agentKey, choice)
+        XCTAssertEqual(resolved.identity?.id, identity.id)
+    }
+
+    func testIdentityModeHostWithoutAnyIdentityReportsIdentityNotChosen() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "Box", address: "h", username: "root", prefersIdentity: true))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: host.id, vault: vault)) { error in
+            XCTAssertEqual(error.localizedDescription,
+                           "\u{201C}Box\u{201D} is set to use an identity, but none is chosen. Choose an identity in Host Details.")
+        }
+        let blank = try await vault.save(SavedHost(label: "  ", address: "h", prefersIdentity: true))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: blank.id, vault: vault)) { error in
+            XCTAssertEqual(error.localizedDescription,
+                           "\u{201C}Untitled host\u{201D} is set to use an identity, but none is chosen. Choose an identity in Host Details.")
+        }
+    }
+
+    func testIdentityModeHostWithADeletedIdentityReportsIdentityNotChosen() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "Box", address: "h", identityID: UUID(), prefersIdentity: true))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: host.id, vault: vault)) { error in
+            XCTAssertEqual(error as? ConnectionPlanError, .identityNotChosen(hostLabel: "Box"))
+        }
+    }
+
     func testIdentityModeHostWithoutAGroupDefaultIgnoresItsOwnFields() async throws {
         let vault = try await makeVault()
         let host = try await vault.save(SavedHost(label: "H", address: "h", username: "root", password: "pw",

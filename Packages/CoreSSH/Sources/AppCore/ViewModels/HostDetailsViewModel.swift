@@ -207,21 +207,30 @@ public final class HostDetailsViewModel {
         }
     }
 
-    /// Empty text is stored as nil.
+    /// Empty text is stored as nil. Writing the value already stored does nothing (no unlink, no save).
     public var username: String {
         get { host?.username ?? "" }
-        set { updateDirect(isEmpty: newValue.isEmpty) { $0.username = Self.nonEmpty(newValue) } }
+        set {
+            guard Self.nonEmpty(newValue) != host?.username else { return }
+            updateDirect(isEmpty: newValue.isEmpty) { $0.username = Self.nonEmpty(newValue) }
+        }
     }
 
     /// Empty text is stored as nil.
     public var password: String {
         get { host?.password ?? "" }
-        set { updateDirect(isEmpty: newValue.isEmpty) { $0.password = Self.nonEmpty(newValue) } }
+        set {
+            guard Self.nonEmpty(newValue) != host?.password else { return }
+            updateDirect(isEmpty: newValue.isEmpty) { $0.password = Self.nonEmpty(newValue) }
+        }
     }
 
     public var sshKeyID: UUID? {
         get { host?.sshKeyID }
-        set { updateDirect(isEmpty: newValue == nil) { $0.sshKeyID = newValue } }
+        set {
+            guard newValue != host?.sshKeyID else { return }
+            updateDirect(isEmpty: newValue == nil) { $0.sshKeyID = newValue }
+        }
     }
 
     /// Non-nil = log in with the 1Password SSH agent (`publicKey` nil = any agent key). Setting a
