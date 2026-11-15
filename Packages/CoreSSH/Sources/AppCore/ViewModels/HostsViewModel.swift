@@ -396,6 +396,46 @@ public final class HostsViewModel {
         try await vault.save(group)
     }
 
+    // MARK: Startup snippet
+
+    /// The group's own startup snippet; nil = Default (also for a deleted snippet or a missing group).
+    public func startupSnippetID(ofGroup id: UUID) -> UUID? {
+        _ = vault.revision
+        guard let snippetID = vault.get(HostGroup.self, id: id)?.startupSnippetID,
+              vault.get(Snippet.self, id: snippetID) != nil else { return nil }
+        return snippetID
+    }
+
+    /// What "Default" means for the group: its parents' snippet, e.g. "Default (from group “Ops”: Update)".
+    public func inheritedStartupSnippetSummary(ofGroup id: UUID) -> String {
+        _ = vault.revision
+        let directory = HostDirectory(hosts: [], groups: vault.all(HostGroup.self))
+        let parentID = vault.get(HostGroup.self, id: id)?.parentID
+        let inherited = directory.inheritedStartupSnippet(fromGroup: parentID) { vault.get(Snippet.self, id: $0) != nil }
+        return StartupSnippetLabels.defaultSummary(
+            inherited, snippetName: inherited.flatMap { vault.get(Snippet.self, id: $0.snippetID)?.name })
+    }
+
+    /// nil = Default (the parent's). Saves through the vault (syncs) only when it changes; a missing
+    /// group is left alone.
+    public func setStartupSnippet(_ snippetID: UUID?, forGroup id: UUID) async throws {
+        guard var group = vault.get(HostGroup.self, id: id), group.startupSnippetID != snippetID else { return }
+        group.startupSnippetID = snippetID
+        try await vault.save(group)
+    }
+
+    /// Snippets that can be a startup snippet (no placeholders), A–Z.
+    public func startupCandidates() -> [Snippet] {
+        _ = vault.revision
+        return SnippetsViewModel(vault: vault).startupCandidates()
+    }
+
+    /// Snippets left out of `startupCandidates()` because they have placeholders.
+    public var hiddenStartupSnippetCount: Int {
+        _ = vault.revision
+        return vault.all(Snippet.self).filter { SnippetTemplate($0.script).hasPlaceholders }.count
+    }
+
     /// Moves the group's hosts and subgroups up one level, then deletes the group.
     public func deleteGroup(id: UUID) async throws {
         try await vault.deleteGroup(id: id)

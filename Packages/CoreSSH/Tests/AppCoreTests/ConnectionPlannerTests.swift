@@ -159,6 +159,33 @@ final class ConnectionPlannerTests: XCTestCase {
         XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
     }
 
+    func testStartupSnippetComesFromTheNearestGroupUnlessTheHostSaysNone() async throws {
+        let vault = try await makeVault()
+        let groupSnippet = try await vault.save(Snippet(name: "g", script: "cd /srv"))
+        let own = try await vault.save(Snippet(name: "own", script: "uptime"))
+        let parent = try await vault.save(HostGroup(name: "P", startupSnippetID: groupSnippet.id))
+        let child = try await vault.save(HostGroup(name: "C", parentID: parent.id))
+        let inheriting = try await vault.save(SavedHost(label: "I", address: "a", groupID: child.id, username: "u"))
+        let none = try await vault.save(SavedHost(label: "N", address: "a", groupID: child.id, username: "u",
+                                                  startupSnippetOff: true))
+        let mine = try await vault.save(SavedHost(label: "M", address: "a", groupID: child.id, username: "u",
+                                                  startupSnippetID: own.id))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: inheriting.id, vault: vault).startupScript, "cd /srv")
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: none.id, vault: vault).startupScript)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: mine.id, vault: vault).startupScript, "uptime")
+        try await vault.delete(Snippet.self, id: own.id)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: mine.id, vault: vault).startupScript, "cd /srv",
+                       "a deleted own snippet falls back to the group's")
+    }
+
+    func testGroupStartupSnippetWithPlaceholdersIsNotTyped() async throws {
+        let vault = try await makeVault()
+        let snippet = try await vault.save(Snippet(name: "s", script: "cd {{dir}}"))
+        let group = try await vault.save(HostGroup(name: "G", startupSnippetID: snippet.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, username: "u"))
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
+    }
+
     func testStartupSnippetWithPlaceholdersIsNotTyped() async throws {
         let vault = try await makeVault()
         let snippet = try await vault.save(Snippet(name: "s", script: "cd {{dir}}"))

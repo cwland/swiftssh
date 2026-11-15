@@ -99,15 +99,19 @@ public struct HostGroup: SyncableModel {
     public var defaultThemeID: String?
     /// Attach to tmux for the group's hosts that inherit; nil (or `.inherit`) = the parent's choice.
     public var defaultTmuxSession: TmuxChoice?
+    /// The snippet typed after login for the group's hosts that have none of their own; nil (or a
+    /// missing snippet) = the parent's. Absent on records written before v0.11.0 (decodes as nil).
+    public var startupSnippetID: UUID?
     public var updatedAt: Date
     public var deleted: Bool
 
     public init(id: UUID = UUID(), name: String, parentID: UUID? = nil, defaultIdentityID: UUID? = nil,
                 defaultPort: Int? = nil, defaultThemeID: String? = nil, defaultTmuxSession: TmuxChoice? = nil,
-                updatedAt: Date = Date(), deleted: Bool = false) {
+                startupSnippetID: UUID? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.name = name; self.parentID = parentID
         self.defaultIdentityID = defaultIdentityID; self.defaultPort = defaultPort
         self.defaultThemeID = defaultThemeID; self.defaultTmuxSession = defaultTmuxSession
+        self.startupSnippetID = startupSnippetID
         self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
@@ -134,7 +138,12 @@ public struct Host: SyncableModel {
     public var osBadge: OSBadge?
     public var osBadgeIsManual: Bool
     public var themeID: String?
+    /// The snippet typed after login; nil (or a missing snippet) = the nearest group's, unless
+    /// `startupSnippetOff`.
     public var startupSnippetID: UUID?
+    /// true = "None": run no startup snippet, not even a group's. A snippet in `startupSnippetID`
+    /// still wins. nil/false = Default. Absent on records written before v0.11.0.
+    public var startupSnippetOff: Bool?
     public var lastConnectedAt: Date?
     /// nil/false = built-in engine unless the credential forces system ssh; true = always use /usr/bin/ssh.
     public var useSystemSSH: Bool?
@@ -147,7 +156,8 @@ public struct Host: SyncableModel {
                 tags: [String] = [], username: String? = nil, identityID: UUID? = nil, password: String? = nil,
                 sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil, prefersIdentity: Bool? = nil,
                 osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
-                themeID: String? = nil, startupSnippetID: UUID? = nil, lastConnectedAt: Date? = nil,
+                themeID: String? = nil, startupSnippetID: UUID? = nil, startupSnippetOff: Bool? = nil,
+                lastConnectedAt: Date? = nil,
                 useSystemSSH: Bool? = nil, tmuxSession: TmuxChoice? = nil,
                 updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.address = address; self.port = port
@@ -155,7 +165,8 @@ public struct Host: SyncableModel {
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
         self.agentKey = agentKey; self.prefersIdentity = prefersIdentity
         self.osBadge = osBadge; self.osBadgeIsManual = osBadgeIsManual; self.themeID = themeID
-        self.startupSnippetID = startupSnippetID; self.lastConnectedAt = lastConnectedAt
+        self.startupSnippetID = startupSnippetID; self.startupSnippetOff = startupSnippetOff
+        self.lastConnectedAt = lastConnectedAt
         self.useSystemSSH = useSystemSSH; self.tmuxSession = tmuxSession
         self.updatedAt = updatedAt; self.deleted = deleted
     }

@@ -67,6 +67,39 @@ public struct HostDirectory: Sendable {
         return InheritedTmux(choice: .inherit, groupName: nil)
     }
 
+    // MARK: Startup snippet
+
+    /// The snippet to type after login, or nil = none: the host's own when `isAvailable` (the snippet
+    /// exists), else nothing when the host chose None (`startupSnippetOff`), else
+    /// `inheritedStartupSnippet(for:isAvailable:)`. Whether its script can run (no placeholders) is
+    /// for the caller to check.
+    public func effectiveStartupSnippetID(for host: Host, isAvailable: (UUID) -> Bool) -> UUID? {
+        if let own = host.startupSnippetID, isAvailable(own) { return own }
+        if host.startupSnippetOff == true { return nil }
+        return inheritedStartupSnippet(for: host, isAvailable: isAvailable)?.snippetID
+    }
+
+    /// What "Default" means for the host's startup snippet: its groups' choice, the host's own left out.
+    public func inheritedStartupSnippet(for host: Host, isAvailable: (UUID) -> Bool) -> InheritedStartupSnippet? {
+        inheritedStartupSnippet(fromGroup: host.groupID, isAvailable: isAvailable)
+    }
+
+    /// The first group from `groupID` up the parent chain whose `startupSnippetID` is available (a
+    /// missing snippet counts as unset, so the walk goes on), with that group's name; nil = none.
+    /// Cycle-safe; the walk ends at a deleted or missing group, as for tmux.
+    public func inheritedStartupSnippet(fromGroup groupID: UUID?,
+                                        isAvailable: (UUID) -> Bool) -> InheritedStartupSnippet? {
+        var visited: Set<UUID> = []
+        var next = groupID
+        while let id = next, visited.insert(id).inserted, let group = groupsByID[id] {
+            if let snippetID = group.startupSnippetID, isAvailable(snippetID) {
+                return InheritedStartupSnippet(snippetID: snippetID, groupName: group.name)
+            }
+            next = group.parentID
+        }
+        return nil
+    }
+
     /// nil = all hosts; otherwise hosts in the group and all its descendants.
     public func hosts(inGroup groupID: UUID?) -> [Host] {
         guard let groupID else { return hosts }
@@ -115,6 +148,17 @@ public struct InheritedTmux: Equatable, Sendable {
 
     public init(choice: TmuxChoice, groupName: String?) {
         self.choice = choice
+        self.groupName = groupName
+    }
+}
+
+/// A startup snippet inherited from a group: the snippet and the name of the group that sets it.
+public struct InheritedStartupSnippet: Equatable, Sendable {
+    public var snippetID: UUID
+    public var groupName: String
+
+    public init(snippetID: UUID, groupName: String) {
+        self.snippetID = snippetID
         self.groupName = groupName
     }
 }

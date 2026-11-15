@@ -2,8 +2,8 @@ import SwiftUI
 import AppCore
 import CoreModels
 
-/// The right-hand Group panel (a group card's pencil, or Edit Group): name, parent group, theme
-/// and tmux for the group's hosts, and Delete. Each change saves at once through `HostsViewModel`.
+/// The right-hand Group panel (a group card's pencil, or Edit Group): name, parent group, theme,
+/// tmux and startup snippet for the group's hosts, and Delete. Each change saves at once through `HostsViewModel`.
 /// Create one panel per group (`.id(groupID)`).
 struct GroupDetailsPanel: View {
     let model: HostsViewModel
@@ -49,8 +49,9 @@ struct GroupDetailsPanel: View {
                                 Button("Change\u{2026}") { showTmux = true }
                             }
                         }
+                        startupSnippetField
                     }
-                    Text("Hosts in this group that use Default take its theme and tmux setting.")
+                    Text("Hosts in this group that use Default take its theme, tmux and startup snippet settings.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -147,6 +148,39 @@ struct GroupDetailsPanel: View {
                         do { try await model.setTheme(id, forGroup: group.id) } catch { onError(error) }
                     }
                 }
+            }
+        }
+    }
+
+    /// "Startup snippet" for the group's hosts that use Default: Default (the parents' snippet) or one
+    /// snippet without `{{placeholders}}`. Saves at once.
+    private var startupSnippetField: some View {
+        let candidates = model.startupCandidates()
+        let selected = model.startupSnippetID(ofGroup: group.id)
+        let unavailableID = selected.flatMap { id in candidates.contains { $0.id == id } ? nil : id }
+        return FieldColumn(title: "Startup snippet") {
+            Picker("Startup snippet", selection: Binding(
+                get: { selected },
+                set: { snippetID in
+                    Task {
+                        do { try await model.setStartupSnippet(snippetID, forGroup: group.id) } catch { onError(error) }
+                    }
+                }
+            )) {
+                Text(model.inheritedStartupSnippetSummary(ofGroup: group.id)).tag(UUID?.none)
+                if let unavailableID {
+                    Text("(unavailable)").tag(UUID?.some(unavailableID))
+                }
+                ForEach(candidates) { snippet in
+                    Text(startupSnippetPickerTitle(snippet)).tag(UUID?.some(snippet.id))
+                }
+            }
+            .labelsHidden()
+            .help("A snippet typed into the terminal when this group\u{2019}s hosts connect")
+            if model.hiddenStartupSnippetCount > 0 {
+                Text("Snippets with {{placeholders}} can\u{2019}t run at startup.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
     }
