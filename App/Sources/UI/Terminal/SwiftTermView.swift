@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Observation
 import AppCore
 import SwiftTerm
 
@@ -71,10 +72,34 @@ final class TerminalHostView: NSView {
     }
 }
 
+/// Settings → Terminal → Keyword highlighting for this Mac: one instance, shared by the Settings
+/// pane and every terminal view (`TerminalViewStore` pushes changes to open tabs).
+@MainActor
+enum TerminalHighlighting {
+    static let settings = KeywordHighlightSettings()
+}
+
 /// One SwiftTerm view (and its delegate) per open terminal tab, kept while the tab is open.
 @MainActor
 final class TerminalViewStore {
     private var entries: [UUID: TerminalBridge] = [:]
+
+    init() {
+        followHighlightSettings()
+    }
+
+    /// Gives every open view the current keyword highlighting settings, now and after each change
+    /// (Observation fires once per registration, so this registers again each time).
+    private func followHighlightSettings() {
+        let snapshot = withObservationTracking {
+            TerminalHighlighting.settings.snapshot
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.followHighlightSettings() }
+        }
+        for entry in entries.values {
+            entry.view.updateHighlighting(snapshot)
+        }
+    }
 
     /// The tab's terminal view, created (and wired to the session) on first use with
     /// `appearance`'s font. Callers apply `appearance` themselves (`SessionTerminalView.apply`).
@@ -84,6 +109,7 @@ final class TerminalViewStore {
         let entry = TerminalBridge(tabID: tab.id, sessions: sessions, appearance: appearance)
         entries[tab.id] = entry
         let view = entry.view
+        view.updateHighlighting(TerminalHighlighting.settings.snapshot)
         tab.outputSink = { [weak view] bytes in
             view?.receive(bytes)
         }
@@ -171,6 +197,15 @@ final class SessionTerminalView: TerminalView {
     private(set) var opensLinks = TerminalBehaviour().opensLinks
     /// "Select text to copy & right-click to paste".
     private var selectToCopyRightClickToPaste = TerminalBehaviour().selectToCopyRightClickToPaste
+    /// Keyword highlighting for this tab's output (package E). Always in the path, also when
+    /// disabled (then it passes bytes through unchanged), so it keeps tracking colours and the
+    /// alternate screen and turning it on mid-session is correct.
+    private let highlighter = KeywordHighlighter()
+    /// When output last arrived; a word held back at the end of a chunk is released after
+    /// `idleFlushDelay` without more output.
+    private var lastOutput = ContinuousClock.now
+    private var idleFlushScheduled = false
+    private static let idleFlushDelay = Duration.milliseconds(50)
 
     /// `family` at `size` points; SF Mono (the system monospaced font) when `family` is nil or not
     /// installed (any more).
@@ -214,9 +249,10 @@ final class SessionTerminalView: TerminalView {
         onSizeChange?(cols, rows)
     }
 
-    /// Installs palette, bg/fg/caret/selection; sets the font only when the size changed.
-    /// Returns early when `appearance` equals the last applied one. Cells keep palette indices, so
-    /// the scrollback is redrawn in the new colors. A new font size goes through SwiftTerm's
+    /// Installs palette, bg/fg/caret/selection; sets the font only when family or size changed;
+    /// applies the behaviour toggles. Returns early when `appearance` equals the last applied one.
+    /// Cells keep palette indices, so the scrollback is redrawn in the new colors. A new font goes
+    /// through SwiftTerm's
     /// resize → `sizeChanged` → `reportSize` → `SessionManager.resize` (remote window change),
     /// the same path a window resize takes.
     func apply(_ appearance: TerminalAppearance) {
@@ -255,9 +291,42 @@ final class SessionTerminalView: TerminalView {
 
     // MARK: Output
 
-    /// Session output for this tab.
+    /// Session output for this tab: through the keyword highlighter, then into the terminal.
     func receive(_ bytes: [UInt8]) {
-        feed(byteArray: bytes[...])
+        let output = highlighter.process(bytes[...])
+        if !output.isEmpty {
+            feed(byteArray: output[...])
+        }
+        lastOutput = .now
+        scheduleIdleFlush()
+    }
+
+    /// Settings → Terminal → Keyword highlighting changed (or the view is new).
+    func updateHighlighting(_ snapshot: KeywordHighlightSettings.Snapshot) {
+        guard snapshot != highlighter.settings else { return }
+        highlighter.update(settings: snapshot)
+    }
+
+    /// One wait per quiet period, not one per chunk: the task sleeps until `idleFlushDelay` after
+    /// the latest output and then releases whatever the highlighter still holds (≤ 64 bytes, e.g.
+    /// a prompt that ends in a word).
+    private func scheduleIdleFlush() {
+        guard !idleFlushScheduled else { return }
+        idleFlushScheduled = true
+        Task { @MainActor [weak self] in
+            while let self {
+                let due = self.lastOutput + Self.idleFlushDelay
+                if ContinuousClock.now >= due {
+                    self.idleFlushScheduled = false
+                    let held = self.highlighter.flush()
+                    if !held.isEmpty {
+                        self.feed(byteArray: held[...])
+                    }
+                    return
+                }
+                try? await Task.sleep(until: due, clock: .continuous)
+            }
+        }
     }
 
     // MARK: Select to copy, right-click to paste
