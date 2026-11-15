@@ -816,6 +816,151 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(secretFiles(), [])
     }
 
+    // MARK: Connection progress
+
+    func testStoredPasswordLoginReportsStepsFromTheDebugLog() async throws {
+        let session = makeSession(.password(server.password))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertEqual(recorder.steps, [
+            .connecting(address: "127.0.0.1", port: server.port),
+            .connected(address: "127.0.0.1"),
+            .handshake,
+            .authenticating(method: "password"),
+            .authenticated,
+            .openingShell,
+        ])
+        XCTAssertEqual(debugLogs(), [], "the log is unlinked once ssh has it open")
+        await session.send(Array("echo progress-$((5*5))\n".utf8))
+        try await recorder.waitForOutput(containing: "progress-25")
+        await session.close()
+        try await recorder.waitForFinish()
+        XCTAssertFalse(recorder.outputText.contains("debug1"), "debug output never reaches the terminal")
+        XCTAssertFalse(recorder.outputText.contains("Authenticated to"), recorder.outputText)
+        XCTAssertEqual(debugLogs(), [])
+    }
+
+    func testKeyLoginReportsTheKeyMethod() async throws {
+        let generated = SSHKeyGenerator.ed25519(comment: "progress")
+        try server.authorize(publicKeyLine: generated.publicKey)
+        let session = makeSession(.privateKey(type: .ed25519, pem: generated.privateKey, passphrase: nil))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertTrue(recorder.steps.contains(.authenticating(method: "key")), "\(recorder.steps)")
+        XCTAssertEqual(recorder.steps.last, .openingShell)
+        await session.close()
+    }
+
+    func testRejectedPasswordStillFailsWithAuthenticationFailed() async throws {
+        let session = makeSession(.password("wrong-\(server.password)"))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
+        XCTAssertEqual(recorder.steps.last, .authenticating(method: "password"))
+        XCTAssertEqual(debugLogs(), [])
+        XCTAssertFalse(recorder.outputText.contains("debug"), recorder.outputText)
+    }
+
+    func testHostNameIsReportedAsResolving() async throws {
+        var p = plan(.password(server.password))
+        p.host = "localhost"
+        let session = SystemSSHSession(plan: p, hostKeys: TestEvaluator(decision: .trusted), knownHostsLines: { [] },
+                                       runtime: runtime)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertEqual(recorder.steps.first, .resolving(host: "localhost"))
+        XCTAssertTrue(recorder.steps.contains(.connected(address: "127.0.0.1")), "\(recorder.steps)")
+        await session.close()
+    }
+
+    func testUnknownHostNameSaysHostNameNotFound() async throws {
+        var p = plan(.password("x"))
+        p.host = "no-such-host.invalid"
+        let session = SystemSSHSession(plan: p, hostKeys: TestEvaluator(decision: .trusted), knownHostsLines: { [] },
+                                       runtime: runtime)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish(timeout: 40)
+        XCTAssertEqual(recorder.steps, [.resolving(host: "no-such-host.invalid")])
+        guard case .closed(.failed(.connectionFailed(let reason))) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        XCTAssertTrue(reason.hasPrefix("Could not reach no-such-host.invalid:"), reason)
+    }
+
+    func testTypedPasswordSessionRunsWithoutADebugLog() async throws {
+        // No stored secret: ssh asks in the terminal, `.connected` comes at once and no steps are reported.
+        let session = makeSession(.none)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected])
+        try await recorder.waitForOutput(containing: "password:")
+        XCTAssertEqual(recorder.steps, [])
+        XCTAssertEqual(debugLogs(), [])
+        await session.close()
+    }
+
+    func testSSHWithoutDashEStillConnectsWithoutProgress() async throws {
+        // A wrapper that refuses -E like an old ssh would, and otherwise runs the real one.
+        let wrapper = scratch.appendingPathComponent("old-ssh")
+        try """
+        #!/bin/sh
+        for a in "$@"; do [ "$a" = "-E" ] && { echo "unknown option -- E" >&2; exit 255; }; done
+        exec /usr/bin/ssh "$@"
+
+        """.write(to: wrapper, atomically: true, encoding: .utf8)
+        chmod(wrapper.path, 0o755)
+        let session = SystemSSHSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted),
+                                       knownHostsLines: { [] }, runtime: runtime, sshPath: wrapper.path)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertEqual(recorder.steps, [])
+        await session.send(Array("echo old-$((1+1))\n".utf8))
+        try await recorder.waitForOutput(containing: "old-2")
+        await session.close()
+        XCTAssertEqual(SystemSSHSession.debugLogSupport.withLock { $0[wrapper.path] }, false)
+    }
+
+    func testSSHArgumentsWithADebugLog() {
+        let root = URL(fileURLWithPath: "/a b/run")
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let args = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: directory,
+                                                 knownHosts: root.appendingPathComponent("S.known_hosts"), auth: .password,
+                                                 hostKeyAlgorithms: "ssh-ed25519",
+                                                 debugLog: root.appendingPathComponent("L.log"))
+        XCTAssertEqual(Array(args.prefix(4)), ["-tt", "-v", "-E", "/a b/run/L.log"])
+        XCTAssertEqual(Array(args.suffix(2)), ["--", "h"])
+    }
+
+    func testUnencryptedKeysAreRecognised() throws {
+        XCTAssertTrue(SystemSSHSession.keyIsUnencrypted(SSHKeyGenerator.ed25519(comment: "x").privateKey))
+        let keyFile = scratch.appendingPathComponent("enc_ed25519")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "pp", "-f", keyFile.path])
+        XCTAssertFalse(SystemSSHSession.keyIsUnencrypted(try String(contentsOf: keyFile, encoding: .utf8)))
+        let plainFile = scratch.appendingPathComponent("plain_rsa")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "rsa", "-b", "2048", "-N", "", "-f", plainFile.path])
+        XCTAssertTrue(SystemSSHSession.keyIsUnencrypted(try String(contentsOf: plainFile, encoding: .utf8)))
+        XCTAssertTrue(SystemSSHSession.keyIsUnencrypted("-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----\n"))
+        XCTAssertFalse(SystemSSHSession.keyIsUnencrypted(
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nMIIB\n-----END RSA PRIVATE KEY-----\n"))
+        XCTAssertFalse(SystemSSHSession.keyIsUnencrypted("-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIB\n-----END ENCRYPTED PRIVATE KEY-----\n"))
+        XCTAssertFalse(SystemSSHSession.keyIsUnencrypted("garbage"))
+        XCTAssertFalse(SystemSSHSession.storedKeyNeedsNoPassphrase(.password("x")))
+    }
+
+    func testIPAddressDetection() {
+        XCTAssertTrue(SystemSSHSession.isIPAddress("127.0.0.1"))
+        XCTAssertTrue(SystemSSHSession.isIPAddress("::1"))
+        XCTAssertTrue(SystemSSHSession.isIPAddress("fe80::1%en0"))
+        XCTAssertFalse(SystemSSHSession.isIPAddress("localhost"))
+        XCTAssertFalse(SystemSSHSession.isIPAddress("10.0.0"))
+    }
+
     // MARK: SSH agent
 
     func testAgentLoginWithAnyAgentKey() async throws {
@@ -968,7 +1113,7 @@ final class SystemSSHSessionTests: XCTestCase {
         await session.close()
         try await recorder.waitForFinish()
 
-        // No askpass (unencrypted key): started on the first output after 2 s.
+        // Unencrypted key (ssh can't ask anything): started once ssh's debug log shows the session.
         let generated = SSHKeyGenerator.ed25519(comment: "fallback")
         try server.authorize(publicKeyLine: generated.publicKey)
         let keySession = SystemSSHSession(plan: plan(.privateKey(type: .ed25519, pem: generated.privateKey, passphrase: nil)),
@@ -976,18 +1121,37 @@ final class SystemSSHSessionTests: XCTestCase {
                                           runtime: runtime, sshPath: "/usr/bin/ssh", keyscanPath: "/usr/bin/ssh-keyscan",
                                           commandTimeout: .seconds(15), terminalModeProbe: { _ in .unavailable })
         let keyEvents = EventRecorder(keySession.events)
-        let clock = ContinuousClock()
-        let launched = clock.now
         await keySession.start(cols: 80, rows: 24)
-        try await keyEvents.waitForEvents([.connected])
-        // Output after the 2 s mark (the shell answers this) marks the start.
-        try await Task.sleep(for: .milliseconds(2200))
-        await keySession.send(Array("echo key-fb\n".utf8))
         try await keyEvents.waitForEvents([.connected, .ready])
-        XCTAssertGreaterThanOrEqual(clock.now - launched, .seconds(2))
+        XCTAssertEqual(keyEvents.steps.last, .openingShell)
         XCTAssertEqual(secretFiles(), [])
         await keySession.close()
         try await keyEvents.waitForFinish()
+
+        // ssh asks in the terminal (an encrypted key without its passphrase): started on the first output
+        // after 2 s.
+        let keyFile = scratch.appendingPathComponent("fallback_enc")
+        try TestSSHServer.run("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "fb pass", "-f", keyFile.path])
+        try server.authorize(publicKeyLine: String(contentsOf: keyFile.appendingPathExtension("pub"), encoding: .utf8))
+        let asking = SystemSSHSession(plan: plan(.privateKey(type: .ed25519, pem: try String(contentsOf: keyFile, encoding: .utf8),
+                                                             passphrase: nil)),
+                                      hostKeys: TestEvaluator(decision: .trusted), knownHostsLines: { [] },
+                                      runtime: runtime, sshPath: "/usr/bin/ssh", keyscanPath: "/usr/bin/ssh-keyscan",
+                                      commandTimeout: .seconds(15), terminalModeProbe: { _ in .unavailable })
+        let askingEvents = EventRecorder(asking.events)
+        let clock = ContinuousClock()
+        let launched = clock.now
+        await asking.start(cols: 80, rows: 24)
+        try await askingEvents.waitForEvents([.connected])
+        try await askingEvents.waitForOutput(containing: "passphrase")
+        // Output after the 2 s mark (the passphrase answered, then the shell) marks the start.
+        try await Task.sleep(for: .milliseconds(2200))
+        await asking.send(Array("fb pass\n".utf8))
+        try await askingEvents.waitForEvents([.connected, .ready])
+        XCTAssertGreaterThanOrEqual(clock.now - launched, .seconds(2))
+        XCTAssertEqual(secretFiles(), [])
+        await asking.close()
+        try await askingEvents.waitForFinish()
     }
 
     func testRunCommandNeverOpensAFreshConnection() async throws {
@@ -1116,6 +1280,11 @@ final class SystemSSHSessionTests: XCTestCase {
 
     /// Key and secret files in the runtime directory.
     private func secretFiles() -> [String] { Self.secretFiles(in: runtime.root) }
+
+    /// ssh debug logs (`-E`) still on disk.
+    private func debugLogs() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: runtime.root.path)) ?? []).filter { $0.hasSuffix(".log") }
+    }
 
     private static func secretFiles(in root: URL) -> [String] {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []

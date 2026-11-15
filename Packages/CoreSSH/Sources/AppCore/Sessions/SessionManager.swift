@@ -42,6 +42,98 @@ public final class TerminalTab: Identifiable {
     /// "Duplicate in New Window" and duplicates of its tabs open in another.
     public fileprivate(set) var windowID: UUID?
 
+    /// The connection log of the current attempt (the connection screen's steps); reset when an attempt
+    /// starts (open, Reconnect / Start over, an automatic try, a typed password).
+    public fileprivate(set) var connectionLog: [ConnectionLogLine] = []
+    /// The failure text for the connection screen; nil while connecting, once connected, or after a
+    /// normal close.
+    public var connectionFailure: String? {
+        connectionLog.last(where: { $0.status == .failed && $0.step == nil })?.text
+    }
+    /// Whether this attempt reached `.connected` (the terminal went live).
+    public fileprivate(set) var hasEverConnected = false
+
+    /// The log as text for "Copy logs": a header (host label, user@host:port, engine, date) and one
+    /// line per step with its time and status. Never contains secrets: only names, addresses, ports,
+    /// auth method names and error messages (which never carry secrets).
+    public func connectionLogText() -> String {
+        var text = "Connection log \u{2014} \(logContext?.label ?? title)\n"
+        if let context = logContext {
+            text += "SSH \(context.username)@\(context.host):\(context.port)\n"
+            text += "Engine: \(context.engine == .citadel ? "built-in (Citadel)" : "system ssh")\n"
+            text += "Started: \(Self.headerDateFormatter.string(from: context.startedAt))\n"
+        }
+        text += "\n"
+        if connectionLog.isEmpty { text += "(no steps reported)\n" }
+        for line in connectionLog {
+            let mark = switch line.status {
+            case .done: "done"
+            case .inProgress: "...."
+            case .failed: "FAIL"
+            }
+            text += "\(Self.lineTimeFormatter.string(from: line.at))  [\(mark)]  \(line.text)\n"
+        }
+        return text
+    }
+
+    /// What the current attempt connects to, for the log's header.
+    fileprivate struct LogContext {
+        let label: String
+        let username: String
+        let host: String
+        let port: Int
+        let engine: SSHEngine
+        let startedAt: Date
+    }
+
+    @ObservationIgnored fileprivate var logContext: LogContext?
+    /// The next log line's id; never reset, so ids stay unique across attempts.
+    @ObservationIgnored fileprivate var nextLogLineID = 0
+
+    private static let headerDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss ZZZZZ"
+        return formatter
+    }()
+
+    private static let lineTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    /// Starts a new attempt's log.
+    fileprivate func resetConnectionLog(context: LogContext?) {
+        connectionLog = []
+        hasEverConnected = false
+        logContext = context
+    }
+
+    /// A new step: the step before it is done, this one is in progress.
+    fileprivate func appendStep(_ step: ConnectionStep, at date: Date) {
+        finishCurrentStep(as: .done)
+        appendLine(step: step, text: step.text, status: .inProgress, at: date)
+    }
+
+    /// Marks the step in progress (if any) `status`.
+    fileprivate func finishCurrentStep(as status: ConnectionLogLine.Status) {
+        guard let index = connectionLog.lastIndex(where: { $0.status == .inProgress }) else { return }
+        connectionLog[index].status = status
+    }
+
+    /// The attempt failed: the step in progress failed, and the message follows as a failed line.
+    fileprivate func appendFailure(_ message: String, at date: Date) {
+        finishCurrentStep(as: .failed)
+        appendLine(step: nil, text: message, status: .failed, at: date)
+    }
+
+    private func appendLine(step: ConnectionStep?, text: String, status: ConnectionLogLine.Status, at date: Date) {
+        connectionLog.append(ConnectionLogLine(id: nextLogLineID, step: step, text: text, status: status, at: date))
+        nextLogLineID += 1
+    }
+
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
     @ObservationIgnored public var outputSink: (@MainActor ([UInt8]) -> Void)? {
@@ -529,6 +621,7 @@ public final class SessionManager {
                 Task { await session.close() }
             }
             tab.state = .disconnected(tab.dropMessage)
+            tab.appendFailure(tab.dropMessage ?? "Stopped.", at: now())
         }
     }
 
@@ -701,6 +794,7 @@ public final class SessionManager {
             Task { await session.close() }
         }
         tab.suggestedAction = nil
+        tab.resetConnectionLog(context: nil)
         var plan: ConnectionPlan
         if let given {
             plan = given
@@ -709,6 +803,7 @@ public final class SessionManager {
                 plan = try currentPlan(for: tab.target)
             } catch {
                 tab.state = .disconnected(error.localizedDescription)
+                tab.appendFailure(error.localizedDescription, at: now())
                 return
             }
         }
@@ -721,10 +816,13 @@ public final class SessionManager {
             guard let socket = agentSocket() else {
                 tab.state = .disconnected(Self.agentNotFoundMessage)
                 tab.suggestedAction = .openOnePasswordSetup
+                tab.appendFailure(Self.agentNotFoundMessage, at: now())
                 return
             }
             plan.credential = .agent(socketPath: socket, publicKey: agentKey.publicKey) // also selects system ssh
         }
+        tab.resetConnectionLog(context: TerminalTab.LogContext(label: plan.label, username: plan.username, host: plan.host,
+                                                               port: plan.port, engine: plan.engine, startedAt: now()))
 
         var enteredPassword: String? // as typed (maybe a 1Password reference)
         if let entered = tab.enteredPassword {
@@ -813,11 +911,14 @@ public final class SessionManager {
         switch error {
         case .cancelled:
             tab.state = .disconnected("Cancelled")
+            tab.appendFailure("Cancelled", at: now())
         case .cliNotFound, .integrationOff, .appLocked:
             tab.state = .disconnected(error.message)
             tab.suggestedAction = .openOnePasswordSetup
+            tab.appendFailure(error.message, at: now())
         case .timedOut, .notFound, .failed:
             tab.state = .disconnected(error.message)
+            tab.appendFailure(error.message, at: now())
         }
     }
 
@@ -909,8 +1010,12 @@ public final class SessionManager {
     private func handle(_ event: SessionEvent, attempt: SessionAttempt, tab: TerminalTab?) {
         let current = tab.flatMap { $0.attempt === attempt ? $0 : nil }
         switch event {
+        case .progress(let step):
+            current?.appendStep(step, at: now())
         case .connected:
             current?.state = .connected
+            current?.finishCurrentStep(as: .done)
+            current?.hasEverConnected = true
             // ssh asks in the terminal (no stored secret): the user may have to type a password, so this
             // try is no longer automatic.
             if let current, case .reconnecting = current.autoReconnect, case .none = attempt.plan.credential {
@@ -935,6 +1040,11 @@ public final class SessionManager {
                 return
             }
             current.state = state(after: reason, attempt: attempt, tab: current)
+            if let message = Self.failureText(after: reason, state: current.state, connected: current.hasEverConnected) {
+                current.appendFailure(message, at: now())
+            } else {
+                current.finishCurrentStep(as: .done)
+            }
             continueAutoReconnect(after: reason, attempt: attempt, tab: current)
         }
     }
@@ -1026,6 +1136,21 @@ public final class SessionManager {
         case .failed(let error):
             if case .agentUnavailable = error { tab.suggestedAction = .openOnePasswordSetup }
             return .disconnected(error.localizedDescription)
+        }
+    }
+
+    /// The connection log's last line for an attempt that ended: the message the tab shows (or the error's
+    /// own when the tab asks for a password again); for a normal close before the terminal went live, that
+    /// it closed. Nil for a normal close of a live session.
+    private static func failureText(after reason: SessionEndReason, state: TerminalTab.State, connected: Bool) -> String? {
+        switch reason {
+        case .userClosed:
+            return nil
+        case .remoteClosed:
+            return connected ? nil : "The server closed the connection."
+        case .failed(let error):
+            if case .disconnected(let message?) = state { return message }
+            return error.localizedDescription
         }
     }
 

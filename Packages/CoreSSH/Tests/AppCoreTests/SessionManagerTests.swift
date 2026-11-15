@@ -1772,3 +1772,253 @@ final class SessionManagerOnePasswordTests: XCTestCase {
         XCTAssertEqual(password(of: factory.sessions[0]), "resolved-pw")
     }
 }
+
+// MARK: - Connection log
+
+@MainActor
+final class SessionManagerConnectionLogTests: XCTestCase {
+    private var vault: LocalVault!
+    private var factory: FakeFactory!
+    private var manager: SessionManager!
+    private let clock = TestClock()
+    private var agentSocketPath: String? = "/tmp/agent.sock"
+
+    override func setUp() async throws {
+        vault = try await LocalVault.open(persistence: InMemoryVaultPersistence(), newDeviceID: { "dev" })
+        factory = FakeFactory()
+        let factory = factory!
+        manager = SessionManager(vault: vault, knownHosts: KnownHostsStore(vault: vault),
+                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                                 deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                                 now: { [clock] in clock.tick() },
+                                 agentSocket: { [unowned self] in self.agentSocketPath })
+    }
+
+    private func waitUntil(_ what: String = "condition", timeout: TimeInterval = 2,
+                           _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            if Date() > deadline { return XCTFail("timed out waiting for \(what)", file: file, line: line) }
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    private func host() -> CoreModels.Host {
+        vault.saveNow(CoreModels.Host(label: "Web", address: "web.example", username: "root", password: "pw"))
+    }
+
+    private func statuses(_ tab: TerminalTab) -> [ConnectionLogLine.Status] { tab.connectionLog.map(\.status) }
+
+    func testStepsBecomeLinesAndTheLastIsDoneOnceConnected() async throws {
+        let gate = TestGate()
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.resolving(host: "web.example")))
+            s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
+            await gate.wait()
+            s.emit(.progress(.connected(address: "10.0.0.5")))
+            s.emit(.progress(.authenticating(method: "password")))
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("two lines") { tab.connectionLog.count == 2 }
+        XCTAssertEqual(tab.connectionLog.map(\.step), [.resolving(host: "web.example"), .connecting(address: "10.0.0.5", port: 22)])
+        XCTAssertEqual(tab.connectionLog.map(\.text), ["Resolving web.example\u{2026}", "Connecting to 10.0.0.5:22\u{2026}"])
+        XCTAssertEqual(statuses(tab), [.done, .inProgress])
+        XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertNil(tab.connectionFailure)
+        XCTAssertEqual(tab.state, .connecting)
+
+        gate.open()
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(statuses(tab), [.done, .done, .done, .done])
+        XCTAssertTrue(tab.hasEverConnected)
+        XCTAssertNil(tab.connectionFailure)
+        XCTAssertEqual(Set(tab.connectionLog.map(\.id)).count, 4, "unique ids")
+        XCTAssertLessThan(tab.connectionLog[0].at, tab.connectionLog[3].at)
+    }
+
+    func testFailureMarksTheStepFailedAndAddsTheMessage() async throws {
+        let refused = SessionError.connectionFailed("Could not connect to web.example:22 (connection refused)")
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.resolving(host: "web.example")))
+            s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
+            s.emit(.closed(.failed(refused)))
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("failed") { tab.connectionFailure != nil }
+        XCTAssertEqual(statuses(tab), [.done, .failed, .failed])
+        XCTAssertEqual(tab.connectionLog.last?.step, nil)
+        XCTAssertEqual(tab.connectionFailure, refused.localizedDescription)
+        XCTAssertEqual(tab.state, .disconnected(refused.localizedDescription))
+        XCTAssertFalse(tab.hasEverConnected)
+    }
+
+    func testEachAttemptStartsAFreshLog() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
+            s.emit(.closed(.failed(.timedOut)))
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("failed") { tab.connectionFailure != nil }
+        let firstIDs = tab.connectionLog.map(\.id)
+
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
+        }
+        manager.reconnect(tabID: tab.id) // "Start over"
+        await waitUntil("second attempt") { self.factory.sessions.count == 2 && tab.connectionLog.count == 1 }
+        XCTAssertEqual(statuses(tab), [.inProgress])
+        XCTAssertNil(tab.connectionFailure)
+        XCTAssertTrue(Set(firstIDs).isDisjoint(with: tab.connectionLog.map(\.id)), "ids never repeat")
+    }
+
+    func testDroppedSessionKeepsHasEverConnected() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.openingShell))
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("connected") { tab.state == .connected }
+        factory.sessions[0].emit(.closed(.failed(.connectionFailed("Broken pipe"))))
+        await waitUntil("dropped") { tab.state != .connected }
+        XCTAssertTrue(tab.hasEverConnected, "the screen is for attempts that never connected")
+        XCTAssertEqual(statuses(tab), [.done, .failed])
+    }
+
+    func testNormalCloseAddsNoFailure() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("connected") { tab.state == .connected }
+        factory.sessions[0].emit(.closed(.remoteClosed))
+        await waitUntil("closed") { tab.state == .disconnected(nil) }
+        XCTAssertNil(tab.connectionFailure)
+    }
+
+    func testStaleAttemptsDoNotWriteToTheLog() async throws {
+        factory.onStart = { @Sendable _ in }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("started") { self.factory.sessions.first?.recorded.started != nil }
+        let old = factory.sessions[0]
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second") { self.factory.sessions.count == 2 }
+        old.emit(.progress(.handshake))
+        old.emit(.closed(.failed(.timedOut)))
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(tab.connectionLog, [])
+    }
+
+    func testFailuresBeforeASessionAreLogged() async throws {
+        agentSocketPath = nil
+        let agentHost = vault.saveNow(CoreModels.Host(label: "Agent", address: "a.example", username: "root",
+                                                      agentKey: AgentKeyChoice(publicKey: nil)))
+        let tab = try manager.open(hostID: agentHost.id)
+        XCTAssertEqual(tab.connectionFailure, SessionManager.agentNotFoundMessage)
+        XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertTrue(factory.sessions.isEmpty)
+    }
+
+    func testRejectedPasswordIsLoggedBeforeAskingAgain() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.authenticating(method: "password")))
+            s.emit(.closed(.failed(.authenticationFailed)))
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("asks") { if case .awaitingPassword = tab.state { true } else { false } }
+        XCTAssertEqual(statuses(tab), [.failed, .failed])
+        XCTAssertEqual(tab.connectionFailure, SessionError.authenticationFailed.localizedDescription)
+    }
+
+    func testAnAutomaticTryStartsAFreshLog() async throws {
+        let sleeper = FakeSleeper()
+        let factory = factory!
+        manager = SessionManager(vault: vault, knownHosts: KnownHostsStore(vault: vault),
+                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                                 deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                                 autoReconnectEnabled: { true }, now: { [clock] in clock.tick() },
+                                 sleep: { try await sleeper.sleep($0) })
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.openingShell))
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("connected") { tab.state == .connected }
+        let firstIDs = tab.connectionLog.map(\.id)
+
+        factory.onStart = { @Sendable s in s.emit(.progress(.connecting(address: "10.0.0.5", port: 22))) }
+        factory.sessions[0].emit(.closed(.failed(.connectionFailed("Broken pipe"))))
+        await waitUntil("countdown") { sleeper.pending == 1 }
+        XCTAssertTrue(tab.hasEverConnected, "until the next try starts")
+        sleeper.elapseAll()
+        await waitUntil("automatic try") { self.factory.sessions.count == 2 && tab.connectionLog.count == 1 }
+        XCTAssertEqual(tab.connectionLog.map(\.step), [.connecting(address: "10.0.0.5", port: 22)])
+        XCTAssertEqual(statuses(tab), [.inProgress])
+        XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertNil(tab.connectionFailure)
+        XCTAssertTrue(Set(firstIDs).isDisjoint(with: tab.connectionLog.map(\.id)))
+        if case .reconnecting = tab.autoReconnect {} else { XCTFail("\(String(describing: tab.autoReconnect))") }
+        sleeper.elapseAll()
+    }
+
+    func testLogTextHasAHeaderAndTimedLinesWithoutSecrets() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.connecting(address: "10.0.0.5", port: 2222)))
+            s.emit(.progress(.authenticating(method: "password")))
+            s.emit(.closed(.failed(.connectionFailed("connection reset by peer"))))
+        }
+        let saved = vault.saveNow(CoreModels.Host(label: "Web", address: "web.example", port: 2222, username: "root",
+                                                  password: "hunter2-secret"))
+        let tab = try manager.open(hostID: saved.id)
+        await waitUntil("failed") { tab.connectionFailure != nil }
+        let text = tab.connectionLogText()
+        XCTAssertTrue(text.hasPrefix("Connection log \u{2014} Web\n"), text)
+        XCTAssertTrue(text.contains("SSH root@web.example:2222\n"), text)
+        XCTAssertTrue(text.contains("Engine: built-in (Citadel)\n"), text)
+        XCTAssertTrue(text.contains("Started: "), text)
+        XCTAssertTrue(text.contains("[done]  Connecting to 10.0.0.5:2222\u{2026}\n"), text)
+        XCTAssertTrue(text.contains("[FAIL]  Signing in with password\u{2026}\n"), text)
+        XCTAssertTrue(text.contains("[FAIL]  The connection failed: connection reset by peer\n"), text)
+        XCTAssertFalse(text.contains("hunter2"), "never a secret")
+        let lines = text.split(separator: "\n")
+        XCTAssertTrue(lines.last?.range(of: #"^\d{2}:\d{2}:\d{2}\.\d{3}  \["#, options: .regularExpression) != nil, text)
+    }
+}
+
+/// Each reading is 100 ms later than the one before.
+private final class TestClock: Sendable {
+    private let date = Mutex(Date(timeIntervalSince1970: 1_700_000_000))
+
+    func tick() -> Date {
+        date.withLock { $0 = $0.addingTimeInterval(0.1); return $0 }
+    }
+}
+
+/// Holds a fake session's script until `open()`.
+private final class TestGate: Sendable {
+    private let state = Mutex<(open: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resume = state.withLock { s -> Bool in
+                if s.open { return true }
+                s.waiters.append(continuation)
+                return false
+            }
+            if resume { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { s in
+            s.open = true
+            defer { s.waiters = [] }
+            return s.waiters
+        }
+        for waiter in waiters { waiter.resume() }
+    }
+}
