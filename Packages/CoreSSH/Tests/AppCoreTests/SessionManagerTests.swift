@@ -1863,7 +1863,7 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         let tab = try manager.open(hostID: host().id)
         await waitUntil("failed") { tab.connectionFailure != nil }
         let firstIDs = tab.connectionLog.map(\.id)
-        XCTAssertTrue(tab.hadLiveSession)
+        XCTAssertFalse(tab.hadLiveSession, "never went live")
 
         factory.onStart = { @Sendable s in
             s.emit(.progress(.connecting(address: "10.0.0.5", port: 22)))
@@ -1951,6 +1951,7 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         let tab = try manager.open(hostID: host().id)
         await waitUntil("connected") { tab.state == .connected }
         let firstIDs = tab.connectionLog.map(\.id)
+        XCTAssertTrue(tab.hadLiveSession)
 
         factory.onStart = { @Sendable s in s.emit(.progress(.connecting(address: "10.0.0.5", port: 22))) }
         factory.sessions[0].emit(.closed(.failed(.connectionFailed("Broken pipe"))))
