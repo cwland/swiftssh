@@ -52,6 +52,14 @@ struct HighlightingSettingsPane: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                         .padding(.vertical, 8)
+                } else if rules.isReadOnly {
+                    // A newer app version changed the list's format; never overwrite it from here.
+                    Label("Your rules were saved by a newer version of the app and can\u{2019}t be shown or changed here. Update the app on this Mac to see and edit them.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 8)
                 } else if list.isEmpty {
                     Text("No rules yet. Add one to colour a word, a phrase or a pattern in every terminal, e.g. the name of your production server.")
                         .font(.system(size: 13))
@@ -71,7 +79,7 @@ struct HighlightingSettingsPane: View {
                 HStack {
                     Spacer(minLength: 0)
                     Button("Add Rule\u{2026}") { editing = rules.makeNewRule() }
-                        .disabled(!rules.isAvailable)
+                        .disabled(!rules.isAvailable || rules.isReadOnly)
                 }
                 .padding(.top, 10)
             }
@@ -123,6 +131,7 @@ private struct HighlightRuleRow: View {
     let isLast: Bool
     let store: HighlightRulesStore
     let edit: () -> Void
+    @State private var confirmingDelete = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -130,7 +139,8 @@ private struct HighlightRuleRow: View {
                 .toggleStyle(.switch)
                 .controlSize(.small)
                 .labelsHidden()
-                .accessibilityLabel("\(rule.pattern) on")
+                // VoiceOver reads the switch's own value (on or off) after the label.
+                .accessibilityLabel("Rule \(rule.pattern)")
 
             Circle()
                 .fill(rule.rgbColor.swiftUIColor)
@@ -171,7 +181,7 @@ private struct HighlightRuleRow: View {
                 .buttonStyle(.borderless)
                 .help("Edit rule")
                 .accessibilityLabel("Edit \(rule.pattern)")
-            Button { store.delete(id: rule.id) } label: { Image(systemName: "trash") }
+            Button { confirmingDelete = true } label: { Image(systemName: "trash") }
                 .buttonStyle(.borderless)
                 .help("Delete rule")
                 .accessibilityLabel("Delete \(rule.pattern)")
@@ -179,6 +189,12 @@ private struct HighlightRuleRow: View {
         .padding(.vertical, 6)
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: edit)
+        .confirmationDialog("Delete the rule \u{201C}\(rule.pattern)\u{201D}?", isPresented: $confirmingDelete) {
+            Button("Delete Rule", role: .destructive) { store.delete(id: rule.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It is removed on all your Macs. Deleted rules can\u{2019}t be restored.")
+        }
     }
 }
 
@@ -218,7 +234,21 @@ private struct HighlightPreviewLines: View {
                 RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.secondary.opacity(0.25))
             }
             .accessibilityLabel("Preview on a \(name.lowercased()) background")
-            .accessibilityValue(segments.map(\.text).joined())
+            .accessibilityValue(accessibilityDescription)
+    }
+
+    /// The text, then what is coloured: "… Highlighted: prod-db: Red, bold; warning: coloured."
+    private var accessibilityDescription: String {
+        let text = segments.map(\.text).joined()
+        let highlighted = segments.compactMap { segment -> String? in
+            guard let color = segment.color,
+                  !segment.text.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            var style = HighlightPalette.entry(for: color)?.name ?? "coloured"
+            if segment.isBold { style += ", bold" }
+            return "\(segment.text.trimmingCharacters(in: .whitespaces)): \(style)"
+        }
+        guard !highlighted.isEmpty else { return text }
+        return "\(text). Highlighted: \(highlighted.joined(separator: "; "))."
     }
 
     private func attributed(foreground: Color) -> AttributedString {
@@ -292,7 +322,7 @@ private struct HighlightRuleEditor: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text(draft.isRegularExpression
-                     ? "Matches anywhere in a line (ICU syntax, as in NSRegularExpression). Lines longer than \(CompiledHighlightRules.maxRegexLineLength) characters are skipped, and a pattern that takes too long on a line is stopped."
+                     ? "Matches anywhere in a line (ICU syntax, as in NSRegularExpression). Lines longer than about 2,000 characters are skipped, and a pattern that takes too long on a line is stopped."
                      : "Matches whole words: \u{201C}prod\u{201D} colours prod and prod-db, not production. A phrase can contain spaces.")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
