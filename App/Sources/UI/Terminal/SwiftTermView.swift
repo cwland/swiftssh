@@ -287,16 +287,21 @@ final class SessionTerminalView: TerminalView {
         return true
     }
 
-    /// SwiftTerm's path for everything the terminal itself sends back (it always arrives a main-queue
-    /// hop after the output that caused it, so no flag set around `feed` could cover it). Same hop as
-    /// SwiftTerm's own, with the reply marked so a broadcasting workspace keeps it in this pane.
+    /// SwiftTerm's path for what the terminal itself sends back (it always arrives a main-queue hop
+    /// after the output that caused it, so no flag set around `feed` could cover it), and also for a
+    /// paste. Same hop as SwiftTerm's own. A paste runs inside our `paste`/`pasteAsUser` on the main
+    /// thread, so it is recognised here, before the hop; anything else is marked as a reply so a
+    /// broadcasting workspace keeps it in this pane.
     nonisolated override func send(source: Terminal, data: ArraySlice<UInt8>) {
         let bytes = Array(data)
+        let fromUser = Thread.isMainThread && MainActor.assumeIsolated { self.userInputDepth > 0 }
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                self.isTerminalReply = true
+                self.isTerminalReply = !fromUser
                 defer { self.isTerminalReply = false }
+                self.userInputDepth += fromUser ? 1 : 0
+                defer { self.userInputDepth -= fromUser ? 1 : 0 }
                 self.terminalDelegate?.send(source: self, data: bytes[...])
             }
         }
