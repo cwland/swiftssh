@@ -33,14 +33,19 @@ public final class SyncCoordinator {
     }
 
     static let serverURLKey = "sync.serverURL"
+    static let lastSyncedAtKey = "sync.lastSyncedAt"
     static let firstBackoff: Duration = .seconds(5)
     static let maxBackoff: Duration = .seconds(300)
 
     public private(set) var phase: Phase = .notConfigured
+    /// Persisted in `UserDefaults` under "sync.lastSyncedAt"; restored at init.
     public private(set) var lastSyncedAt: Date?
     public private(set) var lastReport: SyncReport?
     /// Persisted in `UserDefaults` under "sync.serverURL".
     public private(set) var serverURL: URL?
+    /// The last failure of an action that doesn't throw (`disconnect()`); cleared by the next
+    /// successful `connect`, `disconnect` or `updateAPIKey`.
+    public private(set) var lastError: SyncSetupError?
 
     @ObservationIgnored private let vault: LocalVault
     @ObservationIgnored private let secrets: any SyncSecretsStore
@@ -53,6 +58,10 @@ public final class SyncCoordinator {
     @ObservationIgnored private let now: @Sendable () -> Date
 
     @ObservationIgnored private var engine: SyncEngine?
+    /// The transport `engine` uses, for checks outside a sync (health after a vault 404).
+    @ObservationIgnored private var transport: (any SyncTransport)?
+    /// `start()` couldn't read the Keychain; `start()` or `syncNow()` tries again.
+    @ObservationIgnored private var secretsReadFailed = false
     /// A vault key loaded at `start()` that the engine hasn't been given yet.
     @ObservationIgnored private var pendingUnlockKey: VaultKey?
     /// True once the engine holds the vault key.
@@ -91,6 +100,7 @@ public final class SyncCoordinator {
         self.sleep = sleep
         self.now = now
         self.serverURL = defaults.string(forKey: Self.serverURLKey).flatMap(URL.init(string:))
+        self.lastSyncedAt = defaults.object(forKey: Self.lastSyncedAtKey) as? Date
     }
 
     // MARK: Validation
@@ -139,6 +149,8 @@ public final class SyncCoordinator {
         defaults.set(serverURL.absoluteString, forKey: Self.serverURLKey)
         self.serverURL = serverURL
         makeEngine(serverURL: serverURL, apiKey: apiKey)
+        secretsReadFailed = false
+        lastError = nil
         phase = .needsVault(exists: exists)
     }
 
@@ -199,6 +211,38 @@ public final class SyncCoordinator {
         await beginSyncing()
     }
 
+    /// Replaces the API key (e.g. after the server's keys were rotated): checks `key` against the
+    /// server first (it must be accepted), saves it and, when this Mac has the vault key, resumes
+    /// syncing at once — no passphrase needed. Without a vault key the phase becomes `.locked`
+    /// (vault exists) or `.needsVault(exists: false)`. A rejected key changes nothing.
+    public func updateAPIKey(_ key: String) async throws(SyncSetupError) {
+        guard let serverURL else { throw .other("Connect to a sync server first.") }
+        let exists = try await testConnection(serverURL: serverURL, apiKey: key).get()
+        let vaultKey: VaultKey?
+        do {
+            vaultKey = try secrets.loadVaultKey()
+        } catch {
+            throw .keychainUnreadable
+        }
+        do {
+            try secrets.saveAPIKey(key)
+        } catch {
+            throw .other("The API key couldn't be saved in the Keychain.")
+        }
+        stopLoop()
+        currentSync?.cancel()
+        makeEngine(serverURL: serverURL, apiKey: key)
+        secretsReadFailed = false
+        lastError = nil
+        guard let vaultKey else {
+            phase = exists ? .locked : .needsVault(exists: false)
+            return
+        }
+        pendingUnlockKey = vaultKey
+        unlocked = true
+        await beginSyncing()
+    }
+
     /// Re-wraps the vault key under `new`. Records and this Mac's saved vault key are unchanged.
     public func changePassphrase(old: String, new: String) async throws(SyncSetupError) {
         if Self.passphraseProblem(new) != nil { throw .weakPassphrase }
@@ -215,20 +259,44 @@ public final class SyncCoordinator {
     /// At launch: configured with a vault key → unlock and start the loop; configured without
     /// one → `.locked` (or `.needsVault(exists: false)` once the server says it has no vault).
     /// Idempotent: a second call without `stop()` does nothing; after `stop()` it starts again.
+    ///
+    /// If the Keychain can't be read, the phase is `.failed(SyncSetupError.keychainUnreadable.message)`
+    /// (not "not configured"); `start()` or `syncNow()` tries again.
     public func start() {
+        start(syncFirst: true)
+    }
+
+    private func start(syncFirst: Bool) {
         guard !running else { return }
         running = true
+        secretsReadFailed = false
         serverURL = defaults.string(forKey: Self.serverURLKey).flatMap(URL.init(string:))
-        guard let serverURL, let apiKey = try? secrets.loadAPIKey(), !apiKey.isEmpty else {
+        guard let serverURL else {
+            phase = .notConfigured
+            return
+        }
+        let apiKey: String?
+        do {
+            apiKey = try secrets.loadAPIKey()
+        } catch {
+            return secretsUnreadable()
+        }
+        guard let apiKey, !apiKey.isEmpty else {
             phase = .notConfigured
             return
         }
         if engine == nil { makeEngine(serverURL: serverURL, apiKey: apiKey) }
         if unlocked {
-            startLoop(syncFirst: true)
+            startLoop(syncFirst: syncFirst)
             return
         }
-        guard let key = try? secrets.loadVaultKey() else {
+        let key: VaultKey?
+        do {
+            key = try secrets.loadVaultKey()
+        } catch {
+            return secretsUnreadable()
+        }
+        guard let key else {
             phase = .locked
             checkForMissingVault(serverURL: serverURL, apiKey: apiKey)
             return
@@ -236,12 +304,23 @@ public final class SyncCoordinator {
         pendingUnlockKey = key
         unlocked = true
         phase = .idle
-        startLoop(syncFirst: true)
+        startLoop(syncFirst: syncFirst)
+    }
+
+    /// A Keychain read failed in `start()`: show it, and let `start()` / `syncNow()` retry.
+    private func secretsUnreadable() {
+        running = false
+        secretsReadFailed = true
+        phase = .failed(SyncSetupError.keychainUnreadable.message)
     }
 
     /// Syncs now (also retrying after `.failed`); waits until a sync that started after this call
     /// has finished. Does nothing until configured and unlocked.
     public func syncNow() async {
+        if secretsReadFailed {
+            start(syncFirst: false)
+            if secretsReadFailed { return }
+        }
         requestedSyncs += 1
         let request = requestedSyncs
         while completedSyncs < request {
@@ -261,12 +340,22 @@ public final class SyncCoordinator {
 
     /// Stops syncing and forgets this Mac's sync setup: deletes the API key and vault key, the
     /// server URL and the sync state. Local data is kept.
+    /// If the Keychain refuses to delete the keys, the rest still happens and `lastError` is
+    /// `.keychainCleanupFailed`.
     public func disconnect() {
         stop()
-        try? secrets.deleteAll()
+        do {
+            try secrets.deleteAll()
+            lastError = nil
+        } catch {
+            lastError = .keychainCleanupFailed
+        }
         defaults.removeObject(forKey: Self.serverURLKey)
+        defaults.removeObject(forKey: Self.lastSyncedAtKey)
         serverURL = nil
         engine = nil
+        transport = nil
+        secretsReadFailed = false
         unlocked = false
         pendingUnlockKey = nil
         lastSyncedAt = nil
@@ -290,7 +379,9 @@ public final class SyncCoordinator {
     // MARK: Internals
 
     private func makeEngine(serverURL: URL, apiKey: String) {
-        engine = SyncEngine(transport: makeTransport(serverURL, apiKey), store: LocalVaultSyncStore(vault: vault),
+        let transport = makeTransport(serverURL, apiKey)
+        self.transport = transport
+        engine = SyncEngine(transport: transport, store: LocalVaultSyncStore(vault: vault),
                             deviceID: vault.deviceID, iterations: iterations)
         unlocked = false
         pendingUnlockKey = nil
@@ -340,7 +431,9 @@ public final class SyncCoordinator {
             // Disconnected or reconnected meanwhile: this result belongs to the old setup.
             guard self.engine === engine else { return }
             lastReport = report
-            lastSyncedAt = now()
+            let syncedAt = now()
+            lastSyncedAt = syncedAt
+            defaults.set(syncedAt, forKey: Self.lastSyncedAtKey)
             offlineStreak = 0
             outcome = .success
             phase = .idle
@@ -348,15 +441,23 @@ public final class SyncCoordinator {
             if self.engine === engine { phase = .idle }
         } catch {
             guard self.engine === engine else { return }
-            let setupError = SyncSetupError(error)
+            var setupError = SyncSetupError(error)
+            var healthFailed = false
+            if setupError == .vaultChanged, let transport {
+                (setupError, healthFailed) = await diagnoseMissingVault(transport)
+                guard self.engine === engine else { return }
+            }
             switch setupError {
+            case _ where healthFailed:
+                outcome = .offline
+                phase = .offline(setupError.message)
             case .unreachable:
                 outcome = .offline
                 phase = .offline(setupError.message)
             case .server(let status) where status >= 500:
                 outcome = .offline
                 phase = .offline(setupError.message)
-            case .unauthorized, .tampered, .vaultChanged, .noVault:
+            case .unauthorized, .tampered, .vaultChanged, .noVault, .noVaultAtAddress:
                 outcome = .paused
                 phase = .failed(setupError.message)
             default:
@@ -364,6 +465,27 @@ public final class SyncCoordinator {
                 phase = .failed(setupError.message)
             }
             if outcome == .offline { offlineStreak += 1 } else { offlineStreak = 0 }
+        }
+    }
+
+    /// The engine reports `.vaultChanged` both when `GET /v1/vault` is 404 and when it names another
+    /// vault. A 404 may be a proxy problem, so `/health` is asked first: if it fails, that error is
+    /// returned with `healthFailed` (shown as offline, retried with backoff). Otherwise the vault is
+    /// fetched again: still missing → `.noVaultAtAddress`; another vault → `.vaultChanged`; this
+    /// vault back again → a transient answer, treated as unreachable.
+    private func diagnoseMissingVault(_ transport: any SyncTransport) async
+        -> (error: SyncSetupError, healthFailed: Bool) {
+        do {
+            try await transport.health()
+        } catch {
+            return (SyncSetupError(error), true)
+        }
+        do {
+            guard let metadata = try await transport.getVault() else { return (.noVaultAtAddress, false) }
+            if metadata.vaultID != vault.currentSyncState.vaultID { return (.vaultChanged, false) }
+            return (.unreachable("the server's answer changed while syncing"), false)
+        } catch {
+            return (SyncSetupError(error), false)
         }
     }
 

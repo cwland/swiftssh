@@ -24,6 +24,12 @@ public enum SyncSetupError: Error, Equatable, Sendable {
     case redirected
     /// macOS (App Transport Security) refused a plain http:// connection.
     case insecureConnectionBlocked
+    /// The Keychain refused to hand out the saved API key or vault key (e.g. it is locked).
+    case keychainUnreadable
+    /// Disconnect couldn't delete the saved keys from the Keychain.
+    case keychainCleanupFailed
+    /// `GET /v1/vault` answered 404 while `/health` answered: wrong proxy path, or the server was reset.
+    case noVaultAtAddress
 
     /// Short, user-facing.
     public var message: String {
@@ -42,6 +48,13 @@ public enum SyncSetupError: Error, Equatable, Sendable {
         case .redirected:
             "The sync server redirected the request. Use the final address (check your proxy) in Settings → Sync."
         case .insecureConnectionBlocked: "macOS blocked a plain http:// connection. Use your https:// proxy address."
+        case .keychainUnreadable:
+            "Couldn't read the sync keys from the Keychain. Open Settings → Sync and try again."
+        case .keychainCleanupFailed:
+            "Disconnected, but the sync keys couldn't be removed from the Keychain. Setting up sync again replaces them."
+        case .noVaultAtAddress:
+            "The sync server answered but has no vault at this address. Check the server address (proxy path) "
+                + "— or, if the server was reset, disconnect and set up sync again."
         }
     }
 
