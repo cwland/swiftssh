@@ -194,7 +194,7 @@ private struct WindowLifecycleObserver: NSViewRepresentable {
     }
 }
 
-/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts, Keychain and Logs
+/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts, Keychain, Logs and Snippets
 /// view models so search, filters and the open group survive switching sidebar items and tabs.
 /// They are built once, on appear, rather than in `init` (which runs on every parent body
 /// evaluation).
@@ -209,6 +209,7 @@ private struct ReadyArea: View {
     @State private var hostsModel: HostsViewModel?
     @State private var keychainModel: KeychainViewModel?
     @State private var logsModel: LogsViewModel?
+    @State private var snippetsModel: SnippetsViewModel?
 
     var body: some View {
         Group {
@@ -231,7 +232,8 @@ private struct ReadyArea: View {
                     terminalSettings: environment.terminalSettings,
                     hostsModel: hostsModel,
                     keychainModel: keychainModel,
-                    logsModel: logsModel
+                    logsModel: logsModel,
+                    snippetsModel: snippetsModel
                 )
             }
         }
@@ -244,6 +246,9 @@ private struct ReadyArea: View {
             }
             if logsModel == nil {
                 logsModel = LogsViewModel(vault: vault)
+            }
+            if snippetsModel == nil {
+                snippetsModel = SnippetsViewModel(vault: vault)
             }
         }
         .onChange(of: sessions.tabs.map(\.id)) { _, openIDs in
@@ -282,6 +287,7 @@ private struct MainArea: View {
     let hostsModel: HostsViewModel?
     let keychainModel: KeychainViewModel?
     let logsModel: LogsViewModel?
+    let snippetsModel: SnippetsViewModel?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -320,7 +326,13 @@ private struct MainArea: View {
             } else {
                 Theme.contentBackground
             }
-        case .snippets, .knownHosts:
+        case .snippets:
+            if let snippetsModel {
+                SnippetsView(model: snippetsModel, vault: vault, sessions: sessions)
+            } else {
+                Theme.contentBackground
+            }
+        case .knownHosts:
             PlaceholderView("Coming in a later milestone")
         }
     }
