@@ -96,6 +96,8 @@ struct TopBarView: View {
                 WindowDragArea()
             }
         }
+        // Shared, so the terminal area of the dragged tab itself refuses the drop (RootView).
+        .onChange(of: draggingTabID) { sessions?.draggedTabID = draggingTabID }
         .alert("Rename Tab", isPresented: renameBinding) {
             TextField("Tab name", text: $renameText)
             Button("Rename") {

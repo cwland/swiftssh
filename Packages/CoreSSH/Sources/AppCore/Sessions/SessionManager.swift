@@ -302,6 +302,9 @@ fileprivate final class SessionAttempt {
 public final class SessionManager {
     /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
     public internal(set) var tabs: [TerminalTab] = []
+    /// The tab being dragged from a tab bar right now (set by the app while the drag lasts), so a
+    /// terminal area can refuse a drop of the tab it is itself showing.
+    public var draggedTabID: UUID?
     /// The main window's selected tab; nil = Vaults. Setting a tab of another window is ignored.
     /// Other windows: `selectedTabID(inWindow:)` / `select(tabID:inWindow:)`.
     public var selectedTabID: UUID? {

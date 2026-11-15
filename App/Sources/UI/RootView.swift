@@ -245,7 +245,9 @@ private struct ReadyArea: View {
                                 editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
                     // A tab dragged from the bar, or a host card, dropped on a half of the terminal
                     // turns this tab into a workspace with both.
+                    // Not the tab itself: dropping it on its own terminal can't split anything.
                     .terminalDropZone(
+                        isDragSource: sessions.draggedTabID == tab.id,
                         onDropTab: { droppedID, edge in dropTab(droppedID, onto: tab, at: edge) },
                         onDropHost: { hostID, edge in dropHost(hostID, onto: tab, at: edge) }
                     )
