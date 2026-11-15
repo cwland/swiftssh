@@ -200,8 +200,10 @@ struct SnippetsView: View {
         HStack(spacing: 12) {
             Menu {
                 Button("New Snippet") { createSnippet() }
+                // Always a new package with a new snippet in it; moving snippets is the cards'
+                // "Move to → New package…" (the selection here was usually just the last clicked card).
                 Button("New package\u{2026}") {
-                    newPackageRequest = NewPackageRequest(snippetIDs: selectedIDs)
+                    newPackageRequest = NewPackageRequest(snippetIDs: [])
                 }
             } label: {
                 Label("New Snippet", systemImage: "plus")
