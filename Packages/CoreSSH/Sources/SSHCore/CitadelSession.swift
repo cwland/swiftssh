@@ -278,6 +278,14 @@ public final class CitadelSession: TerminalSession {
                 let channel = try await Self.openTCPConnection(host: host, port: port, group: group, timeout: timeout,
                                                                isAbandoned: { outcome.isResolved }, progress: progress)
                 progress(.handshake)
+                // A server that hangs up before signing in ends the attempt now, not at the timeout. A socket
+                // error usually explains it first; this is the fallback when it doesn't.
+                channel.closeFuture.whenComplete { _ in
+                    guard !outcome.isResolved else { return }
+                    channel.eventLoop.scheduleTask(in: .milliseconds(250)) {
+                        outcome.resolve(.failed(.connectionFailed(Self.closedDuringHandshakeMessage)))
+                    }
+                }
                 let settings = SSHClientSettings(
                     host: host, port: port,
                     authenticationMethod: {
@@ -666,7 +674,7 @@ public final class CitadelSession: TerminalSession {
             break
         }
         if let reason = lowLevelReason(error) {
-            return .connectionFailed("The connection to the server failed (\(reason)).")
+            return .connectionFailed(reason) // "The connection failed: connection reset by peer"
         }
         if closedDuringHandshake(error) {
             return .connectionFailed(closedDuringHandshakeMessage)
