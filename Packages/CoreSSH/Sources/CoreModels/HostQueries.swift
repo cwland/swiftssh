@@ -19,7 +19,21 @@ public struct HostDirectory: Sendable {
     }
 
     public func effectiveThemeID(for host: Host) -> String? {
-        host.themeID ?? firstInChain(of: host) { $0.defaultThemeID }
+        themeIDChain(for: host).first
+    }
+
+    /// The host's own theme id, then each group's `defaultThemeID` up the parent chain
+    /// (nearest first, cycle-safe, deleted groups skipped). nil levels are left out.
+    /// A resolver walks this to skip ids its catalog doesn't know.
+    public func themeIDChain(for host: Host) -> [String] {
+        var chain: [String] = host.themeID.map { [$0] } ?? []
+        var visited: Set<UUID> = []
+        var next = host.groupID
+        while let id = next, visited.insert(id).inserted, let group = groupsByID[id] {
+            if let theme = group.defaultThemeID { chain.append(theme) }
+            next = group.parentID
+        }
+        return chain
     }
 
     /// nil = all hosts; otherwise hosts in the group and all its descendants.
