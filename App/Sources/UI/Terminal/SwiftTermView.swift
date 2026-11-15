@@ -7,20 +7,29 @@ import SwiftTerm
 // AppCore's `TerminalThemeCatalog` (conversions in TerminalTheme+AppKit.swift).
 
 /// Shows a tab's SwiftTerm view. The view itself lives in `TerminalViewStore`, not here, so
-/// switching tabs (which tears this representable down) keeps the scrollback.
+/// switching tabs (which tears this representable down) keeps the scrollback. `appearance` is
+/// applied on every update, so theme and text size changes reach the open tab live (and a tab
+/// that was hidden gets the current one when it is shown, before it draws).
 struct SwiftTermView: NSViewRepresentable {
     let tab: TerminalTab
     let sessions: SessionManager
     let store: TerminalViewStore
+    let appearance: TerminalAppearance
 
     func makeNSView(context: Context) -> TerminalHostView {
         let host = TerminalHostView()
-        host.attach(store.view(for: tab, sessions: sessions))
+        attachTerminal(to: host)
         return host
     }
 
     func updateNSView(_ host: TerminalHostView, context: Context) {
-        host.attach(store.view(for: tab, sessions: sessions))
+        attachTerminal(to: host)
+    }
+
+    private func attachTerminal(to host: TerminalHostView) {
+        let view = store.view(for: tab, sessions: sessions, appearance: appearance)
+        view.apply(appearance)
+        host.attach(view)
     }
 
     static func dismantleNSView(_ host: TerminalHostView, coordinator: ()) {
@@ -67,10 +76,11 @@ final class TerminalHostView: NSView {
 final class TerminalViewStore {
     private var entries: [UUID: TerminalBridge] = [:]
 
-    /// The tab's terminal view, created (and wired to the session) on first use.
-    func view(for tab: TerminalTab, sessions: SessionManager) -> SessionTerminalView {
+    /// The tab's terminal view, created (and wired to the session) on first use with
+    /// `appearance`'s text size. Callers apply `appearance` themselves (`SessionTerminalView.apply`).
+    func view(for tab: TerminalTab, sessions: SessionManager, appearance: TerminalAppearance) -> SessionTerminalView {
         if let entry = entries[tab.id] { return entry.view }
-        let entry = TerminalBridge(tabID: tab.id, sessions: sessions)
+        let entry = TerminalBridge(tabID: tab.id, sessions: sessions, fontSize: appearance.fontSize)
         entries[tab.id] = entry
         let view = entry.view
         tab.outputSink = { [weak view] bytes in
@@ -100,20 +110,15 @@ final class TerminalBridge: TerminalViewDelegate {
     private let tabID: UUID
     private weak var sessions: SessionManager?
 
-    init(tabID: UUID, sessions: SessionManager) {
+    init(tabID: UUID, sessions: SessionManager, fontSize: Int) {
         self.tabID = tabID
         self.sessions = sessions
-        view = SessionTerminalView(font: Self.terminalFont)
+        view = SessionTerminalView(font: SessionTerminalView.terminalFont(size: fontSize))
         view.terminalDelegate = self
         view.onSizeChange = { [weak self] cols, rows in
             guard let self else { return }
             self.sessions?.resize(tabID: self.tabID, cols: cols, rows: rows)
         }
-    }
-
-    /// SF Mono 13 pt.
-    private static var terminalFont: NSFont {
-        NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
     }
 
     // MARK: TerminalViewDelegate
@@ -138,17 +143,22 @@ final class TerminalBridge: TerminalViewDelegate {
 }
 
 /// SwiftTerm's view plus: the size is reported as soon as the frame gives it one (SwiftTerm only
-/// calls `sizeChanged` when the grid changes from its 80×25 default), and light/dark colors follow
-/// the effective appearance.
+/// calls `sizeChanged` when the grid changes from its 80×25 default), and the tab's theme and text
+/// size are applied through `apply(_:)`. Automatic's light/dark choice is made by the caller
+/// (SwiftUI's color scheme), so this view no longer re-themes itself on appearance changes.
 final class SessionTerminalView: TerminalView {
     /// Called with each new grid size, once per change.
     var onSizeChange: ((Int, Int) -> Void)?
     private var reportedSize: (cols: Int, rows: Int)?
-    private var appliedDarkTheme: Bool?
+    private var appliedAppearance: TerminalAppearance?
+
+    /// SF Mono at `size` points.
+    static func terminalFont(size: Int) -> NSFont {
+        NSFont.monospacedSystemFont(ofSize: CGFloat(size), weight: .regular)
+    }
 
     init(font: NSFont) {
         super.init(frame: .zero, font: font)
-        applyTheme()
     }
 
     required init?(coder: NSCoder) {
@@ -169,26 +179,25 @@ final class SessionTerminalView: TerminalView {
         onSizeChange?(cols, rows)
     }
 
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        applyTheme()
-    }
-
-    override func viewDidChangeEffectiveAppearance() {
-        super.viewDidChangeEffectiveAppearance()
-        applyTheme()
-    }
-
-    /// Automatic: Reimagined Light or Dark from the theme catalog, by the effective appearance.
-    private func applyTheme() {
-        let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-        guard dark != appliedDarkTheme else { return }
-        appliedDarkTheme = dark
-        let theme = TerminalThemeCatalog.shared.automatic(prefersDark: dark)
-        installColors(theme.swiftTermPalette)
-        nativeBackgroundColor = theme.background.nsColor
-        nativeForegroundColor = theme.foreground.nsColor
-        caretColor = theme.cursor.nsColor
-        selectedTextBackgroundColor = theme.selection.nsColor
+    /// Installs palette, bg/fg/caret/selection; sets the font only when the size changed.
+    /// Returns early when `appearance` equals the last applied one. Cells keep palette indices, so
+    /// the scrollback is redrawn in the new colors. A new font size goes through SwiftTerm's
+    /// resize → `sizeChanged` → `reportSize` → `SessionManager.resize` (remote window change),
+    /// the same path a window resize takes.
+    func apply(_ appearance: TerminalAppearance) {
+        guard appearance != appliedAppearance else { return }
+        if appearance.theme != appliedAppearance?.theme {
+            let theme = appearance.theme
+            installColors(theme.swiftTermPalette)
+            nativeBackgroundColor = theme.background.nsColor
+            nativeForegroundColor = theme.foreground.nsColor
+            caretColor = theme.cursor.nsColor
+            selectedTextBackgroundColor = theme.selection.nsColor
+        }
+        let pointSize = CGFloat(appearance.fontSize)
+        if font.pointSize != pointSize {
+            font = Self.terminalFont(size: appearance.fontSize)
+        }
+        appliedAppearance = appearance
     }
 }

@@ -646,6 +646,17 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertFalse(quick.canSavePassword)
     }
 
+    func testSavedHostIDForHostTab() async throws {
+        let host = passwordHost()
+        let tab = try manager.open(hostID: host.id)
+        XCTAssertEqual(tab.savedHostID, host.id)
+    }
+
+    func testSavedHostIDNilForQuickConnect() async throws {
+        let tab = manager.open(quickConnect: QuickConnectTarget(username: nil, host: "q.example", port: 22))
+        XCTAssertNil(tab.savedHostID)
+    }
+
     func testSystemSSHWithoutPasswordStartsWithoutPrompt() async throws {
         let host = vault.saveNow(SavedHost(label: "S", address: "s.example", username: "root", useSystemSSH: true))
         let tab = try manager.open(hostID: host.id)
