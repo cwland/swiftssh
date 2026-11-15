@@ -211,8 +211,8 @@ final class TerminalBridge: TerminalViewDelegate {
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         // Only what the user typed or pasted may be broadcast to a workspace's other panes. The
-        // terminal's own replies (cursor-position/device reports, clipboard answers) and mouse
-        // reports belong to this pane alone.
+        // terminal's own replies (cursor-position/device reports, clipboard answers, mouse reports)
+        // belong to this pane alone.
         if view.isUserInput {
             sessions?.sendInput(fromTab: tabID, Array(data))
         } else {
@@ -270,20 +270,36 @@ final class TerminalBridge: TerminalViewDelegate {
 /// by the caller (SwiftUI's color scheme), so this view no longer re-themes itself on appearance
 /// changes.
 final class SessionTerminalView: TerminalView {
-    /// Set while output is fed to the terminal: anything it sends back then is an automatic reply.
-    private var isFeedingOutput = false
+    /// Set while the terminal's own reply (a device/cursor report, clipboard answer, mouse report)
+    /// is handed to the delegate.
+    private var isTerminalReply = false
     /// Set while a paste or text input from the user is being handled.
     private var userInputDepth = 0
 
     /// Whether data the terminal sends right now comes from the user: a paste, text input, or a key
-    /// press in this view's window while it has the keyboard focus. Never while output is fed
-    /// (automatic replies) and never for mouse events (mouse reports).
+    /// press in this view's window while it has the keyboard focus. Never for the terminal's own
+    /// replies or mouse reports (`send(source: Terminal, …)` below marks those).
     var isUserInput: Bool {
-        if isFeedingOutput { return false }
+        if isTerminalReply { return false }
         if userInputDepth > 0 { return true }
         guard let event = NSApp.currentEvent, event.type == .keyDown,
               let window, event.window === window, window.firstResponder === self else { return false }
         return true
+    }
+
+    /// SwiftTerm's path for everything the terminal itself sends back (it always arrives a main-queue
+    /// hop after the output that caused it, so no flag set around `feed` could cover it). Same hop as
+    /// SwiftTerm's own, with the reply marked so a broadcasting workspace keeps it in this pane.
+    nonisolated override func send(source: Terminal, data: ArraySlice<UInt8>) {
+        let bytes = Array(data)
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isTerminalReply = true
+                defer { self.isTerminalReply = false }
+                self.terminalDelegate?.send(source: self, data: bytes[...])
+            }
+        }
     }
 
     override func paste(_ sender: Any) {
@@ -436,9 +452,7 @@ final class SessionTerminalView: TerminalView {
     func receive(_ bytes: [UInt8]) {
         let output = highlighter.process(bytes[...])
         if !output.isEmpty {
-            isFeedingOutput = true
             feed(byteArray: output[...])
-            isFeedingOutput = false
         }
         lastOutput = .now
         scheduleIdleFlush()
@@ -473,9 +487,7 @@ final class SessionTerminalView: TerminalView {
     func flushHighlighter() {
         let held = highlighter.flush()
         if !held.isEmpty {
-            isFeedingOutput = true
             feed(byteArray: held[...])
-            isFeedingOutput = false
         }
     }
 
