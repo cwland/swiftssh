@@ -133,6 +133,26 @@ public final class HostsViewModel {
         try await vault.save(group)
     }
 
+    /// The group's own default theme id; nil = Default (or a missing or deleted group).
+    public func themeID(ofGroup id: UUID) -> String? {
+        _ = vault.revision
+        return vault.get(HostGroup.self, id: id)?.defaultThemeID
+    }
+
+    /// What "Default" resolves to from the group's parents: a theme id this build knows, or nil =
+    /// the app default.
+    public func inheritedThemeID(ofGroup id: UUID) -> String? {
+        _ = vault.revision
+        return TerminalThemeResolver.inheritedThemeID(forGroupID: id, groups: vault.all(HostGroup.self))
+    }
+
+    /// nil = Default. Saves through the vault (syncs). A missing or deleted group is left alone.
+    public func setTheme(_ themeID: String?, forGroup id: UUID) async throws {
+        guard var group = vault.get(HostGroup.self, id: id), group.defaultThemeID != themeID else { return }
+        group.defaultThemeID = themeID
+        try await vault.save(group)
+    }
+
     /// Moves the group's hosts and subgroups up one level, then deletes the group.
     public func deleteGroup(id: UUID) async throws {
         try await vault.deleteGroup(id: id)

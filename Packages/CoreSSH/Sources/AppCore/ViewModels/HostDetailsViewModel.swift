@@ -114,6 +114,13 @@ public final class HostDetailsViewModel {
         }
     }
 
+    /// The host's own terminal theme; nil = Default (inherit from its groups, then the app default).
+    /// Saves at once, like the other fields. The username and credentials are not touched.
+    public var themeID: String? {
+        get { host?.themeID }
+        set { update { $0.themeID = newValue } }
+    }
+
     /// Setting a badge marks it as chosen by the user.
     public var osBadge: OSBadge? {
         get { host?.osBadge }
@@ -290,6 +297,22 @@ public final class HostDetailsViewModel {
             next = group.parentID
         }
         return "22 (default)"
+    }
+
+    /// What "Default" resolves to from the host's groups: a theme id this build knows, or nil = the
+    /// app default. The host's own theme is not considered.
+    public var inheritedThemeID: String? {
+        guard var host else { return nil }
+        host.themeID = nil
+        let others = vault.all(SavedHost.self).filter { $0.id != hostID }
+        return TerminalThemeResolver.inheritedThemeID(forHostID: hostID, hosts: others + [host],
+                                                      groups: vault.all(HostGroup.self))
+    }
+
+    /// The stored theme id when this build's catalog doesn't know it (a newer build synced it).
+    public var unknownThemeID: String? {
+        guard let id = host?.themeID, !TerminalThemeCatalog.shared.contains(id) else { return nil }
+        return id
     }
 
     public var portError: String? {
