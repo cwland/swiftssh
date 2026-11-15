@@ -146,6 +146,18 @@ public final class HostDetailsViewModel {
         set { update { $0.themeID = newValue } }
     }
 
+    // MARK: Startup snippet
+
+    /// The snippet typed after login; nil = none (also when the stored one is missing or deleted).
+    /// Saves at once; setting the stored value again does nothing.
+    public var startupSnippetID: UUID? {
+        get { nil } // stub
+        set {} // stub
+    }
+
+    /// Snippets that can be a startup snippet: those without placeholders, A–Z.
+    public func startupCandidates() -> [Snippet] { [] } // stub
+
     // MARK: Attach to tmux
 
     /// `.inherit` for nil (older records) and a stored `.inherit`. Saves at once; the username and

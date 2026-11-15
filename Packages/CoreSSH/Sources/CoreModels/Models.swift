@@ -205,12 +205,17 @@ public struct Snippet: SyncableModel {
     public var name: String
     public var script: String
     public var package: String?
+    /// The hosts "Run on several hosts" remembers ("Save targets"); nil = none saved. Absent on
+    /// records written before v0.8.0 (decodes as nil).
+    public var targetHostIDs: [UUID]?
     public var updatedAt: Date
     public var deleted: Bool
 
     public init(id: UUID = UUID(), name: String, script: String, package: String? = nil,
+                targetHostIDs: [UUID]? = nil,
                 updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.name = name; self.script = script; self.package = package
+        self.targetHostIDs = targetHostIDs
         self.updatedAt = updatedAt; self.deleted = deleted
     }
 }

@@ -223,6 +223,12 @@ public final class TerminalTab: Identifiable {
     }
 }
 
+/// How a snippet is typed into a terminal: `paste` inserts it without running it; `run` also presses
+/// Return.
+public enum SnippetDelivery: Sendable, Equatable {
+    case paste, run
+}
+
 fileprivate enum SessionTarget {
     case host(UUID)
     case quickConnect(QuickConnectTarget)
@@ -744,6 +750,32 @@ public final class SessionManager {
 
     public func send(tabID: UUID, _ bytes: [UInt8]) {
         tab(tabID)?.attempt?.inputs.yield(.bytes(bytes))
+    }
+
+    // MARK: Snippets
+
+    /// Types `text` into the tab (see `SnippetDelivery`). False, and nothing sent, when the tab is not
+    /// open or not connected.
+    @discardableResult
+    public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID) -> Bool {
+        false // stub
+    }
+
+    /// Delivers `text` to every connected tab of the window (nil = the main window); the count delivered.
+    @discardableResult
+    public func deliverToAllTabs(_ text: String, as delivery: SnippetDelivery, inWindow windowID: UUID?) -> Int {
+        0 // stub
+    }
+
+    /// The window's tabs that `deliverToAllTabs` would type into.
+    public func connectableTabCount(inWindow windowID: UUID?) -> Int {
+        0 // stub
+    }
+
+    /// Opens a tab per host in the main window and runs `text` in each once it is ready.
+    @discardableResult
+    public func runOnHosts(_ hostIDs: [UUID], text: String) throws -> [TerminalTab] {
+        [] // stub
     }
 
     public func resize(tabID: UUID, cols: Int, rows: Int) {
