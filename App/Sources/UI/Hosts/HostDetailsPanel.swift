@@ -7,6 +7,7 @@ import CoreModels
 /// model is built once, on appear, not in `init`, so re-evaluating a parent body is cheap.
 struct HostDetailsPanel: View {
     let vault: LocalVault
+    let terminalSettings: TerminalSettings
     let hostID: UUID
     let onClose: () -> Void
     let onConnect: () -> Void
@@ -16,7 +17,7 @@ struct HostDetailsPanel: View {
     var body: some View {
         ZStack {
             if let details {
-                HostDetailsContent(details: details, vault: vault, onClose: onClose, onConnect: onConnect)
+                HostDetailsContent(details: details, vault: vault, terminalSettings: terminalSettings, onClose: onClose, onConnect: onConnect)
             } else {
                 Theme.sidebarBackground
                     .frame(width: Theme.detailsPanelWidth)
@@ -34,6 +35,7 @@ struct HostDetailsPanel: View {
 private struct HostDetailsContent: View {
     @Bindable var details: HostDetailsViewModel
     let vault: LocalVault
+    let terminalSettings: TerminalSettings
     let onClose: () -> Void
     let onConnect: () -> Void
 
@@ -42,6 +44,7 @@ private struct HostDetailsContent: View {
     @FocusState private var tagsFieldFocused: Bool
     @State private var showBadgePicker = false
     @State private var showOSPicker = false
+    @State private var showsMore = false
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -61,11 +64,14 @@ private struct HostDetailsContent: View {
                     if let hint = details.reuseHint {
                         reuseHintCard(hint)
                     }
-                    Button("Show more") {}
-                        .buttonStyle(.link)
-                        .disabled(true)
-                        .help("More settings arrive in a later milestone")
-                        .padding(.horizontal, 4)
+                    Button(showsMore ? "Show less" : "Show more") {
+                        showsMore.toggle()
+                    }
+                    .buttonStyle(.link)
+                    .padding(.horizontal, 4)
+                    if showsMore {
+                        terminalCard
+                    }
                 }
                 .padding(16)
             }
@@ -267,6 +273,30 @@ private struct HostDetailsContent: View {
                 }
             }
         }
+    }
+
+    private var terminalCard: some View {
+        DetailsCard {
+            Text("Terminal")
+                .font(.system(size: 13, weight: .semibold))
+            FieldColumn(title: "Theme") {
+                ThemePicker(themeID: $details.themeID, defaultLabel: themeDefaultLabel,
+                            unknownThemeID: details.unknownThemeID)
+            }
+        }
+    }
+
+    /// What "Default" means for this host: the group's theme ("Nord — from group"), else the app
+    /// default theme's name, else "Automatic".
+    private var themeDefaultLabel: String {
+        let catalog = TerminalThemeCatalog.shared
+        if let id = details.inheritedThemeID, let theme = catalog.theme(id: id) {
+            return "\(theme.name) — from group"
+        }
+        if let id = terminalSettings.defaultThemeID, let theme = catalog.theme(id: id) {
+            return theme.name
+        }
+        return "Automatic"
     }
 
     private var credentialsCard: some View {

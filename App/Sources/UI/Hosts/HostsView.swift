@@ -8,6 +8,8 @@ struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
     let sessions: SessionManager
+    /// Task 4 passes environment.terminalSettings (RootView); Task 5 resolves the one-line merge.
+    let terminalSettings: TerminalSettings
 
     @State private var showTagFilter = false
     @State private var showNewGroup = false
@@ -28,7 +30,7 @@ struct HostsView: View {
 
             if let hostID = model.selectedHostID, model.selectedHost != nil {
                 Divider()
-                HostDetailsPanel(vault: vault, hostID: hostID, onClose: {
+                HostDetailsPanel(vault: vault, terminalSettings: terminalSettings, hostID: hostID, onClose: {
                     model.selectedHostID = nil
                 }, onConnect: {
                     connect(hostID: hostID)
@@ -204,6 +206,11 @@ struct HostsView: View {
                             model.openGroup(group.id)
                         }
                         .contextMenu {
+                            Menu("Theme") {
+                                GroupThemeMenu(currentThemeID: model.themeID(ofGroup: group.id)) { id in
+                                    Task { try? await model.setTheme(id, forGroup: group.id) }
+                                }
+                            }
                             Button("Rename") {
                                 groupToRename = group
                                 renameText = group.name
