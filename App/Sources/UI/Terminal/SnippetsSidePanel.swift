@@ -22,6 +22,8 @@ struct SnippetsSidePanel: View {
     let focusTerminal: () -> Void
     /// Pastes into this tab's terminal like ⌘V (bracketed paste when the shell asked for it).
     let pasteIntoTerminal: (String) -> Bool
+    /// Whether the shell turned on bracketed paste (a multi-line paste is then inserted, not run).
+    let isBracketedPasteActive: () -> Bool
     let close: () -> Void
 
     static let width: CGFloat = 300
@@ -34,6 +36,8 @@ struct SnippetsSidePanel: View {
     @State private var focusAfterSheet = false
     @State private var confirmingRunInAllTabs: Snippet?
     @State private var confirmingRemove: Snippet?
+    /// A multi-line Paste waiting for confirmation: without bracketed paste each line would run.
+    @State private var confirmingUnsafePaste: String?
     @FocusState private var searchFocused: Bool
 
     var body: some View {
@@ -90,6 +94,18 @@ struct SnippetsSidePanel: View {
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("It is typed into every connected tab of this window and Return is pressed.")
+        }
+        .alert("Paste \(unsafePasteLineCount) lines?",
+               isPresented: Binding(get: { confirmingUnsafePaste != nil },
+                                    set: { if !$0 { confirmingUnsafePaste = nil } }),
+               presenting: confirmingUnsafePaste) { text in
+            Button("Paste and Run Each Line") {
+                pasteNow(text)
+                returnFocusToTerminal()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This server\u{2019}s shell doesn\u{2019}t support safe multi-line paste, so each line runs as soon as it\u{2019}s pasted.")
         }
         .alert(removeTitle, isPresented: isPresented($confirmingRemove),
                presenting: confirmingRemove) { snippet in
@@ -301,8 +317,25 @@ struct SnippetsSidePanel: View {
     /// Run types the text and Return through the session; Paste goes through the terminal so a
     /// multi-line snippet is inserted rather than run line by line (falls back to the session).
     private func send(_ text: String, as delivery: SnippetDelivery) {
-        if delivery == .paste, pasteIntoTerminal(text) { return }
-        _ = sessions.deliver(text, as: delivery, toTab: tab.id)
+        guard delivery == .paste else {
+            _ = sessions.deliver(text, as: .run, toTab: tab.id)
+            return
+        }
+        // Without bracketed paste the shell would run every line but the last: ask first.
+        if text.contains(where: \.isNewline), !isBracketedPasteActive() {
+            confirmingUnsafePaste = text
+            return
+        }
+        pasteNow(text)
+    }
+
+    private func pasteNow(_ text: String) {
+        if pasteIntoTerminal(text) { return }
+        _ = sessions.deliver(text, as: .paste, toTab: tab.id)
+    }
+
+    private var unsafePasteLineCount: Int {
+        (confirmingUnsafePaste ?? "").split(whereSeparator: \.isNewline).count
     }
 
     /// Confirmed "Run in N tabs": runs it in every connected tab of this window (placeholders first).

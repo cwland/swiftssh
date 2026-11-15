@@ -14,6 +14,8 @@ struct PlaceholderForm: View {
     let onCancel: () -> Void
 
     @State private var values: [String: String]
+    /// Return can reach both the field's onSubmit and the default button: submit only once.
+    @State private var didSubmit = false
     @FocusState private var focusedName: String?
 
     init(template: SnippetTemplate, actionTitle: String,
@@ -89,6 +91,8 @@ struct PlaceholderForm: View {
     }
 
     private func submit() {
+        guard !didSubmit else { return }
+        didSubmit = true
         onSubmit(preview)
     }
 }

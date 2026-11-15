@@ -143,6 +143,11 @@ final class TerminalViewStore {
         return true
     }
 
+    /// Whether a multi-line paste would be inserted (bracketed paste on) rather than run line by line.
+    func isBracketedPasteActive(tabID: UUID) -> Bool {
+        entries[tabID]?.view.isBracketedPasteActive ?? false
+    }
+
     /// Gives the tab's terminal the keyboard focus again (after the snippets panel pastes or runs);
     /// nothing while its view is not in a window.
     func focus(tabID: UUID) {
@@ -265,6 +270,8 @@ final class SessionTerminalView: TerminalView {
     /// incomplete escape or UTF-8 sequence at the end of a chunk (bounded), so typed characters
     /// echo without delay.
     private let highlighter = KeywordHighlighter()
+    /// Whether the shell turned on bracketed paste (`CSI ? 2004 h`), tracked from the output.
+    var isBracketedPasteActive: Bool { highlighter.isBracketedPasteActive }
     /// When output last arrived. Held bytes are released `idleFlushDelay` after the last output
     /// (a safety net: normally the next chunk completes them) or at once when the session ends.
     private var lastOutput = ContinuousClock.now

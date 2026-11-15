@@ -376,6 +376,21 @@ final class KeywordHighlighterTests: XCTestCase {
 
     // MARK: - Alternate screen
 
+    func testTracksBracketedPasteMode() {
+        let highlighter = KeywordHighlighter(settings: .default)
+        XCTAssertFalse(highlighter.isBracketedPasteActive)
+        _ = highlighter.process(ArraySlice(Array("\(Self.esc)[?20".utf8)))
+        _ = highlighter.process(ArraySlice(Array("04h$ ".utf8)))
+        XCTAssertTrue(highlighter.isBracketedPasteActive, "split across chunks")
+        _ = highlighter.process(ArraySlice(Array("\(Self.esc)[?1;2004l".utf8)))
+        XCTAssertFalse(highlighter.isBracketedPasteActive, "combined params")
+        _ = highlighter.process(ArraySlice(Array("\(Self.esc)[?2004h\(Self.esc)c".utf8)))
+        XCTAssertFalse(highlighter.isBracketedPasteActive, "RIS resets it")
+        let disabled = KeywordHighlighter(settings: KeywordHighlightSettings.Snapshot(isEnabled: false))
+        _ = disabled.process(ArraySlice(Array("\(Self.esc)[?2004h".utf8)))
+        XCTAssertTrue(disabled.isBracketedPasteActive, "tracked even when highlighting is off")
+    }
+
     func testAlternateScreenDisablesHighlighting() {
         for mode in ["1049", "47", "1047"] {
             let on = "\(Self.esc)[?\(mode)h"

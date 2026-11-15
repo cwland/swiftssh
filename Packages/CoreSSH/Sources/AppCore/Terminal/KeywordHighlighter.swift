@@ -34,6 +34,9 @@ public final class KeywordHighlighter {
     public private(set) var settings: KeywordHighlightSettings.Snapshot
     /// True between `CSI ? 1049 h` (or 47/1047) and the matching `l`. Tracked even when disabled.
     public private(set) var isAlternateScreenActive = false
+    /// True between `CSI ? 2004 h` and `l` (the shell asked for bracketed paste), so a multi-line paste
+    /// is inserted rather than run. Tracked even when highlighting is off; reset by RIS.
+    public private(set) var isBracketedPasteActive = false
 
     private var openSequences: [[UInt8]] = []
     private static let closeSequence: [UInt8] = [0x1B, 0x5B, 0x33, 0x39, 0x6D] // ESC [ 3 9 m
@@ -223,6 +226,7 @@ public final class KeywordHighlighter {
             savedNormal = Attributes()
             savedAlternate = Attributes()
             isAlternateScreenActive = false
+            isBracketedPasteActive = false
             marginMode = false
             state = .ground
         case 0x30...0x7E, 0xA0...0xFF: state = .ground
@@ -351,6 +355,7 @@ public final class KeywordHighlighter {
                         restoreCursor()
                     }
                 case 47, 1047: isAlternateScreenActive = set
+                case 2004: isBracketedPasteActive = set
                 case 69: marginMode = set
                 default: break
                 }

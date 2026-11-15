@@ -79,6 +79,7 @@ struct TerminalTabView: View {
                                           editSnippet: editSnippet,
                                           focusTerminal: { store.focus(tabID: tab.id) },
                                           pasteIntoTerminal: { store.paste($0, tabID: tab.id) },
+                                          isBracketedPasteActive: { store.isBracketedPasteActive(tabID: tab.id) },
                                           close: closeSidePanel)
                             .transition(.move(edge: .trailing))
                     case nil:
