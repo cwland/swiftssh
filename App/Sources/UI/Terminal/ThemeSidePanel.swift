@@ -6,7 +6,9 @@ import CoreModels
 /// so nothing reflows) and lists the theme gallery in one column, Default first. A click applies at once
 /// and the panel stays open, so themes can be compared on the live terminal. For a saved host the choice
 /// is saved to the host (all its tabs follow, and it syncs); a quick connect tab changes only itself.
-/// The close button and Esc close the panel.
+/// The close button and Esc close the panel (while it is open, Esc does not reach the terminal). A host
+/// choice is saved shortly after the last click (`SessionManager.applyTheme`), and at once when the panel
+/// closes.
 struct ThemeSidePanel: View {
     let tab: TerminalTab
     let sessions: SessionManager
@@ -43,6 +45,9 @@ struct ThemeSidePanel: View {
                 .frame(width: 1)
         }
         .shadow(color: .black.opacity(0.25), radius: 12, x: -2, y: 0)
+        .onDisappear {
+            sessions.flushPendingThemeSaves()
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Theme panel")
     }
@@ -69,7 +74,7 @@ struct ThemeSidePanel: View {
             .buttonStyle(.plain)
             // Esc closes the panel while it is open.
             .keyboardShortcut(.cancelAction)
-            .help("Close (Esc)")
+            .help("Close (Esc). While this panel is open, Esc closes it instead of reaching the terminal.")
             .accessibilityLabel("Close theme panel")
         }
         .padding(.horizontal, 14)

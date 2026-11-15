@@ -180,9 +180,14 @@ final class AppEnvironment {
         SCDynamicStoreCopyComputerName(nil, nil).map { $0 as String } ?? ProcessInfo.processInfo.hostName
     }
 
-    /// The selected terminal tab, nil while Vaults is selected.
+    /// The main window's selected terminal tab, nil while Vaults is selected.
     var selectedTab: TerminalTab? {
-        guard let sessions, let id = sessions.selectedTabID else { return nil }
+        selectedTab(in: WindowScope(windowID: nil))
+    }
+
+    /// The selected tab of the window (`scope` from the focused scene); nil for Vaults or no window.
+    func selectedTab(in scope: WindowScope?) -> TerminalTab? {
+        guard let scope, let sessions, let id = sessions.selectedTabID(inWindow: scope.windowID) else { return nil }
         return sessions.tabs.first { $0.id == id }
     }
 
@@ -191,34 +196,70 @@ final class AppEnvironment {
         sessions?.close(tabID: tabID)
     }
 
-    /// Cmd+W: closes the selected terminal tab; with Vaults selected, closes the window.
-    func closeSelectedTabOrWindow() {
-        if let tab = selectedTab {
+    /// Cmd+W: closes the focused window's selected terminal tab; with Vaults selected (or another kind of
+    /// window, such as Settings, focused), closes the window.
+    func closeSelectedTabOrWindow(in scope: WindowScope?) {
+        if let tab = selectedTab(in: scope) {
             closeTab(tabID: tab.id)
         } else {
             NSApp.keyWindow?.performClose(nil)
         }
     }
 
-    /// Cmd+1 shows Vaults; Cmd+2…9 select the first eight terminal tabs.
-    func selectTab(number: Int) {
+    /// Cmd+1 shows Vaults (main window only); Cmd+2…9 select the focused window's first eight
+    /// terminal tabs, in tab bar order.
+    func selectTab(number: Int, in scope: WindowScope?) {
+        guard let scope, let sessions else { return }
         if number == 1 {
-            showVaults()
+            if !scope.isTerminalWindow { showVaults() }
             return
         }
-        guard let sessions, sessions.tabs.indices.contains(number - 2) else { return }
-        sessions.selectedTabID = sessions.tabs[number - 2].id
+        let windowTabs = sessions.tabs(inWindow: scope.windowID)
+        guard windowTabs.indices.contains(number - 2) else { return }
+        sessions.select(tabID: windowTabs[number - 2].id, inWindow: scope.windowID)
     }
 
+    /// Cmd+Shift+[ / Cmd+Shift+]: the focused window's previous or next tab, in tab bar order.
+    func selectAdjacentTab(by step: Int, in scope: WindowScope?) {
+        guard let scope, let sessions else { return }
+        if step < 0 {
+            sessions.selectPreviousTab(inWindow: scope.windowID)
+        } else {
+            sessions.selectNextTab(inWindow: scope.windowID)
+        }
+    }
+
+    /// Shows Vaults in the main window.
     func showVaults() {
         sessions?.selectedTabID = nil
         navigation.selectedTab = .vaults
     }
 
-    /// Cmd+R: reconnects the selected tab while its disconnected banner shows.
-    func reconnectSelectedTab() {
-        guard let sessions, let tab = selectedTab, case .disconnected = tab.state else { return }
+    /// Cmd+R: reconnects the focused window's selected tab while its disconnected banner shows.
+    func reconnectSelectedTab(in scope: WindowScope?) {
+        guard let sessions, let tab = selectedTab(in: scope), case .disconnected = tab.state else { return }
         sessions.reconnect(tabID: tab.id)
+    }
+
+    // MARK: Windows
+
+    /// Open main windows (the launch window and Cmd+N ones), which all show the main window's tabs.
+    @ObservationIgnored private var openMainWindows = 0
+
+    func mainWindowOpened() {
+        openMainWindows += 1
+    }
+
+    /// Closing the last main window ends the main window's sessions (as closing a terminal window ends
+    /// its own); terminal windows keep theirs.
+    func mainWindowClosed() {
+        openMainWindows = max(0, openMainWindows - 1)
+        if openMainWindows == 0 { sessions?.closeWindow(nil) }
+    }
+
+    /// A terminal window ("Duplicate in New Window") closed: its sessions end.
+    func terminalWindowClosed(_ windowID: UUID) {
+        sessions?.closeWindow(windowID)
     }
 
     // MARK: Files

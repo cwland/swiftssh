@@ -34,7 +34,7 @@ struct TerminalTabView: View {
                 .padding(.top, 4)
                 .overlay(alignment: .top) {
                     if tab.state == .connecting, !isAutoReconnecting {
-                        ConnectingBadge(title: tab.title)
+                        ConnectingBadge(title: tab.displayTitle)
                             .padding(.top, 12)
                     }
                 }
@@ -42,8 +42,9 @@ struct TerminalTabView: View {
                     if let state = tab.autoReconnect, isAutoReconnecting {
                         ReconnectPopup(
                             state: state,
-                            sessionCount: sessions.waitingForReconnectCount,
-                            reconnectNow: { sessions.reconnectWaitingNow() },
+                            // This window's tabs only: other windows have their own popups.
+                            sessionCount: sessions.waitingForReconnectCount(inWindow: tab.windowID),
+                            reconnectNow: { sessions.reconnectWaitingNow(inWindow: tab.windowID) },
                             closeTerminal: closeTab,
                             dismiss: { sessions.stopAutoReconnect(tabID: tab.id) }
                         )
@@ -53,15 +54,17 @@ struct TerminalTabView: View {
                 // Only behind the terminal: the disconnected banner keeps the system look, so its
                 // text stays readable when the theme and Light/Dark Mode differ.
                 .background(appearance.theme.background.swiftUIColor)
+                // Over the terminal only, below the disconnected banner (its Reconnect stays usable).
+                .overlay(alignment: .trailing) {
+                    if showsThemePanel {
+                        ThemeSidePanel(tab: tab, sessions: sessions, vault: vault,
+                                       terminalSettings: terminalSettings, close: closeThemePanel)
+                            .transition(.move(edge: .trailing))
+                    }
+                }
+                .clipped()
+                .animation(.easeOut(duration: 0.2), value: showsThemePanel)
         }
-        .overlay(alignment: .trailing) {
-            if showsThemePanel {
-                ThemeSidePanel(tab: tab, sessions: sessions, vault: vault,
-                               terminalSettings: terminalSettings, close: closeThemePanel)
-                    .transition(.move(edge: .trailing))
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: showsThemePanel)
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
                 .interactiveDismissDisabled()
@@ -77,12 +80,16 @@ struct TerminalTabView: View {
     /// click, a Host Details edit, a group menu choice, a sync from another Mac, or Light/Dark.
     /// Only the tab's own host is decoded (not every saved host); a deleted host reads as nil and
     /// gets the app default, as does quick connect.
+    ///
+    /// Same rule as `SessionManager.themeChoice` (what the theme panel rings): the tab's override wins,
+    /// then the host's choice, a pending (not yet saved) one from the panel first.
     private var resolvedAppearance: TerminalAppearance {
         _ = vault.revision
         if let overrideID = tab.themeOverrideID, let theme = TerminalThemeCatalog.shared.theme(id: overrideID) {
             return TerminalAppearance(theme: theme, fontSize: terminalSettings.fontSize)
         }
-        let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+        var host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+        if let id = host?.id, let pending = sessions.pendingTheme(forHost: id) { host?.themeID = pending.themeID }
         let theme = TerminalThemeResolver.theme(
             forHostID: tab.savedHostID,
             hosts: host.map { [$0] } ?? [],

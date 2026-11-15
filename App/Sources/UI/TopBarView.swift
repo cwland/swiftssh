@@ -6,7 +6,8 @@ import AppCore
 /// The navy tab strip that replaces the window's title bar: Vaults, then one tab per terminal
 /// session of this window. The traffic lights sit over its leading inset; empty parts of the bar drag
 /// the window. Terminal tabs can be dragged to reorder them (Vaults stays first) and have a right-click
-/// menu; Cmd+Shift+[ and Cmd+Shift+] select the previous and next tab in bar order.
+/// menu (Cmd+Shift+[ and Cmd+Shift+] in the Session menu follow the bar order). A terminal window's bar
+/// has no Vaults tab and no "+".
 struct TopBarView: View {
     let navigation: AppNavigation
     /// nil until the vault is open.
@@ -15,6 +16,8 @@ struct TopBarView: View {
     let sync: SyncCoordinator?
     /// The window this bar belongs to; nil = the main window.
     var windowID: UUID? = nil
+    /// false in a terminal window ("Duplicate in New Window").
+    var showsVaults = true
     let selectVaults: () -> Void
     let closeTab: (UUID) -> Void
     /// Change Theme…: opens the theme panel over the tab (after selecting it).
@@ -25,12 +28,15 @@ struct TopBarView: View {
     /// The tab being dragged, for the drop indicator; the drop itself trusts only the dragged payload.
     @State private var draggingTabID: UUID?
     @State private var dropTargetID: UUID?
+    /// Clears `draggingTabID` once the mouse is up: a drag that is cancelled or ends outside the bar
+    /// gets no callback.
+    @State private var dragEndWatch: Task<Void, Never>?
     @State private var renamingTabID: UUID?
     @State private var renameText = ""
 
     var body: some View {
         HStack(spacing: 8) {
-            ForEach(navigation.tabs, id: \.self) { tab in
+            ForEach(showsVaults ? navigation.tabs : [], id: \.self) { tab in
                 TopTabPill(tab: tab, isSelected: sessions?.selectedTabID(inWindow: windowID) == nil, sync: sync) {
                     selectVaults()
                 }
@@ -53,6 +59,7 @@ struct TopBarView: View {
                     }
                     .onDrag {
                         draggingTabID = tab.id
+                        watchForDragEnd()
                         return NSItemProvider(object: TabDragPayload.string(for: tab.id) as NSString)
                     }
                     .onDrop(of: [.text], delegate: TabDropDelegate(
@@ -74,19 +81,21 @@ struct TopBarView: View {
                 }
             }
 
-            Button {
-                selectVaults()
-                navigation.sidebar = .hosts
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.topBarForeground)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
+            if showsVaults {
+                Button {
+                    selectVaults()
+                    navigation.sidebar = .hosts
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Theme.topBarForeground)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .layoutPriority(1)
+                .help("New connection: pick a host or type user@host")
             }
-            .buttonStyle(.plain)
-            .layoutPriority(1)
-            .help("New connection: pick a host or type user@host")
 
             Spacer(minLength: 0)
 
@@ -105,7 +114,6 @@ struct TopBarView: View {
             ZStack {
                 Theme.topBarBackground
                 WindowDragArea()
-                tabCycleShortcuts
             }
         }
         .alert("Rename Tab", isPresented: renameBinding) {
@@ -162,19 +170,19 @@ struct TopBarView: View {
         return from < index ? .trailing : .leading
     }
 
-    /// Cmd+Shift+[ / Cmd+Shift+]: previous and next tab of this window, in bar order. Invisible buttons,
-    /// so the shortcuts work while the terminal has focus.
-    private var tabCycleShortcuts: some View {
-        ZStack {
-            Button("Previous Tab") { sessions?.selectPreviousTab() }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-            Button("Next Tab") { sessions?.selectNextTab() }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
+    private func watchForDragEnd() {
+        dragEndWatch?.cancel()
+        dragEndWatch = Task { @MainActor in
+            var upTicks = 0
+            // Two readings with the button up, so a drop being performed on mouse-up finishes first.
+            while upTicks < 2 {
+                try? await Task.sleep(for: .milliseconds(150))
+                if Task.isCancelled { return }
+                upTicks = NSEvent.pressedMouseButtons == 0 ? upTicks + 1 : 0
+            }
+            draggingTabID = nil
+            dropTargetID = nil
         }
-        .opacity(0)
-        .frame(width: 0, height: 0)
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 
@@ -191,6 +199,8 @@ private enum TabDragPayload {
 }
 
 /// Drops on a terminal tab: the dragged tab moves to the target's index. Shows the indicator while over it.
+/// Only a drag that started in this bar is accepted (text from other apps, or a tab of another window, is
+/// refused); the dropped payload must still name a tab of this window.
 private struct TabDropDelegate: DropDelegate {
     let targetID: UUID
     let targetIndex: Int
@@ -198,11 +208,15 @@ private struct TabDropDelegate: DropDelegate {
     @Binding var draggingTabID: UUID?
     let move: @MainActor (UUID, Int) -> Void
 
+    /// A tab of this bar is being dragged (read through the binding, so always current).
+    private var isLocalDrag: Bool { draggingTabID != nil }
+
     func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [.text])
+        isLocalDrag && info.hasItemsConforming(to: [.text])
     }
 
     func dropEntered(info: DropInfo) {
+        guard isLocalDrag else { return }
         dropTargetID = targetID
     }
 
@@ -211,13 +225,14 @@ private struct TabDropDelegate: DropDelegate {
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
+        DropProposal(operation: isLocalDrag ? .move : .forbidden)
     }
 
     func performDrop(info: DropInfo) -> Bool {
+        let local = isLocalDrag
         dropTargetID = nil
         draggingTabID = nil
-        guard let provider = info.itemProviders(for: [.text]).first else { return false }
+        guard local, let provider = info.itemProviders(for: [.text]).first else { return false }
         let index = targetIndex
         let move = move
         _ = provider.loadObject(ofClass: NSString.self) { object, _ in

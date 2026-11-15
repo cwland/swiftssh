@@ -1,30 +1,53 @@
 import SwiftUI
+import AppKit
 import AppCore
 
-/// What a window opened by "Duplicate in New Window" shows: its own id (its tabs' `windowID`) and the
-/// tab to duplicate into it once it appears. The app's `WindowGroup(for: TerminalWindowRequest.self)`
-/// passes it to `RootView`; the launch window (and Cmd+N) get nil = the main window.
+/// Opens a terminal window ("Duplicate in New Window"): its own id (its tabs' `windowID`) and the tab
+/// to duplicate into it once it appears. Shown by the app's `WindowGroup(id: sceneID, for:)`.
 struct TerminalWindowRequest: Codable, Hashable {
+    static let sceneID = "terminal"
+
     var windowID = UUID()
     var sourceTabID: UUID
+}
+
+/// Which window's tabs menu commands act on: the focused scene's (`focusedSceneValue`).
+struct WindowScope: Hashable {
+    /// nil = the main window (Vaults and the main tabs).
+    let windowID: UUID?
+
+    /// A "Duplicate in New Window" window: terminal tabs only, no Vaults.
+    var isTerminalWindow: Bool { windowID != nil }
+}
+
+private struct WindowScopeKey: FocusedValueKey {
+    typealias Value = WindowScope
+}
+
+extension FocusedValues {
+    var windowScope: WindowScope? {
+        get { self[WindowScopeKey.self] }
+        set { self[WindowScopeKey.self] = newValue }
+    }
 }
 
 /// Top bar over the selected tab: Vaults (sidebar + content) or a terminal session. The top bar
 /// extends into the hidden title bar's area.
 ///
-/// Windows: every window has its own tabs and selection in the shared `SessionManager`
-/// (`windowID`, nil = the main window). The key window is the manager's `activeWindowID`, so menu
-/// commands (Cmd+W, Cmd+R, …) act on it; closing a window opened for a duplicate closes its tabs.
+/// Windows: the main window (and Cmd+N copies of it) shows Vaults and the main tabs; a terminal window
+/// shows only its own tabs (`windowID`) and closes when its last tab closes. Every window publishes its
+/// `WindowScope` for menu commands. Closing a terminal window ends its sessions; closing the last main
+/// window ends the main tabs' sessions.
 struct RootView: View {
     let environment: AppEnvironment
-    /// nil = the main window.
     var windowRequest: TerminalWindowRequest? = nil
+    var isTerminalWindow = false
 
-    @Environment(\.appearsActive) private var appearsActive
     @Environment(\.openWindow) private var openWindow
     /// The tab whose Change Theme panel is open.
     @State private var themePanelTabID: UUID?
     @State private var didOpenRequestedTab = false
+    @State private var window = WindowReference()
 
     private var windowID: UUID? { windowRequest?.windowID }
 
@@ -35,17 +58,15 @@ struct RootView: View {
                 sessions: environment.sessions,
                 sync: environment.sync,
                 windowID: windowID,
-                selectVaults: {
-                    environment.sessions?.activeWindowID = windowID
-                    environment.showVaults()
-                },
+                showsVaults: !isTerminalWindow,
+                selectVaults: { environment.showVaults() },
                 closeTab: { environment.closeTab(tabID: $0) },
                 changeTheme: { tabID in
                     environment.sessions?.select(tabID: tabID, inWindow: windowID)
                     themePanelTabID = tabID
                 },
                 duplicateInNewWindow: { tabID in
-                    openWindow(value: TerminalWindowRequest(sourceTabID: tabID))
+                    openWindow(id: TerminalWindowRequest.sceneID, value: TerminalWindowRequest(sourceTabID: tabID))
                 }
             )
             Group {
@@ -57,7 +78,8 @@ struct RootView: View {
                 case .ready(let vault):
                     if let sessions = environment.sessions {
                         ReadyArea(environment: environment, vault: vault, sessions: sessions,
-                                  windowID: windowID, themePanelTabID: $themePanelTabID)
+                                  windowID: windowID, isTerminalWindow: isTerminalWindow,
+                                  themePanelTabID: $themePanelTabID)
                     }
                 case .failed(let failure):
                     VaultErrorView(failure: failure) {
@@ -67,20 +89,88 @@ struct RootView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
-        // The key window's tabs are the ones menu commands and new connections act on.
-        .onChange(of: appearsActive, initial: true) { _, active in
-            if active { environment.sessions?.activeWindowID = windowID }
+        .focusedSceneValue(\.windowScope, WindowScope(windowID: windowID))
+        .background {
+            WindowLifecycleObserver(
+                attached: { nsWindow in
+                    window.window = nsWindow
+                    if !isTerminalWindow { environment.mainWindowOpened() }
+                },
+                willClose: {
+                    if let windowID {
+                        environment.terminalWindowClosed(windowID)
+                    } else if !isTerminalWindow {
+                        environment.mainWindowClosed()
+                    }
+                }
+            )
         }
-        // Opens the duplicate once the sessions exist (the vault may still be opening).
+        // A terminal window opens its duplicate once the sessions exist.
         .task(id: environment.sessions == nil) {
-            guard let request = windowRequest, !didOpenRequestedTab, let sessions = environment.sessions else { return }
+            guard isTerminalWindow, !didOpenRequestedTab, let sessions = environment.sessions else { return }
             didOpenRequestedTab = true
-            sessions.activeWindowID = request.windowID
-            // A restored window whose source tab is gone (after a relaunch) just shows Vaults.
-            sessions.duplicate(tabID: request.sourceTabID, inWindow: request.windowID)
+            guard let request = windowRequest,
+                  sessions.duplicate(tabID: request.sourceTabID, inWindow: request.windowID) != nil else {
+                // The source tab closed meanwhile: nothing to show.
+                window.window?.close()
+                return
+            }
         }
-        .onDisappear {
-            if let windowID { environment.sessions?.closeWindow(windowID) }
+        // A terminal window has no Vaults: it closes with its last tab.
+        .onChange(of: environment.sessions?.tabs(inWindow: windowID).isEmpty ?? true) { _, isEmpty in
+            if isTerminalWindow, didOpenRequestedTab, isEmpty, let nsWindow = window.window, nsWindow.isVisible {
+                nsWindow.close()
+            }
+        }
+    }
+}
+
+/// The window a `RootView` is in, once known (for closing a terminal window from code).
+@MainActor
+private final class WindowReference {
+    weak var window: NSWindow?
+}
+
+/// Reports the window the view is placed in, and that window's `willCloseNotification`: the
+/// reliable "window closed" signal (`onDisappear` also fires for other view teardown).
+private struct WindowLifecycleObserver: NSViewRepresentable {
+    let attached: @MainActor (NSWindow) -> Void
+    let willClose: @MainActor () -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.attached = attached
+        view.willClose = willClose
+        return view
+    }
+
+    func updateNSView(_ view: ObserverView, context: Context) {
+        view.attached = attached
+        view.willClose = willClose
+    }
+
+    final class ObserverView: NSView {
+        var attached: (@MainActor (NSWindow) -> Void)?
+        var willClose: (@MainActor () -> Void)?
+        private weak var observedWindow: NSWindow?
+        private var token: (any NSObjectProtocol)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // Each window is reported once; a view moved within the same window is ignored.
+            guard let window, window !== observedWindow else { return }
+            if let token { NotificationCenter.default.removeObserver(token) }
+            observedWindow = window
+            token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                                           object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let token = self.token { NotificationCenter.default.removeObserver(token) }
+                    self.token = nil
+                    self.willClose?()
+                }
+            }
+            attached?(window)
         }
     }
 }
@@ -94,6 +184,7 @@ private struct ReadyArea: View {
     let vault: LocalVault
     let sessions: SessionManager
     let windowID: UUID?
+    let isTerminalWindow: Bool
     @Binding var themePanelTabID: UUID?
 
     @State private var hostsModel: HostsViewModel?
@@ -109,6 +200,9 @@ private struct ReadyArea: View {
                                 showsThemePanel: themePanelTabID == tab.id,
                                 closeThemePanel: { themePanelTabID = nil })
                     .id(tab.id)
+            } else if isTerminalWindow {
+                // Only while the window opens or closes.
+                Theme.contentBackground
             } else {
                 MainArea(
                     navigation: environment.navigation,
