@@ -291,6 +291,16 @@ public struct ShellHistoryEntry: SyncableModel {
     }
 }
 
+/// The AI assistant's provider settings (not used by the app yet).
+///
+/// Warning: the `.aiSettings` record type is shared. The custom highlighting rules are stored as
+/// one record of this type too (`TerminalHighlightRules`, id `TerminalHighlightRules.singletonID`),
+/// so that app versions before v0.11 don't fail a pull on an unknown type. Code for AI settings
+/// must therefore never treat "the" `.aiSettings` record as a singleton or count/delete records by
+/// type alone: read with `LocalVault.all(AISettings.self)` (which skips the rules record, as it
+/// doesn't decode as `AISettings`), and exclude `TerminalHighlightRules.singletonID` from any
+/// count (`liveCounts()`), "Reset AI" delete or other per-type operation. Planned follow-up: once
+/// every app version in use skips unknown record types, give the rules a type of their own.
 public struct AISettings: SyncableModel {
     public static let recordType = SyncRecordType.aiSettings
     public var id: UUID

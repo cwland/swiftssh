@@ -98,6 +98,31 @@ final class JoinDeduplicatorTests: XCTestCase {
         XCTAssertEqual(decoded.label, "pi")
     }
 
+    /// Any payload is restamped, also one that isn't the type's usual model (the highlight rules
+    /// share the `.aiSettings` tag with `AISettings`).
+    func testRestampWorksForAnyPayloadOfTheType() throws {
+        let rules = TerminalHighlightRules(rules: [HighlightRule(pattern: "prod", color: "#E5484D")],
+                                           updatedAt: Date(timeIntervalSince1970: 1))
+        let date = Date(timeIntervalSince1970: 1_000)
+        let payload = try JoinDeduplicator.restamp(try withExtra(record(rules, device: "d")).payload,
+                                                   type: .aiSettings, updatedAt: date)
+        let decoded = try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: payload)
+        XCTAssertEqual(decoded.updatedAt, date)
+        XCTAssertEqual(decoded.rules, rules.rules)
+        XCTAssertEqual(try futureColor(payload), "teal")
+        XCTAssertThrowsError(try JoinDeduplicator.restamp(Data("[1]".utf8), type: .host, updatedAt: date))
+    }
+
+    func testRestampChangesNothingElse() throws {
+        var host = Host(label: "pi", address: "pi.lan", updatedAt: Date(timeIntervalSince1970: 1))
+        host.lastConnectedAt = Date(timeIntervalSince1970: 1_731_690_000.123_456)
+        let date = Date(timeIntervalSince1970: 1_000)
+        let payload = try JoinDeduplicator.restamp(try record(host, device: "d").payload, type: .host, updatedAt: date)
+        var expected = host
+        expected.updatedAt = date
+        XCTAssertEqual(try CoreJSON.decoder.decode(Host.self, from: payload), expected)
+    }
+
     // Fields a newer app version wrote survive the join's rewrites (forward-compatible sync).
 
     private func withExtra(_ record: PlainRecord) throws -> PlainRecord {

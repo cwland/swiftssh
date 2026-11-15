@@ -50,24 +50,25 @@ public enum JoinDeduplicator {
         return Plan(removedIDs: removed, idMap: idMap, updated: updated)
     }
 
-    /// `payload` (the JSON of a model of `type`) with its `updatedAt` set to `updatedAt`.
-    public static func restamp(_ payload: Data, type: SyncRecordType, updatedAt: Date) throws -> Data {
-        func stamp<M: SyncableModel>(_: M.Type) throws -> Data {
-            var model = try CoreJSON.decoder.decode(M.self, from: payload)
-            model.updatedAt = updatedAt
-            return try PlainRecord.encode(model, keepingUnknownFieldsOf: payload)
+    /// `payload` (the JSON of a model of `type`) with its top-level `updatedAt` set to
+    /// `updatedAt`, encoded as the models encode dates. Works for any payload, whichever model
+    /// wrote it (the highlight rules share `.aiSettings` with `AISettings`); every other field,
+    /// known or not, is kept. Throws when `payload` isn't a JSON object. `type` is not needed and
+    /// kept for callers.
+    public static func restamp(_ payload: Data, type _: SyncRecordType, updatedAt: Date) throws -> Data {
+        guard var json = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            throw RestampError.notAnObject
         }
-        switch type {
-        case .host: return try stamp(CoreModels.Host.self)
-        case .hostGroup: return try stamp(HostGroup.self)
-        case .identity: return try stamp(Identity.self)
-        case .sshKey: return try stamp(SSHKey.self)
-        case .snippet: return try stamp(Snippet.self)
-        case .knownHost: return try stamp(KnownHost.self)
-        case .connectionLog: return try stamp(ConnectionLog.self)
-        case .shellHistory: return try stamp(ShellHistoryEntry.self)
-        case .aiSettings: return try stamp(AISettings.self)
-        }
+        let stamp = try CoreJSON.encoder.encode(["updatedAt": updatedAt])
+        guard let encoded = try JSONSerialization.jsonObject(with: stamp) as? [String: Any],
+              let value = encoded["updatedAt"] else { throw RestampError.notAnObject }
+        json["updatedAt"] = value
+        return try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
+    }
+
+    public enum RestampError: Error, Equatable, Sendable {
+        /// The record's payload isn't a JSON object.
+        case notAnObject
     }
 
     // MARK: Matching keys
