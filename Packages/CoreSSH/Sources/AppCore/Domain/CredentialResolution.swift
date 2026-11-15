@@ -13,17 +13,17 @@ import Foundation
 ///
 /// Within the source that applies, a 1Password agent key (`agentKey`) wins over the key and password:
 /// both are then nil. A host's own agent key counts as a direct credential.
-struct CredentialResolution {
+public struct CredentialResolution {
     /// The identity in effect, or nil when the host's own fields (or nothing) apply.
-    var identity: Identity?
-    var username: String?
+    public var identity: Identity?
+    public var username: String?
     var password: String?
     var key: SSHKey?
     /// Non-nil = sign in with 1Password's SSH agent.
-    var agentKey: AgentKeyChoice?
+    public var agentKey: AgentKeyChoice?
 
     @MainActor
-    static func resolve(host: SavedHost, directory: HostDirectory, vault: LocalVault) -> CredentialResolution {
+    public static func resolve(host: SavedHost, directory: HostDirectory, vault: LocalVault) -> CredentialResolution {
         func from(_ identity: Identity) -> CredentialResolution {
             CredentialResolution(identity: identity, username: nonEmpty(identity.username),
                                  password: nonEmpty(identity.password),

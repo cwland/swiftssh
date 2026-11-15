@@ -549,6 +549,55 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.username, "root")
     }
 
+    // MARK: Idempotent setters
+
+    func testWritingTheStoredCredentialValuesChangesNothing() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+        let identity = try await vault.save(Identity(label: "i", username: "alice", password: "pw"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  identityID: identity.id, password: "secret", sshKeyID: key.id,
+                                                  prefersIdentity: true))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let before = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        vm.username = "root"
+        vm.password = "secret"
+        vm.sshKeyID = key.id
+        let after = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(after, before, "no identity unlink, no prefersIdentity flip, no save")
+        XCTAssertEqual(after.updatedAt, before.updatedAt)
+        XCTAssertEqual(after.identityID, identity.id)
+        XCTAssertEqual(after.prefersIdentity, true)
+    }
+
+    func testWritingEmptyToAnUnsetFieldChangesNothing() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", identityID: identity.id,
+                                                  prefersIdentity: true))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let before = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        vm.username = ""
+        vm.password = ""
+        vm.sshKeyID = nil
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id), before)
+        XCTAssertEqual(vm.credentialMode, .identity)
+    }
+
+    func testWritingADifferentUsernameStillUnlinksTheIdentity() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "alice"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  identityID: identity.id, prefersIdentity: true))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.username = "other"
+        let after = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertNil(after.identityID)
+        XCTAssertEqual(after.prefersIdentity, false)
+        XCTAssertEqual(after.username, "other")
+    }
+
     // MARK: Replacing credentials
 
     private func keyItem(_ vault: LocalVault) async throws -> SSHKey {

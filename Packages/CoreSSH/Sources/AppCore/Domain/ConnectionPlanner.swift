@@ -14,6 +14,8 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
     case hostNotFound
     case missingAddress
     case missingUsername(UsernameSource)
+    /// The host is set to use an identity, but none is in effect (none chosen, or the chosen one is gone).
+    case identityNotChosen(hostLabel: String)
 
     /// Title for the alert that shows this error.
     public var alertTitle: String { "Can't connect" }
@@ -24,6 +26,8 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
         case .missingAddress: "This host has no address."
         case .missingUsername(.identity(let label)):
             "The identity \u{201C}\(Self.display(label, fallback: "Untitled identity"))\u{201D} has no username. Add one in Keychain, or set Direct credentials on this host."
+        case .identityNotChosen(let label):
+            "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} is set to use an identity, but none is chosen. Choose an identity in Host Details."
         case .missingUsername(.host(let label)):
             "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} has no username. Add one in Host Details."
         }
@@ -51,6 +55,9 @@ public enum ConnectionPlanner {
         let username = resolved.username
         let password = resolved.password
         let key = resolved.key
+        if host.prefersIdentity == true, resolved.identity == nil {
+            throw ConnectionPlanError.identityNotChosen(hostLabel: host.label)
+        }
         guard let username else {
             if let identity = resolved.identity {
                 throw ConnectionPlanError.missingUsername(.identity(label: identity.label))
