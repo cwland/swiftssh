@@ -21,6 +21,8 @@ struct HostsView: View {
     @State private var showDeleteGroup = false
     /// The group whose "Theme…" gallery popover is open.
     @State private var themeGroupID: UUID?
+    /// The group whose "tmux…" sheet is open.
+    @State private var tmuxGroup: HostGroup?
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var errorTitle = "Something went wrong"
@@ -70,6 +72,9 @@ struct HostsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage)
+        }
+        .sheet(item: $tmuxGroup) { group in
+            GroupTmuxSheet(model: model, group: group) { tmuxGroup = nil }
         }
     }
 
@@ -214,6 +219,9 @@ struct HostsView: View {
                             Button("Theme\u{2026}") {
                                 // After the context menu has closed, so the popover can present.
                                 DispatchQueue.main.async { themeGroupID = group.id }
+                            }
+                            Button("tmux\u{2026}") {
+                                tmuxGroup = group
                             }
                             Button("Rename") {
                                 groupToRename = group

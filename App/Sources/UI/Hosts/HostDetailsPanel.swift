@@ -198,6 +198,7 @@ private struct HostDetailsContent: View {
                     .textFieldStyle(.roundedBorder)
             }
             themeField
+            tmuxField
             FieldColumn(title: "Parent group") {
                 Picker("Parent group", selection: $details.groupID) {
                     Text("None").tag(UUID?.none)
@@ -283,6 +284,35 @@ private struct HostDetailsContent: View {
                                     inheritedTheme: details.defaultTheme(appDefaultThemeID: terminalSettings.defaultThemeID),
                                     unknownThemeID: details.unknownThemeID) { id in
                     details.themeID = id
+                }
+            }
+        }
+    }
+
+    /// "Attach to tmux": Default (the groups' choice, e.g. "Default (group: on, ops)"), On with a
+    /// session name ("main" when first switched on), or Off. Each change saves at once; an invalid
+    /// name is shown with its error and not saved.
+    private var tmuxField: some View {
+        FieldColumn(title: "Attach to tmux") {
+            Picker("Attach to tmux", selection: $details.tmuxMode) {
+                Text(details.inheritedTmuxSummary).tag(TmuxMode.inherit)
+                Text("On").tag(TmuxMode.on)
+                Text("Off").tag(TmuxMode.off)
+            }
+            .labelsHidden()
+            .help("After login, run tmux new -A -s <name>, so Reconnect returns to the same session")
+            if details.tmuxMode == .on {
+                TextField("Session name", text: $details.tmuxNameText,
+                          prompt: Text(TmuxChoice.defaultSessionName))
+                    .textFieldStyle(.roundedBorder)
+                if let error = details.tmuxNameError {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.red)
+                } else {
+                    Text("Skipped with a message when tmux isn\u{2019}t installed on the server.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
             }
         }
