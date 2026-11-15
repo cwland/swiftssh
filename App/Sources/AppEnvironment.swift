@@ -34,15 +34,21 @@ final class AppEnvironment {
     let settingsNavigation = SettingsNavigation()
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
+    /// Syncs the vault with the sync server (Settings → Sync, the Vaults tab's cloud icon).
+    /// Set together with `.ready`, and started then.
+    private(set) var sync: SyncCoordinator?
     /// One SwiftTerm view per open tab, so switching tabs and reconnecting keep scrollback.
     @ObservationIgnored let terminalViews = TerminalViewStore()
 
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
+    @ObservationIgnored private let syncSecrets: any SyncSecretsStore
     @ObservationIgnored private var didStartLoading = false
     @ObservationIgnored private var runtime: SSHRuntimeDirectory?
 
-    init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider()) {
+    init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider(),
+         syncSecrets: any SyncSecretsStore = KeychainSyncSecretsStore()) {
         self.keyProvider = keyProvider
+        self.syncSecrets = syncSecrets
         self.navigation = AppNavigation()
         let onePasswordSettings = OnePasswordSettings()
         self.onePasswordSettings = onePasswordSettings
@@ -90,12 +96,35 @@ final class AppEnvironment {
             let vault = try await LocalVault.open(persistence: persistence)
             sessions = makeSessionManager(vault: vault, runtime: runtime)
             state = .ready(vault)
+            startSync(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {
             state = .failed(.unreadable(movedTo: movedTo.path, keyWasCreated: keyWasCreated))
         } catch {
             let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             state = .failed(.other("The vault could not be opened: \(detail)"))
         }
+    }
+
+    /// The open vault, nil until `.ready`.
+    var vault: LocalVault? {
+        if case .ready(let vault) = state { return vault }
+        return nil
+    }
+
+    // MARK: Sync
+
+    /// Creates the one `SyncCoordinator` for the open vault and starts it: with a server and a
+    /// vault key on this Mac it syncs now and then on its timer; otherwise it waits in Settings → Sync.
+    private func startSync(vault: LocalVault) {
+        guard sync == nil else { return }
+        let coordinator = SyncCoordinator(vault: vault, secrets: syncSecrets)
+        sync = coordinator
+        coordinator.start()
+    }
+
+    /// Stops the sync loop (app quit), before the final vault write.
+    func stopSync() {
+        sync?.stop()
     }
 
     // MARK: Sessions

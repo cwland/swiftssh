@@ -8,13 +8,15 @@ struct TopBarView: View {
     let navigation: AppNavigation
     /// nil until the vault is open.
     let sessions: SessionManager?
+    /// nil until the vault is open; drives the Vaults tab's cloud icon.
+    let sync: SyncCoordinator?
     let selectVaults: () -> Void
     let closeTab: (UUID) -> Void
 
     var body: some View {
         HStack(spacing: 8) {
             ForEach(navigation.tabs, id: \.self) { tab in
-                TopTabPill(tab: tab, isSelected: sessions?.selectedTabID == nil) {
+                TopTabPill(tab: tab, isSelected: sessions?.selectedTabID == nil, sync: sync) {
                     selectVaults()
                 }
                 .layoutPriority(1)
@@ -67,35 +69,46 @@ struct TopBarView: View {
     }
 }
 
+/// A top tab (Vaults). The Vaults tab also holds the sync cloud icon, a button of its own beside
+/// the tab's button (so a click on the icon opens the sync popover rather than selecting the tab).
 private struct TopTabPill: View {
     let tab: TopTab
     let isSelected: Bool
+    let sync: SyncCoordinator?
     let action: () -> Void
 
+    private var showsSyncIcon: Bool {
+        guard tab == .vaults, let sync else { return false }
+        return sync.phase.cloudSymbol != nil
+    }
+
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 8) {
-                Image(systemName: tab.systemImage)
-                Text(tab.title)
-                    .font(.system(size: Theme.tabFontSize))
-                if tab == .vaults {
-                    Image(systemName: "icloud.slash")
-                        .font(.system(size: 12))
-                        .opacity(0.7)
-                        .help("Sync is not set up")
+        HStack(spacing: 0) {
+            Button(action: action) {
+                HStack(spacing: 8) {
+                    Image(systemName: tab.systemImage)
+                    Text(tab.title)
+                        .font(.system(size: Theme.tabFontSize))
                 }
+                .padding(.leading, 12)
+                .padding(.trailing, showsSyncIcon ? 6 : 12)
+                .frame(height: 34)
+                .contentShape(Rectangle())
             }
-            .foregroundStyle(Theme.topBarForeground)
-            .padding(.horizontal, 12)
-            .frame(height: 34)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
-                    .fill(isSelected ? Theme.tabBackground : Color.clear)
-            )
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("Vaults (\u{2318}1)")
+
+            if showsSyncIcon, let sync {
+                SyncCloudButton(sync: sync)
+                    .padding(.trailing, 8)
+            }
         }
-        .buttonStyle(.plain)
-        .help("Vaults (\u{2318}1)")
+        .foregroundStyle(Theme.topBarForeground)
+        .frame(height: 34)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
+                .fill(isSelected ? Theme.tabBackground : Color.clear)
+        )
     }
 }
 
