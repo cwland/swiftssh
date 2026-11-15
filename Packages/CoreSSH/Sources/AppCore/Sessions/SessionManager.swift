@@ -1242,6 +1242,8 @@ public final class SessionManager {
             current?.deliver(bytes)
             if let current { noteOutput(tabID: current.id) }
         case .closed(let reason):
+            // Ready this attempt (its log started): the terminal was live.
+            let wasLive = attempt.logID != nil
             endLog(of: attempt)
             attempt.inputs.finish()
             liveAttempts[ObjectIdentifier(attempt)] = nil
@@ -1250,6 +1252,12 @@ public final class SessionManager {
             current.generation += 1
             rejectPendingHostKey(of: current)
             if reason == .userClosed {
+                if isOpen(current) { close(tabID: current.id) }
+                return
+            }
+            // The shell ended normally (`exit`, logout) after the terminal was live: the tab (or pane)
+            // closes, as in Terminal. A drop or failure keeps the tab with its Disconnected screen.
+            if reason == .remoteClosed, wasLive {
                 if isOpen(current) { close(tabID: current.id) }
                 return
             }

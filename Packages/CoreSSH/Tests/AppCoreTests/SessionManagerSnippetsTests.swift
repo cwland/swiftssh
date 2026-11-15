@@ -199,8 +199,8 @@ final class SessionManagerSnippetsTests: XCTestCase {
         XCTAssertFalse(manager.deliver("ls", as: .run, toTab: UUID()), "unknown tab")
 
         let (tab, s) = try await connectedTab("Db")
-        s.emit(.closed(.remoteClosed))
-        await waitUntil("disconnected") { tab.state == .disconnected(nil) }
+        s.emit(.closed(.failed(.timedOut)))
+        await waitUntil("disconnected") { tab.state == .disconnected(SessionError.timedOut.localizedDescription) }
         XCTAssertFalse(manager.deliver("ls", as: .run, toTab: tab.id))
         await settle()
         XCTAssertEqual(s.sends, [])
@@ -233,8 +233,8 @@ final class SessionManagerSnippetsTests: XCTestCase {
         let (a, sa) = try await connectedTab("A")
         let (b, sb) = try await connectedTab("B")
         let (c, sc) = try await connectedTab("C")
-        sc.emit(.closed(.remoteClosed))
-        await waitUntil("C down") { c.state == .disconnected(nil) }
+        sc.emit(.closed(.failed(.timedOut)))
+        await waitUntil("C down") { c.state == .disconnected(SessionError.timedOut.localizedDescription) }
         let other = UUID()
         let copy = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: other))
         await waitUntil("copy connected") { copy.state == .connected && self.sessions.count == 4 }

@@ -272,7 +272,7 @@ final class AppEnvironment {
 
     /// Lets go of closed tabs' terminal views (and scrollback) now, even when no window is showing
     /// tabs. Open tabs keep theirs, including the main tabs while no main window is open.
-    private func releaseClosedTerminalViews() {
+    func releaseClosedTerminalViews() {
         terminalViews.retain(only: Set(sessions?.tabs.map(\.id) ?? []))
     }
 

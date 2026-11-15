@@ -32,6 +32,8 @@ private final class PaneSession: TerminalSession, Sendable {
     func runCommand(_ command: String) async throws -> String { "Linux\nID=ubuntu\n" }
 
     func output(_ text: String) { continuation.yield(.output(Array(text.utf8))) }
+    /// The remote shell ended (`exit`).
+    func exitShell() { continuation.yield(.closed(.remoteClosed)) }
 
     func drop() {
         state.withLock { $0.closed = true }
@@ -116,6 +118,14 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         let ws = try XCTUnwrap(manager.makeWorkspace(from: tabs.map(\.id), name: nil))
         await waitUntil("connected") { tabs.allSatisfy { $0.state == .connected } }
         return (ws, tabs)
+    }
+
+    func testExitingThePanesShellClosesThePane() async throws {
+        let (ws, tabs) = try await workspace("a", "b", "c")
+        let session = try XCTUnwrap(factory.session("b"))
+        await waitUntil("logs") { self.vault.all(ConnectionLog.self).count >= 3 }
+        session.exitShell()
+        await waitUntil("pane closed") { ws.paneIDs == [tabs[0].id, tabs[2].id] }
     }
 
     // MARK: Hosts screen actions (v0.10)

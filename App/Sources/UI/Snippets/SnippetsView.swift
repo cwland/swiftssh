@@ -22,6 +22,12 @@ struct SnippetsView: View {
     /// a click just selects.
 
     @State private var editingSnippetID: UUID?
+
+    /// "Saved", briefly, after the editor's Save.
+
+    @State private var showsSaved = false
+
+    @State private var savedToastTask: Task<Void, Never>?
     /// The snippet whose "Run on hosts…" sheet is open.
     @State private var runSnippet: Snippet?
     @State private var newPackageRequest: NewPackageRequest?
@@ -51,6 +57,10 @@ struct SnippetsView: View {
                     model: model,
                     snippet: snippet,
                     onClose: { editingSnippetID = nil },
+                    onSave: {
+                        editingSnippetID = nil
+                        showSavedToast()
+                    },
                     onRun: { runSnippet = snippet },
                     onDuplicate: { duplicate(snippet.id) },
                     onDelete: { confirmRemove([snippet.id]) },
@@ -65,6 +75,20 @@ struct SnippetsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: panelKey)
+        .overlay(alignment: .bottom) {
+            if showsSaved {
+                Label("Saved", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Capsule().fill(Color.black.opacity(0.78)))
+                    .padding(.bottom, 24)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .accessibilityLabel("Snippet saved")
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: showsSaved)
         .onAppear(perform: takeRequestedSelection)
         .onChange(of: navigation.snippetToSelect) { _, _ in takeRequestedSelection() }
         .background(Theme.contentBackground)
@@ -429,6 +453,16 @@ struct SnippetsView: View {
     }
 
     // MARK: Actions
+
+    private func showSavedToast() {
+        savedToastTask?.cancel()
+        showsSaved = true
+        savedToastTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            showsSaved = false
+        }
+    }
 
     private func createSnippet() {
         let snippet = model.create(name: "New Snippet", script: "", package: nil)

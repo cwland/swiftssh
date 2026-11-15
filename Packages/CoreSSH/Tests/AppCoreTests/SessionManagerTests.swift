@@ -439,13 +439,13 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertEqual(factory.sessions[0].recorded.inputs, ["send:a", "resize:100x30", "send:b"])
     }
 
-    func testRemoteCloseKeepsTabAndEndsLog() async throws {
+    func testRemoteCloseBeforeTheTerminalIsLiveKeepsTheTab() async throws {
+        factory.onStart = { @Sendable s in s.emit(.connected) } // never ready
         let tab = try manager.open(hostID: passwordHost().id)
-        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        await waitUntil("connected") { tab.state == .connected }
         factory.sessions[0].emit(.closed(.remoteClosed))
         await waitUntil("disconnected") { tab.state == .disconnected(nil) }
         XCTAssertEqual(manager.tabs.map(\.id), [tab.id])
-        XCTAssertNotNil(vault.all(ConnectionLog.self).first?.endedAt)
     }
 
     func testCloseRemovesTab() async throws {
@@ -772,8 +772,8 @@ final class SessionManagerTests: XCTestCase {
     func testReconnectReusesTab() async throws {
         let tab = try manager.open(hostID: passwordHost().id)
         await waitUntil("log") { self.vault.all(ConnectionLog.self).count == 1 }
-        factory.sessions[0].emit(.closed(.remoteClosed))
-        await waitUntil("disconnected") { tab.state == .disconnected(nil) }
+        factory.sessions[0].emit(.closed(.failed(.timedOut)))
+        await waitUntil("disconnected") { tab.state == .disconnected(SessionError.timedOut.localizedDescription) }
 
         manager.reconnect(tabID: tab.id)
         await waitUntil("reconnected") { tab.state == .connected && self.vault.all(ConnectionLog.self).count == 2 }
@@ -981,7 +981,8 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
         for (index, reason) in reasons.enumerated() {
             let tab = try await readyTab(label: "R\(index)")
             factory.sessions.last!.emit(.closed(reason))
-            await waitUntil("ended") { tab.state != .connected }
+            // `.remoteClosed` (exit) closes the tab; the others keep it disconnected.
+            await waitUntil("ended") { tab.state != .connected || !self.manager.tabs.contains { $0 === tab } }
             await settle()
             XCTAssertNil(tab.autoReconnect, "\(reason)")
         }
@@ -1889,16 +1890,32 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         XCTAssertEqual(statuses(tab), [.done, .failed])
     }
 
-    func testNormalCloseAddsNoFailure() async throws {
+    func testExitingTheShellClosesTheTab() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let other = try manager.open(hostID: host().id)
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("connected") { tab.state == .connected && other.state == .connected }
+        await waitUntil("logs") { self.vault.all(ConnectionLog.self).count == 2 }
+        factory.sessions[1].emit(.closed(.remoteClosed)) // `exit`
+        await waitUntil("closed") { self.manager.tabs.map(\.id) == [other.id] }
+        XCTAssertEqual(manager.selectedTabID, other.id)
+        XCTAssertNotNil(vault.all(ConnectionLog.self).first { $0.endedAt != nil }, "the log still ends")
+    }
+
+    func testAFailureAfterTheTerminalWasLiveStillShowsDisconnected() async throws {
         factory.onStart = { @Sendable s in
             s.emit(.connected)
             s.emit(.ready)
         }
         let tab = try manager.open(hostID: host().id)
         await waitUntil("connected") { tab.state == .connected }
-        factory.sessions[0].emit(.closed(.remoteClosed))
-        await waitUntil("closed") { tab.state == .disconnected(nil) }
-        XCTAssertNil(tab.connectionFailure)
+        await waitUntil("log") { self.vault.all(ConnectionLog.self).count == 1 }
+        factory.sessions[0].emit(.closed(.failed(.timedOut)))
+        await waitUntil("disconnected") { tab.state == .disconnected(SessionError.timedOut.localizedDescription) }
+        XCTAssertEqual(manager.tabs.map(\.id), [tab.id])
     }
 
     func testStaleAttemptsDoNotWriteToTheLog() async throws {

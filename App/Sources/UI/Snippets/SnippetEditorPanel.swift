@@ -4,12 +4,14 @@ import AppCore
 import CoreModels
 
 /// The right-hand snippet editor, styled like Host Details. Each edit saves at once through
-/// `SnippetsViewModel.update` (idempotent). Create one panel per snippet (`.id(snippetID)`): the
+/// `SnippetsViewModel.update` (idempotent); Save confirms it and closes the editor. Create one panel per snippet (`.id(snippetID)`): the
 /// fields are loaded once, on appear, so typing never fights a re-render.
 struct SnippetEditorPanel: View {
     let model: SnippetsViewModel
     let snippet: Snippet
     let onClose: () -> Void
+    /// Save: the fields are written (already saved as typed) and the editor closes with "Saved".
+    let onSave: () -> Void
     let onRun: () -> Void
     let onDuplicate: () -> Void
     let onDelete: () -> Void
@@ -73,7 +75,7 @@ struct SnippetEditorPanel: View {
                 }
                 .padding(16)
             }
-            runButton
+            footer
                 .padding(16)
         }
         .frame(width: Theme.detailsPanelWidth)
@@ -130,23 +132,48 @@ struct SnippetEditorPanel: View {
         .frame(height: 52)
     }
 
-    private var runButton: some View {
-        Button {
-            onRun()
-        } label: {
-            Text("Run on hosts\u{2026}")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(Color.white)
-                .frame(maxWidth: .infinity)
-                .frame(height: 40)
-                .background {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Theme.accent)
-                }
-                .contentShape(Rectangle())
+    /// Save (main) and Run on hosts… side by side.
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Button {
+                onRun()
+            } label: {
+                Text("Run on hosts\u{2026}")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Theme.accent, lineWidth: 1.5)
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Open a session to each chosen host and run this snippet there")
+
+            Button {
+                save()
+            } label: {
+                Text("Save")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 40)
+                    .background {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Theme.accent)
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Save the snippet and close the editor")
         }
-        .buttonStyle(.plain)
-        .help("Open a session to each chosen host and run this snippet there")
+    }
+
+    private func save() {
+        model.update(snippet.id, name: name, script: script, package: nil)
+        onSave()
     }
 
     // MARK: Fields

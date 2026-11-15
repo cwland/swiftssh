@@ -139,6 +139,10 @@ struct RootView: View {
             }
         }
         // A terminal window has no Vaults: it closes with its last tab.
+        // A tab that closed itself (the shell exited) lets go of its terminal view and scrollback.
+        .onChange(of: environment.sessions?.tabs.count ?? 0) { old, new in
+            if new < old { environment.releaseClosedTerminalViews() }
+        }
         .onChange(of: environment.sessions?.tabs(inWindow: windowID).isEmpty ?? true) { _, isEmpty in
             if isTerminalWindow, didOpenRequestedTab, isEmpty, let nsWindow = window.window, nsWindow.isVisible {
                 nsWindow.close()
