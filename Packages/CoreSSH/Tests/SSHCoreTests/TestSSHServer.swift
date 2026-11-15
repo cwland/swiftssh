@@ -327,7 +327,11 @@ final class TestSSHServer: @unchecked Sendable {
     #endif
 
     private static func withFileActions<T>(_ body: (inout FileActions) throws -> T) throws -> T {
+        #if os(Linux)
         var actions = FileActions()
+        #else
+        var actions: FileActions = nil  // Darwin: an opaque pointer that init allocates
+        #endif
         posix_spawn_file_actions_init(&actions)
         defer { posix_spawn_file_actions_destroy(&actions) }
         return try body(&actions)
