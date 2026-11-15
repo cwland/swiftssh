@@ -14,6 +14,9 @@ struct TerminalTabView: View {
     let terminalSettings: TerminalSettings
     /// Closes this tab, the same as Cmd+W.
     let closeTab: () -> Void
+    /// The Change Theme panel is open over the terminal's right edge.
+    var showsThemePanel = false
+    var closeThemePanel: () -> Void = {}
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -51,6 +54,14 @@ struct TerminalTabView: View {
                 // text stays readable when the theme and Light/Dark Mode differ.
                 .background(appearance.theme.background.swiftUIColor)
         }
+        .overlay(alignment: .trailing) {
+            if showsThemePanel {
+                ThemeSidePanel(tab: tab, sessions: sessions, vault: vault,
+                               terminalSettings: terminalSettings, close: closeThemePanel)
+                    .transition(.move(edge: .trailing))
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: showsThemePanel)
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
                 .interactiveDismissDisabled()
@@ -59,7 +70,8 @@ struct TerminalTabView: View {
 
     // MARK: Appearance
 
-    /// Host theme → group chain → app default → Automatic (by the color scheme), and the text
+    /// The tab's own theme (`themeOverrideID`, set from the theme panel for quick connect) when the
+    /// catalog knows it, else host theme → group chain → app default → Automatic (by the color scheme), and the text
     /// size. Reading `vault.revision`, the settings and `colorScheme` here makes Observation
     /// re-run the body (and so `SwiftTermView.updateNSView`) when any of them changes: a Settings
     /// click, a Host Details edit, a group menu choice, a sync from another Mac, or Light/Dark.
@@ -67,6 +79,9 @@ struct TerminalTabView: View {
     /// gets the app default, as does quick connect.
     private var resolvedAppearance: TerminalAppearance {
         _ = vault.revision
+        if let overrideID = tab.themeOverrideID, let theme = TerminalThemeCatalog.shared.theme(id: overrideID) {
+            return TerminalAppearance(theme: theme, fontSize: terminalSettings.fontSize)
+        }
         let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
         let theme = TerminalThemeResolver.theme(
             forHostID: tab.savedHostID,
