@@ -663,13 +663,6 @@ public final class CitadelSession: TerminalSession {
             return .connectionFailed(redact("Could not connect to \(error.host):\(error.port)\(detail)", secrets: secrets))
         case let error as NameResolutionFailure:
             return .connectionFailed("Could not resolve \(error.host) (\(error.reason))")
-        case let error as NIOConnectionError:
-            if error.connectionErrors.contains(where: { if case ChannelError.connectTimeout = $0.error { true } else { false } }) {
-                return .timedOut
-            }
-            let reasons = error.connectionErrors.map { String(describing: $0.error) }
-            let detail = reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"
-            return .connectionFailed(redact("Could not connect to \(error.host):\(error.port)\(detail)", secrets: secrets))
         default:
             break
         }
@@ -734,47 +727,56 @@ public final class CitadelSession: TerminalSession {
     static func openTCPConnection(host: String, port: Int, group: EventLoopGroup, timeout: Duration,
                                   isAbandoned: @escaping @Sendable () -> Bool,
                                   progress: @escaping @Sendable (ConnectionStep) -> Void) async throws -> Channel {
+        let clock = ContinuousClock()
+        let begin = clock.now
         let addresses: [SocketAddress]
         if let literal = try? SocketAddress(ipAddress: host, port: port) {
             addresses = [literal]
         } else {
             progress(.resolving(host: host))
-            addresses = try await NameResolver.resolve(host: host, port: port)
+            addresses = try await NameResolver.resolve(host: host, port: port, isAbandoned: isAbandoned)
         }
-        var reasons: [String] = []
-        var timedOut = false
-        for address in addresses {
-            if isAbandoned() { throw CancellationError() }
-            let shown = address.ipAddress ?? host
-            progress(.connecting(address: shown, port: port))
+        // The rest of the one connect budget (not per address).
+        let remaining = max(timeout - (clock.now - begin), .milliseconds(1))
+        let attempt: @Sendable (SocketAddress) async throws -> Channel = { address in
             let bootstrap = ClientBootstrap(group: group)
-                .connectTimeout(timeAmount(timeout))
+                .connectTimeout(timeAmount(remaining))
                 .channelOption(ChannelOptions.autoRead, value: false)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
                 .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
                 .channelInitializer { channel in
                     channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(ReadGate()) }
                 }
-            do {
-                let channel = try await bootstrap.connect(to: address).get()
-                if isAbandoned() {
-                    try? await channel.close()
-                    throw CancellationError()
-                }
-                progress(.connected(address: channel.remoteAddress?.ipAddress ?? shown))
-                return channel
-            } catch let error as ChannelError {
-                if case .connectTimeout = error { timedOut = true } else { reasons.append(String(describing: error)) }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                reasons.append(lowLevelReason(error) ?? String(describing: error))
-            }
+            return try await bootstrap.connect(to: address).get()
         }
-        var unique: [String] = []
-        for reason in reasons where !unique.contains(reason) { unique.append(reason) }
-        throw TCPConnectFailure(host: host, port: port, reason: unique.isEmpty ? nil : unique.joined(separator: "; "),
-                                timedOut: timedOut && unique.isEmpty)
+        let channel: Channel
+        do {
+            channel = try await ConnectionRace.run(
+                candidates: ConnectionRace.interleavedByFamily(addresses),
+                isAbandoned: isAbandoned,
+                started: { progress(.connecting(address: $0.ipAddress ?? host, port: port)) },
+                attempt: attempt,
+                discard: { channel in channel.close(promise: nil) })
+        } catch let failure as ConnectionRace.Failure {
+            var reasons: [String] = []
+            var timedOut = false
+            for error in failure.errors {
+                if let error = error as? ChannelError, case .connectTimeout = error {
+                    timedOut = true
+                    continue
+                }
+                let reason = lowLevelReason(error) ?? String(describing: error)
+                if !reasons.contains(reason) { reasons.append(reason) }
+            }
+            throw TCPConnectFailure(host: host, port: port, reason: reasons.isEmpty ? nil : reasons.joined(separator: "; "),
+                                    timedOut: timedOut && reasons.isEmpty)
+        }
+        if isAbandoned() {
+            try? await channel.close()
+            throw CancellationError()
+        }
+        progress(.connected(address: channel.remoteAddress?.ipAddress ?? host))
+        return channel
     }
 
     private func endReason(for error: Error) -> SessionEndReason {
@@ -904,15 +906,163 @@ struct NameResolutionFailure: Error {
     let reason: String
 }
 
+/// Connects to one of several addresses the way Happy Eyeballs does (RFC 8305): the first attempt starts at
+/// once, each next one when the previous failed or after `stagger` without an answer; the first success
+/// wins and any later success is handed to `discard`. Throws `Failure` with every error when all fail.
+enum ConnectionRace {
+    struct Failure: Error {
+        let errors: [Error]
+    }
+
+    static let stagger: Duration = .milliseconds(250)
+
+    /// The addresses alternating between families, starting with the first one's (IPv6, IPv4, IPv6, …),
+    /// each family keeping its own order.
+    static func interleavedByFamily(_ addresses: [SocketAddress]) -> [SocketAddress] {
+        guard let first = addresses.first else { return [] }
+        func isV6(_ address: SocketAddress) -> Bool {
+            if case .v6 = address { return true }
+            return false
+        }
+        let firstFamily = addresses.filter { isV6($0) == isV6(first) }
+        let otherFamily = addresses.filter { isV6($0) != isV6(first) }
+        var result: [SocketAddress] = []
+        for index in 0..<max(firstFamily.count, otherFamily.count) {
+            if index < firstFamily.count { result.append(firstFamily[index]) }
+            if index < otherFamily.count { result.append(otherFamily[index]) }
+        }
+        return result
+    }
+
+    fileprivate enum Event<Value: Sendable>: Sendable {
+        case tick(Int)
+        case success(Value)
+        case failure(Error)
+    }
+
+    static func run<Candidate: Sendable, Value: Sendable>(
+        candidates: [Candidate], stagger: Duration = Self.stagger,
+        isAbandoned: @escaping @Sendable () -> Bool = { false },
+        started: (Candidate) -> Void,
+        attempt: @escaping @Sendable (Candidate) async throws -> Value,
+        discard: @escaping @Sendable (Value) -> Void
+    ) async throws -> Value {
+        guard !candidates.isEmpty else { throw Failure(errors: []) }
+        let race = Race(candidates: candidates, stagger: stagger, attempt: attempt, discard: discard)
+        defer { race.stopTimers() }
+        started(race.startNext())
+        for await event in race.events {
+            switch event {
+            case .tick(let generation):
+                if race.isCurrentTick(generation), race.hasMore, !isAbandoned() { started(race.startNext()) }
+            case .success(let value):
+                race.finish()
+                return value
+            case .failure(let error):
+                race.recordFailure(error)
+                if race.hasMore, !isAbandoned() {
+                    started(race.startNext())
+                } else if race.running == 0 {
+                    race.finish()
+                    throw Failure(errors: race.errors)
+                }
+            }
+        }
+        throw Failure(errors: race.errors)
+    }
+}
+
+/// The bookkeeping of one `ConnectionRace.run`; used only by its coordinating task.
+private final class Race<Candidate: Sendable, Value: Sendable> {
+    let candidates: [Candidate]
+    let stagger: Duration
+    let attempt: @Sendable (Candidate) async throws -> Value
+    let discard: @Sendable (Value) -> Void
+    let events: AsyncStream<ConnectionRace.Event<Value>>
+    private let continuation: AsyncStream<ConnectionRace.Event<Value>>.Continuation
+    /// Set by the attempt that wins; a later success finds it taken and discards its value.
+    private let claimed = OneShot<Void>()
+    private var next = 0
+    private(set) var running = 0
+    private var tickGeneration = 0
+    private(set) var errors: [Error] = []
+    private var timers: [Task<Void, Never>] = []
+
+    init(candidates: [Candidate], stagger: Duration, attempt: @escaping @Sendable (Candidate) async throws -> Value,
+         discard: @escaping @Sendable (Value) -> Void) {
+        self.candidates = candidates
+        self.stagger = stagger
+        self.attempt = attempt
+        self.discard = discard
+        (events, continuation) = AsyncStream.makeStream(of: ConnectionRace.Event<Value>.self)
+    }
+
+    var hasMore: Bool { next < candidates.count }
+
+    func isCurrentTick(_ generation: Int) -> Bool { generation == tickGeneration }
+
+    func recordFailure(_ error: Error) {
+        running -= 1
+        errors.append(error)
+    }
+
+    /// Starts the next candidate (and the timer for the one after it); returns the one started.
+    func startNext() -> Candidate {
+        let candidate = candidates[next]
+        next += 1
+        running += 1
+        let attempt = attempt
+        let discard = discard
+        let claimed = claimed
+        let continuation = continuation
+        Task {
+            do {
+                let value = try await attempt(candidate)
+                if claimed.resolve(()) { continuation.yield(.success(value)) } else { discard(value) }
+            } catch {
+                continuation.yield(.failure(error))
+            }
+        }
+        if hasMore {
+            tickGeneration += 1
+            let generation = tickGeneration
+            let stagger = stagger
+            timers.append(Task {
+                do { try await Task.sleep(for: stagger) } catch { return }
+                continuation.yield(.tick(generation))
+            })
+        }
+        return candidate
+    }
+
+    func finish() { continuation.finish() }
+
+    func stopTimers() { timers.forEach { $0.cancel() } }
+}
+
 /// Looks up host names with `getaddrinfo` on a background thread (it blocks and can't be cancelled; the
 /// connect timeout bounds the wait for it).
 enum NameResolver {
-    static func resolve(host: String, port: Int) async throws -> [SocketAddress] {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(with: Result { try lookup(host: host, port: port) })
+    /// Returns as soon as `isAbandoned()` (checked every 50 ms) says the attempt is over, with
+    /// `CancellationError`, so teardown never waits for a slow lookup; the lookup itself finishes on its own
+    /// thread and its answer is dropped.
+    static func resolve(host: String, port: Int,
+                        isAbandoned: @escaping @Sendable () -> Bool = { false }) async throws -> [SocketAddress] {
+        let answer = OneShot<Result<[SocketAddress], Error>>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            answer.resolve(Result { try lookup(host: host, port: port) })
+        }
+        let watcher = Task {
+            while !answer.isResolved {
+                if isAbandoned() {
+                    answer.resolve(.failure(CancellationError()))
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
             }
         }
+        defer { watcher.cancel() }
+        return try await answer.wait().get()
     }
 
     private static func lookup(host: String, port: Int) throws -> [SocketAddress] {
@@ -980,15 +1130,17 @@ private final class ReadGate: ChannelOutboundHandler, RemovableChannelHandler {
     private var opened = false
 
     func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
-        if !opened {
-            opened = true
-            do {
-                try context.channel.syncOptions?.setOption(ChannelOptions.autoRead, value: true)
-            } catch {
-                context.close(promise: nil)
-            }
-        }
         context.write(data, promise: promise)
+        guard !opened else { return }
+        opened = true
+        do {
+            try context.channel.syncOptions?.setOption(ChannelOptions.autoRead, value: true)
+        } catch {
+            context.close(promise: nil)
+            return
+        }
+        // Its job is done: later writes skip it, and the pipeline looks as it did before.
+        context.pipeline.syncOperations.removeHandler(context: context, promise: nil)
     }
 }
 

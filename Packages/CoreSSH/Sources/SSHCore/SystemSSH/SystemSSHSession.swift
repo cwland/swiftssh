@@ -668,17 +668,17 @@ public final class SystemSSHSession: TerminalSession {
         }
     }
 
-    /// Reads ssh's debug log as it grows until the session ends: often while connecting, then now and then
-    /// (lines after `.connected` are read only to be dropped).
+    /// Reads ssh's debug log as it grows until `.connected` (steps only come before it); after that the
+    /// log is read once more only when ssh exits.
     private func followDebugLog(_ log: SSHDebugLogReader) async {
         while true {
-            let (current, connected) = state.withLock { state -> (Bool, Bool) in
-                guard !state.ended, state.debugLog === log else { return (false, false) }
+            let keepGoing = state.withLock { state -> Bool in
+                guard !state.ended, !state.connectedEmitted, state.debugLog === log else { return false }
                 Self.drainDebugLog(&state, continuation: eventContinuation)
-                return (true, state.connectedEmitted)
+                return true
             }
-            guard current else { return }
-            try? await Task.sleep(for: connected ? .seconds(1) : .milliseconds(50))
+            guard keepGoing else { return }
+            try? await Task.sleep(for: .milliseconds(50))
         }
     }
 

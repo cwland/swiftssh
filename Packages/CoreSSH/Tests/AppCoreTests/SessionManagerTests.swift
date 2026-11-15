@@ -1933,6 +1933,38 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         XCTAssertEqual(tab.connectionFailure, SessionError.authenticationFailed.localizedDescription)
     }
 
+    func testAnAutomaticTryStartsAFreshLog() async throws {
+        let sleeper = FakeSleeper()
+        let factory = factory!
+        manager = SessionManager(vault: vault, knownHosts: KnownHostsStore(vault: vault),
+                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                                 deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                                 autoReconnectEnabled: { true }, now: { [clock] in clock.tick() },
+                                 sleep: { try await sleeper.sleep($0) })
+        factory.onStart = { @Sendable s in
+            s.emit(.progress(.openingShell))
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let tab = try manager.open(hostID: host().id)
+        await waitUntil("connected") { tab.state == .connected }
+        let firstIDs = tab.connectionLog.map(\.id)
+
+        factory.onStart = { @Sendable s in s.emit(.progress(.connecting(address: "10.0.0.5", port: 22))) }
+        factory.sessions[0].emit(.closed(.failed(.connectionFailed("Broken pipe"))))
+        await waitUntil("countdown") { sleeper.pending == 1 }
+        XCTAssertTrue(tab.hasEverConnected, "until the next try starts")
+        sleeper.elapseAll()
+        await waitUntil("automatic try") { self.factory.sessions.count == 2 && tab.connectionLog.count == 1 }
+        XCTAssertEqual(tab.connectionLog.map(\.step), [.connecting(address: "10.0.0.5", port: 22)])
+        XCTAssertEqual(statuses(tab), [.inProgress])
+        XCTAssertFalse(tab.hasEverConnected)
+        XCTAssertNil(tab.connectionFailure)
+        XCTAssertTrue(Set(firstIDs).isDisjoint(with: tab.connectionLog.map(\.id)))
+        if case .reconnecting = tab.autoReconnect {} else { XCTFail("\(String(describing: tab.autoReconnect))") }
+        sleeper.elapseAll()
+    }
+
     func testLogTextHasAHeaderAndTimedLinesWithoutSecrets() async throws {
         factory.onStart = { @Sendable s in
             s.emit(.progress(.connecting(address: "10.0.0.5", port: 2222)))

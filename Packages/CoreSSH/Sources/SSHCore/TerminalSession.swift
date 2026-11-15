@@ -124,7 +124,8 @@ public enum ConnectionStep: Sendable, Equatable {
     public var text: String {
         switch self {
         case .resolving(let host): "Resolving \(host)\u{2026}"
-        case .connecting(let address, let port): "Connecting to \(address):\(port)\u{2026}"
+        case .connecting(let address, let port):
+            "Connecting to \(address.contains(":") ? "[\(address)]" : address):\(port)\u{2026}"
         case .connected: "Connection established"
         case .handshake: "Starting SSH session\u{2026}"
         case .authenticating(let method): "Signing in with \(method)\u{2026}"

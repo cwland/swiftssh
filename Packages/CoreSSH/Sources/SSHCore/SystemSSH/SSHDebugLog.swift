@@ -116,6 +116,8 @@ final class SSHDebugLogReader: Sendable {
         var fd: Int32
         var partial: [UInt8] = []
         var unlinked = false
+        /// One read buffer for the reader's life.
+        var buffer = [UInt8](repeating: 0, count: 16_384)
     }
     private let state: Mutex<State>
     /// The most of one line kept; longer lines are cut (and are never whitelisted ones).
@@ -133,9 +135,9 @@ final class SSHDebugLogReader: Sendable {
         state.withLock { state in
             guard state.fd >= 0 else { return [] }
             var lines: [String] = []
-            var buffer = [UInt8](repeating: 0, count: 65_536)
+            let fd = state.fd
             while true {
-                let count = buffer.withUnsafeMutableBytes { read(state.fd, $0.baseAddress, $0.count) }
+                let count = state.buffer.withUnsafeMutableBytes { read(fd, $0.baseAddress, $0.count) }
                 if count < 0 && errno == EINTR { continue }
                 guard count > 0 else { break }
                 if !state.unlinked {
@@ -143,7 +145,7 @@ final class SSHDebugLogReader: Sendable {
                     _ = unlink(url.path)
                     state.unlinked = true
                 }
-                for byte in buffer[0..<count] {
+                for byte in state.buffer[0..<count] {
                     if byte == UInt8(ascii: "\n") {
                         lines.append(Self.text(state.partial))
                         state.partial = []
@@ -172,6 +174,7 @@ final class SSHDebugLogReader: Sendable {
                 state.unlinked = true
             }
             state.partial = []
+            state.buffer = []
         }
     }
 
