@@ -101,8 +101,8 @@ final class HostDetailsTmuxTests: XCTestCase {
         let vm = HostDetailsViewModel(vault: vault, hostID: h.id)
         vm.tmuxNameText = "work-2"
         XCTAssertEqual(stored(h.id)?.tmuxSession, .session("work-2"))
-        vm.tmuxNameText = "  dev.box_1 "
-        XCTAssertEqual(stored(h.id)?.tmuxSession, .session("dev.box_1"))
+        vm.tmuxNameText = "  dev_box-1 "
+        XCTAssertEqual(stored(h.id)?.tmuxSession, .session("dev_box-1"))
         XCTAssertNil(vm.tmuxNameError)
     }
 

@@ -1094,9 +1094,12 @@ public final class SessionManager {
         attempt.inputs.yield(.bytes(Array(Self.tmuxAttachCommand(session: name).utf8)))
     }
 
-    /// MERGE(P1): ConnectionStep is not in this branch. At merge this appends the step to the tab's
-    /// connection log the way `.progress` events do: `noteProgress(.attachingTmux(session: name), tab: tab)`.
-    private func noteTmuxAttachProgress(session name: String, tab: TerminalTab) {}
+    /// Adds "Attaching to tmux session <name>…" to the tab's connection log (marked done: the command
+    /// has been sent; whether tmux exists shows in the terminal itself).
+    private func noteTmuxAttachProgress(session name: String, tab: TerminalTab) {
+        tab.appendStep(.attachingTmux(session: name), at: now())
+        tab.finishCurrentStep(as: .done)
+    }
 
     /// Attaches to (or creates) the session, or says tmux is missing. `name` must already pass
     /// `TmuxChoice.isValidSessionName`; it is single-quoted all the same. Ends with a carriage return

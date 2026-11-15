@@ -24,7 +24,7 @@ public enum TmuxLabels {
         }
     }
 
-    public static let invalidNameMessage = "Use 1\u{2013}64 letters, digits, dots, underscores or hyphens"
+    public static let invalidNameMessage = "Use 1\u{2013}64 letters, digits, underscores or hyphens"
 }
 
 public enum HostDetailsError: Error, Equatable, Sendable {

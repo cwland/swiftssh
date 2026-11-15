@@ -123,8 +123,8 @@ final class SessionManagerTmuxTests: XCTestCase {
 
     func testAttachCommandIsExactlyThePlannedLine() async {
         XCTAssertEqual(SessionManager.tmuxAttachCommand(session: "main"), Self.attachMain)
-        XCTAssertEqual(SessionManager.tmuxAttachCommand(session: "dev.box_1-2"),
-                       "command -v tmux >/dev/null 2>&1 && tmux new -A -s 'dev.box_1-2' || echo 'tmux is not installed on this server - skipping attach.'\r")
+        XCTAssertEqual(SessionManager.tmuxAttachCommand(session: "dev_box-2"),
+                       "command -v tmux >/dev/null 2>&1 && tmux new -A -s 'dev_box-2' || echo 'tmux is not installed on this server - skipping attach.'\r")
     }
 
     func testSendsTheAttachLineAfterReady() async throws {
@@ -133,6 +133,15 @@ final class SessionManagerTmuxTests: XCTestCase {
         XCTAssertEqual(tab.state, .connected)
         await settle()
         XCTAssertEqual(sessions[0].sends, [Self.attachMain], "sent once")
+    }
+
+    func testAttachAddsADoneLineToTheConnectionLog() async throws {
+        let tab = try manager.open(hostID: host(tmux: .session("main")).id)
+        await waitUntil("attach") { self.sessions.first?.sends == [Self.attachMain] }
+        let line = tab.connectionLog.last
+        XCTAssertEqual(line?.step, .attachingTmux(session: "main"))
+        XCTAssertEqual(line?.status, .done)
+        XCTAssertFalse(tab.connectionLog.contains { $0.status == .inProgress })
     }
 
     func testNothingIsSentBeforeReady() async throws {

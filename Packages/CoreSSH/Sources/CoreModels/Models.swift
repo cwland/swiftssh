@@ -36,13 +36,13 @@ public enum TmuxChoice: Codable, Hashable, Sendable {
     /// The name used when the user switches attaching on.
     public static let defaultSessionName = "main"
 
-    /// `[A-Za-z0-9._-]{1,64}`: safe to put on a command line and accepted by tmux.
+    /// `[A-Za-z0-9_-]{1,64}`: safe on a command line and kept as-is by tmux (which rewrites "." and ":").
     public static func isValidSessionName(_ name: String) -> Bool {
         guard (1...64).contains(name.utf8.count) else { return false }
         return name.utf8.allSatisfy { byte in
             switch byte {
             case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"),
-                 UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "."), UInt8(ascii: "_"), UInt8(ascii: "-"):
+                 UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "_"), UInt8(ascii: "-"):
                 true
             default:
                 false

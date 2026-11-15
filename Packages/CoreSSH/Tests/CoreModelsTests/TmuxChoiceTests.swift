@@ -87,10 +87,10 @@ final class TmuxChoiceTests: XCTestCase {
     // MARK: Names
 
     func testSessionNameValidation() {
-        for good in ["main", "a", "Work-1", "my.session_2", String(repeating: "x", count: 64)] {
+        for good in ["main", "a", "Work-1", "my_session-2", String(repeating: "x", count: 64)] {
             XCTAssertTrue(TmuxChoice.isValidSessionName(good), good)
         }
-        for bad in ["", " main", "main ", "a b", "it's", "a;rm -rf", "$(x)", "a:b", "ü", "日本",
+        for bad in ["", " main", "main ", "a b", "it's", "a;rm -rf", "$(x)", "a:b", "my.session", "ü", "日本",
                     String(repeating: "x", count: 65), "a\nb", "a'b"] {
             XCTAssertFalse(TmuxChoice.isValidSessionName(bad), bad)
         }
