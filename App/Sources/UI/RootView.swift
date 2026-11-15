@@ -36,8 +36,8 @@ extension FocusedValues {
 ///
 /// Windows: the main window (and Cmd+N copies of it) shows Vaults and the main tabs; a terminal window
 /// shows only its own tabs (`windowID`) and closes when its last tab closes. Every window publishes its
-/// `WindowScope` for menu commands. Closing a terminal window ends its sessions; closing the last main
-/// window ends the main tabs' sessions.
+/// `WindowScope` for menu commands (and registers it with its NSWindow as the fallback). Closing a terminal
+/// window ends its sessions; closing main windows leaves the main tabs running, as in v0.6.0.
 struct RootView: View {
     let environment: AppEnvironment
     var windowRequest: TerminalWindowRequest? = nil
@@ -47,6 +47,8 @@ struct RootView: View {
     /// The tab whose Change Theme panel is open.
     @State private var themePanelTabID: UUID?
     @State private var didOpenRequestedTab = false
+    /// The duplicate could not be opened (its source tab is gone): the window closes as soon as it is known.
+    @State private var openFailed = false
     @State private var window = WindowReference()
 
     private var windowID: UUID? { windowRequest?.windowID }
@@ -94,14 +96,11 @@ struct RootView: View {
             WindowLifecycleObserver(
                 attached: { nsWindow in
                     window.window = nsWindow
-                    if !isTerminalWindow { environment.mainWindowOpened() }
+                    environment.windowAttached(nsWindow, scope: WindowScope(windowID: windowID))
+                    if openFailed { closeLater(nsWindow) }
                 },
-                willClose: {
-                    if let windowID {
-                        environment.terminalWindowClosed(windowID)
-                    } else if !isTerminalWindow {
-                        environment.mainWindowClosed()
-                    }
+                willClose: { nsWindow in
+                    environment.windowClosed(nsWindow, scope: WindowScope(windowID: windowID))
                 }
             )
         }
@@ -111,8 +110,10 @@ struct RootView: View {
             didOpenRequestedTab = true
             guard let request = windowRequest,
                   sessions.duplicate(tabID: request.sourceTabID, inWindow: request.windowID) != nil else {
-                // The source tab closed meanwhile: nothing to show.
-                window.window?.close()
+                // The source tab closed meanwhile: nothing to show. If the window isn't known yet,
+                // `attached` closes it.
+                openFailed = true
+                if let nsWindow = window.window { closeLater(nsWindow) }
                 return
             }
         }
@@ -125,6 +126,14 @@ struct RootView: View {
     }
 }
 
+/// Closes the window after the current update (not from inside a view update or `viewDidMoveToWindow`).
+@MainActor
+private func closeLater(_ window: NSWindow) {
+    Task { @MainActor in
+        if window.isVisible { window.close() }
+    }
+}
+
 /// The window a `RootView` is in, once known (for closing a terminal window from code).
 @MainActor
 private final class WindowReference {
@@ -132,10 +141,12 @@ private final class WindowReference {
 }
 
 /// Reports the window the view is placed in, and that window's `willCloseNotification`: the
-/// reliable "window closed" signal (`onDisappear` also fires for other view teardown).
+/// reliable "window closed" signal (`onDisappear` also fires for other view teardown). The observer is
+/// removed when the view leaves its window, so a recreated view never leaves a stale one behind;
+/// reporting the same window again is harmless (registration is keyed by window).
 private struct WindowLifecycleObserver: NSViewRepresentable {
     let attached: @MainActor (NSWindow) -> Void
-    let willClose: @MainActor () -> Void
+    let willClose: @MainActor (NSWindow) -> Void
 
     func makeNSView(context: Context) -> ObserverView {
         let view = ObserverView()
@@ -151,26 +162,34 @@ private struct WindowLifecycleObserver: NSViewRepresentable {
 
     final class ObserverView: NSView {
         var attached: (@MainActor (NSWindow) -> Void)?
-        var willClose: (@MainActor () -> Void)?
+        var willClose: (@MainActor (NSWindow) -> Void)?
         private weak var observedWindow: NSWindow?
         private var token: (any NSObjectProtocol)?
 
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+            if newWindow !== observedWindow { stopObserving() }
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            // Each window is reported once; a view moved within the same window is ignored.
             guard let window, window !== observedWindow else { return }
-            if let token { NotificationCenter.default.removeObserver(token) }
             observedWindow = window
             token = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
                                                            object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self else { return }
-                    if let token = self.token { NotificationCenter.default.removeObserver(token) }
-                    self.token = nil
-                    self.willClose?()
+                    guard let self, let window = self.observedWindow else { return }
+                    self.stopObserving()
+                    self.willClose?(window)
                 }
             }
             attached?(window)
+        }
+
+        private func stopObserving() {
+            if let token { NotificationCenter.default.removeObserver(token) }
+            token = nil
+            observedWindow = nil
         }
     }
 }
