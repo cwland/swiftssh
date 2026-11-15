@@ -7,10 +7,11 @@ struct HostCardView: View {
     let host: SavedHost
     let subtitle: String
     let isSelected: Bool
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
         CardRow(title: host.label.isEmpty ? "Untitled host" : host.label, subtitle: subtitle,
-                isSelected: isSelected) {
+                isSelected: isSelected, onEdit: onEdit) {
             BadgeView(badge: host.osBadge, size: Theme.cardBadgeSize, cornerRadius: Theme.cardBadgeCornerRadius)
         }
     }

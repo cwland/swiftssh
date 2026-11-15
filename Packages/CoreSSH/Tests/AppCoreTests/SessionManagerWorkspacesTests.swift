@@ -118,6 +118,39 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         return (ws, tabs)
     }
 
+    // MARK: Hosts screen actions (v0.10)
+
+    func testOpenHostInAnotherWindowSelectsItThere() async throws {
+        let window = UUID()
+        let h = host("a")
+        let tab = try manager.open(hostID: h.id, inWindow: window)
+        XCTAssertEqual(tab.windowID, window)
+        XCTAssertEqual(manager.selectedTabID(inWindow: window), tab.id)
+        XCTAssertEqual(strip(window), [.tab(tab.id)])
+        XCTAssertEqual(strip(), [], "the main window is untouched")
+    }
+
+    func testWorkspacesOfAWindowInStripOrder() async throws {
+        let (first, _) = try await workspace("a", "b")
+        _ = hostTab("p")
+        let (second, _) = try await workspace("c", "d")
+        XCTAssertEqual(manager.workspaces(inWindow: nil).map(\.id), [first.id, second.id])
+        XCTAssertEqual(manager.workspaces(inWindow: UUID()).count, 0)
+    }
+
+    func testAddHostToAWorkspaceGoesBesideTheFocusedPaneAndShowsTheWorkspace() async throws {
+        let (ws, tabs) = try await workspace("a", "b")
+        let plain = hostTab("p")
+        XCTAssertEqual(manager.selectedTabID, plain.id)
+        manager.focusPane(tabs[0].id)
+        manager.select(tabID: plain.id, inWindow: nil)
+        let added = try manager.addHost(host("c").id, toWorkspace: ws.id)
+        XCTAssertEqual(ws.paneIDs, [tabs[0].id, added.id, tabs[1].id])
+        XCTAssertEqual(ws.focusedPaneID, added.id)
+        XCTAssertEqual(manager.selectedTabID, added.id, "the workspace is shown, the new pane focused")
+        XCTAssertThrowsError(try manager.addHost(host("d").id, toWorkspace: UUID()))
+    }
+
     // MARK: Strip
 
     func testWithoutWorkspacesTheStripIsTheTabs() async {

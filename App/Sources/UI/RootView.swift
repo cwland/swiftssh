@@ -2,13 +2,15 @@ import SwiftUI
 import AppKit
 import AppCore
 
-/// Opens a terminal window ("Duplicate in New Window"): its own id (its tabs' `windowID`) and the tab
-/// to duplicate into it once it appears. Shown by the app's `WindowGroup(id: sceneID, for:)`.
+/// Opens a terminal window: its own id (its tabs' `windowID`) and what to show once it appears, a
+/// copy of the tab `sourceTabID` ("Duplicate in New Window") or a new tab for the saved host `hostID`
+/// (Hosts → "Connect in a New Window"). Shown by the app's `WindowGroup(id: sceneID, for:)`.
 struct TerminalWindowRequest: Codable, Hashable {
     static let sceneID = "terminal"
 
     var windowID = UUID()
-    var sourceTabID: UUID
+    var sourceTabID: UUID?
+    var hostID: UUID?
 }
 
 /// Which window's tabs menu commands act on: the focused scene's (`focusedSceneValue`).
@@ -118,9 +120,16 @@ struct RootView: View {
         .task(id: environment.sessions == nil) {
             guard isTerminalWindow, !didOpenRequestedTab, let sessions = environment.sessions else { return }
             didOpenRequestedTab = true
-            guard let request = windowRequest,
-                  sessions.duplicate(tabID: request.sourceTabID, inWindow: request.windowID) != nil else {
-                // The source tab closed meanwhile: nothing to show. If the window isn't known yet,
+            let opened: Bool
+            if let request = windowRequest, let sourceTabID = request.sourceTabID {
+                opened = sessions.duplicate(tabID: sourceTabID, inWindow: request.windowID) != nil
+            } else if let request = windowRequest, let hostID = request.hostID {
+                opened = (try? sessions.open(hostID: hostID, inWindow: request.windowID)) != nil
+            } else {
+                opened = false
+            }
+            guard opened else {
+                // The source tab closed (or the host went) meanwhile: nothing to show. If the window isn't known yet,
                 // `attached` closes it.
                 openFailed = true
                 if let nsWindow = window.window { closeLater(nsWindow) }
@@ -305,12 +314,11 @@ private struct ReadyArea: View {
         .focusedSceneValue(\.snippetsPanelToggle, snippetsPanelToggle)
     }
 
-    /// "Edit host" on the connection screen: Vaults → Hosts with the tab's host selected (its Host
-    /// Details panel opens). The tab stays open. Main window only.
+    /// "Edit host" on the connection screen: Vaults → Hosts with the tab's host's Host Details open. The tab stays open. Main window only.
     private func editHost(of tab: TerminalTab) {
         guard let hostID = tab.savedHostID else { return }
         environment.navigation.sidebar = .hosts
-        hostsModel?.selectedHostID = hostID
+        hostsModel?.edit(hostID: hostID)
         environment.showVaults()
     }
 
@@ -395,6 +403,8 @@ private struct MainArea: View {
     let logsModel: LogsViewModel?
     let snippetsModel: SnippetsViewModel?
 
+    @Environment(\.openWindow) private var openWindow
+
     var body: some View {
         HStack(spacing: 0) {
             SidebarView(navigation: navigation)
@@ -419,7 +429,12 @@ private struct MainArea: View {
                 HostsView(model: hostsModel, vault: vault, sessions: sessions, terminalSettings: terminalSettings,
                           workspaceTemplates: environment.workspaceTemplates,
                           openWorkspace: { try environment.openWorkspace(hostIDs: $0) },
-                          openTemplate: { try environment.openWorkspaceTemplate($0) })
+                          openTemplate: { try environment.openWorkspaceTemplate($0) },
+                          connectInNewWindow: { hostID in
+                              // Checked here so a host that can't connect shows why instead of an empty window.
+                              _ = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+                              openWindow(id: TerminalWindowRequest.sceneID, value: TerminalWindowRequest(hostID: hostID))
+                          })
             } else {
                 Theme.contentBackground
             }

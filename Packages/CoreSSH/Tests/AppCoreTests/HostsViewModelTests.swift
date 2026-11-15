@@ -102,7 +102,7 @@ final class HostsViewModelTests: XCTestCase {
         let host = try await vm.newHost()
         XCTAssertEqual(host.label, "New host")
         XCTAssertEqual(host.groupID, group.id)
-        XCTAssertEqual(vm.selectedHostID, host.id)
+        XCTAssertEqual(vm.editingHostID, host.id)
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.groupID, group.id)
     }
 
@@ -160,14 +160,14 @@ final class HostsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.visibleGroups.map(\.name), ["S"])
     }
 
-    @MainActor func testSelectedHostIsNilAfterDeletion() async throws {
+    @MainActor func testEditingHostIsNilAfterDeletion() async throws {
         let vault = try await makeVault()
         let vm = HostsViewModel(vault: vault)
-        XCTAssertNil(vm.selectedHost)
+        XCTAssertNil(vm.editingHost)
         let host = try await vm.newHost()
-        XCTAssertEqual(vm.selectedHost?.id, host.id)
+        XCTAssertEqual(vm.editingHost?.id, host.id)
         try await vault.delete(SavedHost.self, id: host.id)
-        XCTAssertNil(vm.selectedHost)
+        XCTAssertNil(vm.editingHost)
     }
 
     @MainActor func testBreadcrumbsTerminateOnCyclicParents() async throws {

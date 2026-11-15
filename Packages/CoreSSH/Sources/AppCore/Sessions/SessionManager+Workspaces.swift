@@ -244,6 +244,26 @@ extension SessionManager {
         applyOrder(items, inWindow: window)
     }
 
+    /// Hosts screen "Add to Workspace": a new connection to the host in the workspace, beside its
+    /// focused pane (right half), focused, with the workspace shown in its window. Throws as
+    /// `addPane(hostID:to:beside:at:)` does.
+    @discardableResult
+    public func addHost(_ hostID: UUID, toWorkspace workspaceID: UUID) throws -> TerminalTab {
+        guard let workspace = workspacesByID[workspaceID] else { throw WorkspaceError.unknownWorkspace }
+        try addPane(hostID: hostID, to: workspaceID, beside: workspace.focusedPaneID, at: .right)
+        selections[workspace.windowID] = workspace.id
+        guard let tab = tab(workspace.focusedPaneID) else { throw WorkspaceError.unknownTab }
+        return tab
+    }
+
+    /// The window's workspaces, in tab bar order.
+    public func workspaces(inWindow windowID: UUID?) -> [Workspace] {
+        strip(inWindow: windowID).compactMap { item in
+            if case .workspace(let id) = item { return workspacesByID[id] }
+            return nil
+        }
+    }
+
     /// Moves a pane beside another pane of the same workspace. Ignored for unknown ids.
     public func movePane(_ paneID: UUID, beside target: UUID, at edge: DropEdge, in workspaceID: UUID) {
         guard let workspace = workspacesByID[workspaceID], workspace.contains(paneID), workspace.contains(target) else { return }

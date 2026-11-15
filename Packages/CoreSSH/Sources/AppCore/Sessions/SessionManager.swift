@@ -382,6 +382,16 @@ public final class SessionManager {
         return add(TerminalTab(target: .host(hostID), title: plan.label, badge: badge), plan: plan)
     }
 
+    /// Opens a tab for a saved host in the window `windowID` (nil = the main window), selected there.
+    /// Throws as `open(hostID:)` does; no tab is created then.
+    @discardableResult
+    public func open(hostID: UUID, inWindow windowID: UUID?) throws -> TerminalTab {
+        let plan = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+        let tab = appendTab(hostID: hostID, plan: plan, inWindow: windowID)
+        select(tabID: tab.id, inWindow: windowID)
+        return tab
+    }
+
     @discardableResult
     public func open(quickConnect target: QuickConnectTarget) -> TerminalTab {
         let plan = ConnectionPlanner.plan(quickConnect: target, defaultUsername: defaultUsername)

@@ -5,10 +5,14 @@ import CoreModels
 public enum HostsError: Error, Equatable, Sendable, LocalizedError {
     case emptyGroupName
     case invalidTmuxSessionName
+    case groupCycle
+    case hostNotFound
 
     public var errorDescription: String? {
         switch self {
         case .emptyGroupName: "A group name can't be empty."
+        case .hostNotFound: "The host no longer exists."
+        case .groupCycle: "A group can't be moved into itself or one of its own groups."
         case .invalidTmuxSessionName: TmuxLabels.invalidNameMessage
         }
     }
@@ -22,23 +26,21 @@ public final class HostsViewModel {
     public var selectedTags: Set<String> = []
     public var layout: Layout = .grid
     public var currentGroupID: UUID?
-    /// The host whose Host Details panel is open. Setting it (New host, "Edit host", closing the
-    /// panel) makes it the only selected host (none for nil).
-    public var selectedHostID: UUID? {
-        didSet {
-            guard !isApplyingClick else { return }
-            selectedHostIDs = selectedHostID.map { [$0] } ?? []
-            selectionAnchor = selectedHostID
-        }
-    }
-    /// Every selected host card (⌘-click, ⇧-click). Host Details shows only while exactly one is selected.
+    /// The host whose Host Details panel is open: opened only by `edit(hostID:)` (the card's pencil,
+    /// Edit Host Details, E) or New host, never by a click. Opening it makes that host the only
+    /// selected one; closing it keeps the selection.
+    public private(set) var editingHostID: UUID?
+    /// The group whose Group panel is open (its pencil or Edit Group). One panel at a time.
+    public private(set) var editingGroupID: UUID?
+    /// Every selected host card (click, ⌘-click, ⇧-click).
     public private(set) var selectedHostIDs: Set<UUID> = []
+    /// The highlighted group card (a click); selecting hosts clears it.
+    public private(set) var selectedGroupID: UUID?
 
     /// How a host card was clicked: plain, ⌘ (toggle) or ⇧ (extend a range from the last clicked).
     public enum ClickModifier: Sendable { case none, toggle, extend }
 
     @ObservationIgnored private var selectionAnchor: UUID?
-    @ObservationIgnored private var isApplyingClick = false
 
     @ObservationIgnored private let vault: LocalVault
 
@@ -53,10 +55,45 @@ public final class HostsViewModel {
         return id
     }
 
-    /// The selected host, nil if none is selected or it is missing or deleted.
-    public var selectedHost: SavedHost? {
+    /// The host whose details are open, nil if none or it is missing or deleted.
+    public var editingHost: SavedHost? {
         _ = vault.revision
-        return selectedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+        return editingHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+    }
+
+    /// The group whose panel is open, nil if none or it is missing or deleted.
+    public var editingGroup: HostGroup? {
+        _ = vault.revision
+        return editingGroupID.flatMap { vault.get(HostGroup.self, id: $0) }
+    }
+
+    /// Opens Host Details for the host and makes it the only selected one.
+    public func edit(hostID: UUID) {
+        editingGroupID = nil
+        editingHostID = hostID
+        selectedGroupID = nil
+        selectedHostIDs = [hostID]
+        selectionAnchor = hostID
+    }
+
+    /// Opens the group's panel (and highlights the group).
+    public func edit(groupID: UUID) {
+        editingHostID = nil
+        editingGroupID = groupID
+        select(groupID: groupID)
+    }
+
+    /// Closes whichever panel is open; the selection stays.
+    public func closeEditor() {
+        editingHostID = nil
+        editingGroupID = nil
+    }
+
+    /// A click on a group card: highlights it (double-click opens it, `openGroup`).
+    public func select(groupID: UUID) {
+        selectedGroupID = groupID
+        selectedHostIDs = []
+        selectionAnchor = nil
     }
 
     private var directory: HostDirectory {
@@ -127,10 +164,9 @@ public final class HostsViewModel {
 
     // MARK: Selection
 
-    /// A click on a host card. Plain: that host only (its details open). ⌘: adds or removes it.
-    /// ⇧: the hosts from the last plain- or ⌘-clicked one to it, in the shown order (replacing the
-    /// selection; without such a host, just this one). Host Details shows while exactly one host is
-    /// selected.
+    /// A click on a host card. Plain: that host only. ⌘: adds or removes it. ⇧: the hosts from the
+    /// last plain- or ⌘-clicked one to it, in the shown order (replacing the selection; without such
+    /// a host, just this one). A click never opens Host Details (`edit(hostID:)` does).
     public func click(hostID: UUID, modifier: ClickModifier) {
         var selection = selectedHostIDs
         switch modifier {
@@ -150,10 +186,8 @@ public final class HostsViewModel {
                 selectionAnchor = hostID
             }
         }
-        isApplyingClick = true
+        selectedGroupID = nil
         selectedHostIDs = selection
-        selectedHostID = selection.count == 1 ? selection.first : nil
-        isApplyingClick = false
     }
 
     /// Whether the card shows as selected.
@@ -180,9 +214,102 @@ public final class HostsViewModel {
 
     @discardableResult
     public func newHost() async throws -> SavedHost {
-        let host = try await vault.save(SavedHost(label: "New host", address: "", groupID: effectiveGroupID))
-        selectedHostID = host.id
+        try await newHost(inGroup: effectiveGroupID)
+    }
+
+    /// A new host in `groupID` (nil = top level), with its details open.
+    @discardableResult
+    public func newHost(inGroup groupID: UUID?) async throws -> SavedHost {
+        let host = try await vault.save(SavedHost(label: "New host", address: "", groupID: groupID))
+        edit(hostID: host.id)
         return host
+    }
+
+    // MARK: Right-click actions
+
+    /// The hosts a right-click on a card acts on: the shown selection when the card is in it, else
+    /// just that card.
+    public func hostIDs(forContextMenuOn id: UUID) -> [UUID] {
+        let selected = selectedVisibleHostIDs
+        return selected.contains(id) ? selected : [id]
+    }
+
+    /// A copy of the host (all its settings, a new id, "<label> copy", never connected), selected.
+    @discardableResult
+    public func duplicateHost(id: UUID) async throws -> SavedHost {
+        guard var copy = vault.get(SavedHost.self, id: id) else { throw HostsError.hostNotFound }
+        copy.id = UUID()
+        copy.label = copy.label.isEmpty ? "Untitled host copy" : copy.label + " copy"
+        copy.lastConnectedAt = nil
+        let saved = try await vault.save(copy)
+        click(hostID: saved.id, modifier: .none)
+        return saved
+    }
+
+    /// Moves the hosts into `groupID` (nil = top level). Missing hosts are skipped.
+    public func moveHosts(_ ids: [UUID], toGroup groupID: UUID?) async throws {
+        for id in ids {
+            guard var host = vault.get(SavedHost.self, id: id), host.groupID != groupID else { continue }
+            host.groupID = groupID
+            try await vault.save(host)
+        }
+    }
+
+    /// Deletes the hosts (kept as tombstones, so the deletion syncs); closes their details panel and
+    /// drops them from the selection.
+    public func removeHosts(_ ids: [UUID]) async throws {
+        for id in ids {
+            try await vault.delete(SavedHost.self, id: id)
+            selectedHostIDs.remove(id)
+            if editingHostID == id { editingHostID = nil }
+        }
+    }
+
+    /// One entry of a "Move to" menu or a parent picker: a group and its path ("Prod › Web").
+    public struct GroupDestination: Identifiable, Equatable, Sendable {
+        public let id: UUID
+        public let name: String
+    }
+
+    /// Every group, by path, in path order (case-insensitive). With `excludingSubtreeOf`, that group
+    /// and the groups below it are left out (where a group can move).
+    public func groupDestinations(excludingSubtreeOf excluded: UUID? = nil) -> [GroupDestination] {
+        _ = vault.revision
+        let groups = vault.all(HostGroup.self)
+        let byID = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        func path(_ group: HostGroup) -> [String]? {
+            var names: [String] = []
+            var current: HostGroup? = group
+            var seen: Set<UUID> = []
+            while let g = current {
+                if g.id == excluded || !seen.insert(g.id).inserted { return nil }
+                names.insert(g.name.isEmpty ? "Untitled group" : g.name, at: 0)
+                current = g.parentID.flatMap { byID[$0] }
+            }
+            return names
+        }
+        return groups.compactMap { group in path(group).map { (group.id, $0) } }
+            .sorted { a, b in
+                a.1.lexicographicallyPrecedes(b.1) { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+            }
+            .map { GroupDestination(id: $0.0, name: $0.1.joined(separator: " \u{203A} ")) }
+    }
+
+    /// Makes `parentID` (nil = top level) the group's parent. Throws `HostsError.groupCycle` when
+    /// the parent is the group itself or below it.
+    public func moveGroup(id: UUID, toParent parentID: UUID?) async throws {
+        guard var group = vault.get(HostGroup.self, id: id) else { return }
+        if let parentID {
+            var current: UUID? = parentID
+            var seen: Set<UUID> = []
+            while let check = current, seen.insert(check).inserted {
+                if check == id { throw HostsError.groupCycle }
+                current = vault.get(HostGroup.self, id: check)?.parentID
+            }
+        }
+        guard group.parentID != parentID else { return }
+        group.parentID = parentID
+        try await vault.save(group)
     }
 
     @discardableResult
@@ -265,6 +392,8 @@ public final class HostsViewModel {
     /// Moves the group's hosts and subgroups up one level, then deletes the group.
     public func deleteGroup(id: UUID) async throws {
         try await vault.deleteGroup(id: id)
+        if editingGroupID == id { editingGroupID = nil }
+        if selectedGroupID == id { selectedGroupID = nil }
     }
 
     public var quickConnectTarget: QuickConnectTarget? {
