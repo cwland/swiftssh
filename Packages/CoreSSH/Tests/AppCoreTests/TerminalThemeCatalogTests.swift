@@ -205,12 +205,39 @@ final class TerminalThemeCatalogTests: XCTestCase {
         XCTAssertEqual(theme("dracula").background.hex, "#282A36")
         XCTAssertEqual(theme("dracula").ansi[5].hex, "#FF79C6")
         XCTAssertEqual(theme("nord").ansi[14].hex, "#8FBCBB")
-        XCTAssertEqual(theme("solarized-dark").ansi[8].hex, "#002B36")
+        // Addendum fix: upstream #002B36 equals the background; base01 instead.
+        XCTAssertEqual(theme("solarized-dark").ansi[8].hex, "#586E75")
         XCTAssertEqual(theme("solarized-dark").foreground.hex, "#839496")
         XCTAssertEqual(theme("night-owl").ansi[3].hex, "#C5E478")
         XCTAssertEqual(theme("flexoki-light").background.hex, "#FFFCF0")
         XCTAssertEqual(theme("kanagawa-wave").cursor.hex, "#C8C093")
         XCTAssertEqual(theme("everforest-dark").ansi[0].hex, "#475258")
+    }
+
+    /// Addendum rule: no ANSI color 1…15 may equal its theme's background (text in it would be
+    /// invisible). ansi[0] may equal the background in dark themes ("black is the background").
+    func testNoANSIColorEqualsBackground() {
+        for theme in shared.themes {
+            for (index, color) in theme.ansi.enumerated() where index > 0 || theme.appearance == .light {
+                XCTAssertNotEqual(color, theme.background, "\(theme.id) ansi[\(index)]")
+            }
+        }
+    }
+
+    /// Upstream Solarized maps bright black (dark) and bright white (light) to the background; the
+    /// catalog uses Solarized's own base01 / base1 and notes it in the JSON.
+    func testSolarizedInvisibleSlotsUseSolarizedPalette() {
+        let dark = shared.theme(id: "solarized-dark")!
+        let light = shared.theme(id: "solarized-light")!
+        XCTAssertEqual(dark.ansi[8].hex, "#586E75")
+        XCTAssertEqual(light.ansi[15].hex, "#93A1A1")
+        XCTAssertEqual(light.ansi[8].hex, "#002B36")
+        XCTAssertEqual(dark.ansi[15].hex, "#FDF6E3")
+    }
+
+    func testNoticesTextIsStableAcrossReads() {
+        XCTAssertFalse(TerminalThemeCatalog.noticesText.isEmpty)
+        XCTAssertEqual(TerminalThemeCatalog.noticesText, TerminalThemeCatalog.noticesText)
     }
 
     /// Upstream Flexoki Light sets "white" (color7) to the background (#FFFCF0), so white text was

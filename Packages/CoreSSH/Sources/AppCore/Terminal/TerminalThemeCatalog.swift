@@ -51,12 +51,14 @@ public struct TerminalThemeCatalog: Sendable {
         return catalog
     }()
 
-    /// The bundled notices text (`terminal-themes-notices.txt`), "" if missing.
-    public static var noticesText: String {
+    /// The bundled notices text (`terminal-themes-notices.txt`), "" if missing. Read once.
+    public static var noticesText: String { cachedNoticesText }
+
+    private static let cachedNoticesText: String = {
         guard let url = Bundle.module.url(forResource: noticesResourceName, withExtension: "txt"),
               let text = try? String(contentsOf: url, encoding: .utf8) else { return "" }
         return text
-    }
+    }()
 
     /// File order = gallery order.
     public let themes: [TerminalTheme]
