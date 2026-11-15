@@ -8,6 +8,8 @@ struct SettingsView: View {
     let connectionSettings: ConnectionSettings
     let terminalSettings: TerminalSettings
     let navigation: SettingsNavigation
+    /// App window appearance (System / Light / Dark), per Mac.
+    let appearance: AppAppearanceSetting
     let onePassword: OnePasswordSetup
     /// nil until the vault is open.
     let sync: SyncCoordinator?
@@ -23,6 +25,21 @@ struct SettingsView: View {
                     }
                 }
                 Spacer(minLength: 0)
+                HStack(spacing: 8) {
+                    Text("Theme")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Picker("Theme", selection: Binding(get: { appearance.appearance },
+                                                       set: { appearance.appearance = $0 })) {
+                        ForEach(AppAppearance.allCases, id: \.self) { option in
+                            Text(option.title).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .help("Appearance of the app: follow macOS, or always light or dark")
+                }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
             }
             .padding(.horizontal, 10)
             .padding(.top, 12)

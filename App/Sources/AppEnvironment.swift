@@ -32,6 +32,8 @@ final class AppEnvironment {
     let onePasswordSettings: OnePasswordSettings
     /// The 1Password setup status; also finds the agent socket and `op` for sessions.
     let onePassword: OnePasswordSetup
+    /// Per-Mac app appearance (Settings sidebar); applied to `NSApp.appearance` live.
+    let appAppearance = AppAppearanceSetting()
     /// The Settings window's selected pane ("Open 1Password Setup" selects 1Password).
     let settingsNavigation = SettingsNavigation()
     /// Set together with `.ready`.
@@ -55,6 +57,17 @@ final class AppEnvironment {
         let onePasswordSettings = OnePasswordSettings()
         self.onePasswordSettings = onePasswordSettings
         self.onePassword = OnePasswordSetup(settings: onePasswordSettings)
+        appAppearance.onChange = { Self.applyAppearance($0) }
+        Self.applyAppearance(appAppearance.appearance)
+    }
+
+    /// nil follows macOS. `NSApp` can still be nil this early in launch; `load()` applies it again.
+    private static func applyAppearance(_ appearance: AppAppearance) {
+        switch appearance {
+        case .system: NSApp?.appearance = nil
+        case .light: NSApp?.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp?.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 
     /// Loads the Keychain key and opens `~/Library/Application Support/TermiusReimagined/vault.bin`.
@@ -62,6 +75,7 @@ final class AppEnvironment {
     func load() async {
         guard !didStartLoading else { return }
         didStartLoading = true
+        Self.applyAppearance(appAppearance.appearance)
         await openVault()
     }
 
@@ -80,6 +94,7 @@ final class AppEnvironment {
             return
         }
         BadgeLogoStore.createDirectoryIfNeeded()
+        BadgeLogoStore.shared.startAutomaticDownloads() // background; never delays the vault opening
         var keyWasCreated = false
         do {
             let fileURL = try Self.vaultFileURL()
