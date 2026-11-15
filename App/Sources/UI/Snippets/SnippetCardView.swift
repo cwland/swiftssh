@@ -3,7 +3,7 @@ import AppCore
 import CoreModels
 
 /// A saved snippet: a "curlybraces" badge, the name, the script's first line in monospaced secondary
-/// text and, when it has one, a package chip. Selection draws a blue border (like host cards).
+/// text and, when it has one, a chip naming its snippet group (`package`). Selection draws a blue border (like host cards).
 struct SnippetCardView: View {
     let snippet: Snippet
     let isSelected: Bool
@@ -68,7 +68,7 @@ struct SnippetCardView: View {
     }
 }
 
-/// A small capsule naming a snippet package.
+/// A small capsule naming a snippet group (stored as the snippet's `package`).
 struct PackageChip: View {
     let name: String
 

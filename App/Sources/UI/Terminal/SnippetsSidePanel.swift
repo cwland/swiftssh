@@ -4,7 +4,7 @@ import CoreModels
 
 /// The tab's snippets panel (Cmd+., or "Snippets…" in the tab's menu): floats over the terminal's right
 /// edge like the theme panel (the terminal is not resized). A search field (name and script), then the
-/// snippets by package. Hovering a row shows Paste (types it without running) and Run (types it and
+/// snippets by snippet group (stored as `package`). Hovering a row shows Paste (types it without running) and Run (types it and
 /// presses Return); a double-click runs. The row's menu adds Run in All Tabs… (every connected tab of
 /// this window, after a confirmation naming how many), Edit (opens it in the Snippets screen) and
 /// Remove…. A snippet with `{{placeholders}}` asks for their values first (`PlaceholderForm`).
@@ -114,7 +114,7 @@ struct SnippetsSidePanel: View {
             Button("Remove", role: .destructive) { model?.delete(snippet.id) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("It is removed from the Snippets screen and from your other Macs that sync this vault.")
+            Text("It is removed from the Snippets screen and from your other Macs that sync this vault. You can restore it from Settings \u{2192} Recently Deleted.")
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Snippets panel")

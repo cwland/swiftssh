@@ -2,7 +2,7 @@ import SwiftUI
 import AppCore
 
 /// "New Snippet from Library…": ready-made admin snippets by category. Check the ones you want and
-/// click Add to Snippets; each becomes an ordinary snippet in a package named after its category.
+/// click Add to Snippets; each becomes an ordinary snippet in a snippet group (stored as `package`) named after its category.
 /// Ones you already have (same command) show "Added". A category's box checks all of its visible ones.
 struct SnippetLibrarySheet: View {
     let vault: LocalVault
@@ -18,7 +18,7 @@ struct SnippetLibrarySheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Snippet Library")
                     .font(.system(size: 17, weight: .semibold))
-                Text("Common commands for looking after Linux servers. Pick the ones you want; they become regular snippets you can edit. Values in {{braces}} are asked for when you run them.")
+                Text("Common commands for looking after Linux servers. Pick the ones you want; they become regular snippets you can edit, in a group named after their category. Values in {{braces}} are asked for when you run them.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

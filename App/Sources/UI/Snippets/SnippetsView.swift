@@ -3,11 +3,14 @@ import AppKit
 import AppCore
 import CoreModels
 
-/// The Snippets screen: search bar, toolbar, snippet cards in package sections, and the snippet editor
+/// The Snippets screen: search bar, toolbar, snippet cards in group sections, and the snippet editor
 /// on the right, opened by a card's pencil or Edit Snippet (a click only selects; double-click runs on
 /// hosts). ⌘-click selects several (to move or remove them together);
-/// drag cards onto a package's section header to move them there. Packages exist only through their
+/// drag cards onto a group's section header to move them there. Groups exist only through their
 /// snippets. All data goes through `SnippetsViewModel`.
+///
+/// The UI calls snippet packages "groups" ("snippet group" where host groups could be meant); the
+/// code and the stored field still say `package`.
 struct SnippetsView: View {
     @Bindable var model: SnippetsViewModel
     let vault: LocalVault
@@ -43,7 +46,7 @@ struct SnippetsView: View {
     @State private var errorMessage = ""
     @State private var errorTitle = "Something went wrong"
 
-    /// "New package…": the snippets to move into it; none = create a new snippet there.
+    /// "New group…": the snippets to move into it; none = create a new snippet there.
     private struct NewPackageRequest: Identifiable {
         let id = UUID()
         let snippetIDs: [UUID]
@@ -234,9 +237,9 @@ struct SnippetsView: View {
             Menu {
                 Button("New Snippet") { createSnippet() }
                 Button("New Snippet from Library\u{2026}") { showsLibrary = true }
-                // Always a new package with a new snippet in it; moving snippets is the cards'
-                // "Move to → New package…" (the selection here was usually just the last clicked card).
-                Button("New package\u{2026}") {
+                // Always a new group with a new snippet in it; moving snippets is the cards'
+                // "Move to → New group…" (the selection here was usually just the last clicked card).
+                Button("New Snippet Group\u{2026}") {
                     newPackageRequest = NewPackageRequest(snippetIDs: [])
                 }
             } label: {
@@ -307,8 +310,8 @@ struct SnippetsView: View {
                 dropTargetID = nil
             }
         }
-        .help(section.package == nil ? "Drop snippets here to take them out of their package"
-                                     : "Drop snippets here to move them into this package")
+        .help(section.package == nil ? "Drop snippets here to take them out of their group"
+                                     : "Drop snippets here to move them into this group")
     }
 
     private func card(for snippet: Snippet) -> some View {
@@ -342,7 +345,7 @@ struct SnippetsView: View {
         }
         Button("Duplicate") { duplicate(snippet.id) }
         Menu(targets.count == 1 ? "Move to" : "Move \(targets.count) snippets to") {
-            Button("No package") { model.move(targets, toPackage: nil) }
+            Button("No group") { model.move(targets, toPackage: nil) }
             if !model.packages.isEmpty {
                 Divider()
                 ForEach(model.packages, id: \.self) { package in
@@ -350,7 +353,7 @@ struct SnippetsView: View {
                 }
             }
             Divider()
-            Button("New package\u{2026}") {
+            Button("New group\u{2026}") {
                 newPackageRequest = NewPackageRequest(snippetIDs: targets)
             }
         }
@@ -397,11 +400,11 @@ struct SnippetsView: View {
                 .help("Clear the selection (Esc)")
             }
             .frame(height: 52)
-            Text("Drag them onto a package's title, or:")
+            Text("Drag them onto a group\u{2019}s title, or:")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
-            Menu("Move to package") {
-                Button("No package") { model.move(ids, toPackage: nil) }
+            Menu("Move to group") {
+                Button("No group") { model.move(ids, toPackage: nil) }
                 if !model.packages.isEmpty {
                     Divider()
                     ForEach(model.packages, id: \.self) { package in
@@ -409,7 +412,7 @@ struct SnippetsView: View {
                     }
                 }
                 Divider()
-                Button("New package\u{2026}") {
+                Button("New group\u{2026}") {
                     newPackageRequest = NewPackageRequest(snippetIDs: ids)
                 }
             }
