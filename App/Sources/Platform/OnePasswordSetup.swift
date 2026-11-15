@@ -239,10 +239,6 @@ final class OnePasswordSetup {
         NSWorkspace.shared.open(OnePasswordLinks.privacySettingsURL)
     }
 
-    func copyInstallCommand() {
-        Self.copy(OnePasswordLinks.homebrewInstallCommand)
-    }
-
     /// Puts `text` on the clipboard (commands the checklist and Host Details offer).
     static func copy(_ text: String) {
         NSPasteboard.general.clearContents()

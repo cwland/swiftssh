@@ -149,7 +149,7 @@ struct OnePasswordSettingsPane: View {
                     .disabled(checked && !setup.isAppInstalled)
             }
             SubStep(2, "Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.")
-            SubStep(3, "Quit 1Password (Cmd+Q) and open it again.")
+            SubStep(3, "Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
             SubStep(4, "Quit Termius Reimagined (Cmd+Q) and open it again.")
             SubStep(5, "Click Test, then approve 1Password\u{2019}s prompt if one appears.") {
                 Button("Test") { setup.testCLI() }
@@ -209,7 +209,7 @@ struct OnePasswordSettingsPane: View {
             SubStep(2, "Generate a key (Ed25519) and save it in the **Private** vault.")
             SubStep(3, "The agent offers only Private-vault keys. Another vault? See below.")
             SubStep(4, "Put the public key on each server: copy this, replace PORT, USER and HOST.")
-            CopyableCommand(command: OnePasswordLinks.keyInstallCommand())
+            CopyableCommand(command: KeyInstallCommand.make(port: nil, user: nil, host: nil))
                 .padding(.leading, SubStepMetrics.indent)
             SubStep(5, "Run it in Terminal. It asks for the server\u{2019}s password once.")
             StepNote("Host Details fills in PORT, USER and HOST: \u{201C}Copy key-install command\u{201D} on a host that uses the 1Password SSH agent. Terminal needs \u{201C}Data shared by 1Password\u{201D} too (step 3).")
@@ -231,7 +231,7 @@ struct OnePasswordSettingsPane: View {
                 SubStep(3, "Save the file, then click Recheck.") {
                     Button("Recheck") { setup.refresh() }
                 }
-                SubStep(4, "Key still missing? Quit 1Password (Cmd+Q) and open it again.")
+                SubStep(4, "Key still missing? Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
                 StepNote("Once this file exists, 1Password offers only the vaults listed. Keep \u{201C}Private\u{201D} if you still want it.")
             }
             .padding(.top, 6)

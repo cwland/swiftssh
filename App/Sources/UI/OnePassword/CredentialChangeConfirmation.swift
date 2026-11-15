@@ -19,6 +19,16 @@ struct PendingCredentialChange {
     }
 }
 
+extension PendingCredentialChange {
+    var message: String {
+        let base = "It\u{2019}s no longer needed with this login method. The key itself stays in Keychain."
+        if case .passwordReference = change, replaced.keyLink {
+            return base + "\n\nIf you keep the key, it\u{2019}s still used to log in \u{2014} the 1Password password is used only after the key is removed."
+        }
+        return base
+    }
+}
+
 extension View {
     /// Asks whether to remove the secrets `pending` replaces: "Remove" (default), "Keep", or Cancel
     /// (Esc), which leaves the credential unchanged. `apply` gets the change and `removingReplaced`.
@@ -32,8 +42,8 @@ extension View {
                 .keyboardShortcut(.defaultAction)
             Button("Keep") { apply(change.change, false) }
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("It\u{2019}s no longer needed with this login method. The key itself stays in Keychain.")
+        } message: { pending in
+            Text(pending.message)
         }
     }
 }
