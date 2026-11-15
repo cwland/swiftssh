@@ -48,10 +48,10 @@ let package = Package(
                 .product(name: "_CryptoExtras", package: "swift-crypto"),
             ],
             // The OS catalog (Cory's list, verbatim) and the app's overlay; see OSCatalog.
-            // The terminal theme catalog; see TerminalThemeCatalog.
+            // The terminal theme catalog and its third-party notices; see TerminalThemeCatalog.
             resources: [
                 .copy("Resources/os-catalog.json"), .copy("Resources/os-catalog-app.json"),
-                .copy("Resources/terminal-themes.json"),
+                .copy("Resources/terminal-themes.json"), .copy("Resources/terminal-themes-notices.txt"),
             ]
         ),
         .target(name: "SyncTestSupport", dependencies: ["SyncCore", "CoreModels"]),

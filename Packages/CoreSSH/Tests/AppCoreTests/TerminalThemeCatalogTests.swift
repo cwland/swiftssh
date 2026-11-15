@@ -168,6 +168,20 @@ final class TerminalThemeCatalogTests: XCTestCase {
         ])
     }
 
+    func testEveryCreditIsMITAndAppearsInNotices() {
+        let notices = TerminalThemeCatalog.noticesText
+        XCTAssertTrue(notices.hasPrefix("Third-party terminal color themes bundled with Termius Reimagined\n"))
+        XCTAssertFalse(shared.credits.isEmpty)
+        for credit in shared.credits {
+            XCTAssertEqual(credit.license, "MIT", credit.key)
+            XCTAssertTrue(notices.contains(credit.copyright), credit.key)
+            XCTAssertTrue(notices.contains(credit.url), credit.key)
+            XCTAssertTrue(notices.contains("\(credit.project) — \(credit.url)\nColors taken from: \(credit.files)\n"),
+                          credit.key)
+        }
+        XCTAssertEqual(notices.components(separatedBy: "Permission is hereby granted").count - 1, shared.credits.count)
+    }
+
     func testAutomaticPicksReimaginedLightOrDark() {
         XCTAssertEqual(shared.automatic(prefersDark: false).id, TerminalThemeCatalog.lightDefaultID)
         XCTAssertEqual(shared.automatic(prefersDark: true).id, TerminalThemeCatalog.darkDefaultID)
