@@ -42,6 +42,23 @@ public final class TerminalTab: Identifiable {
     /// "Duplicate in New Window" and duplicates of its tabs open in another.
     public fileprivate(set) var windowID: UUID?
 
+    /// The connection log of the current attempt (the connection screen's steps); reset when an attempt
+    /// starts (open, Reconnect / Start over, an automatic try, a typed password).
+    public fileprivate(set) var connectionLog: [ConnectionLogLine] = []
+    /// The failure text for the connection screen; nil while connecting, once connected, or after a
+    /// normal close.
+    public var connectionFailure: String? {
+        connectionLog.last(where: { $0.status == .failed && $0.step == nil })?.text
+    }
+    /// Whether this attempt reached `.connected` (the terminal went live).
+    public fileprivate(set) var hasEverConnected = false
+
+    /// The log as text for "Copy logs": a header (host label, user@host:port, engine, date) and one
+    /// line per step with its time. Never contains secrets.
+    public func connectionLogText() -> String {
+        "" // P1: implemented in a later commit
+    }
+
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
     @ObservationIgnored public var outputSink: (@MainActor ([UInt8]) -> Void)? {
@@ -909,6 +926,8 @@ public final class SessionManager {
     private func handle(_ event: SessionEvent, attempt: SessionAttempt, tab: TerminalTab?) {
         let current = tab.flatMap { $0.attempt === attempt ? $0 : nil }
         switch event {
+        case .progress:
+            break // P1: recorded in connectionLog in a later commit
         case .connected:
             current?.state = .connected
             // ssh asks in the terminal (no stored secret): the user may have to type a password, so this
