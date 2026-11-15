@@ -150,6 +150,7 @@ final class AppEnvironment {
     private func makeSessionManager(vault: LocalVault, runtime: SSHRuntimeDirectory) -> SessionManager {
         let knownHosts = KnownHostsStore(vault: vault)
         let connectionSettings = self.connectionSettings
+        let terminalSettings = self.terminalSettings
         let onePassword = self.onePassword
         return SessionManager(
             vault: vault,
@@ -171,7 +172,8 @@ final class AppEnvironment {
             // Looked up at each connect, so a socket or `op` that appears later (or a changed
             // override) is used without restarting the app.
             agentSocket: { onePassword.agentSocket() },
-            opClient: { onePassword.makeClient() }
+            opClient: { onePassword.makeClient() },
+            terminalType: { terminalSettings.terminalType }
         )
     }
 

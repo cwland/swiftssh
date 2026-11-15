@@ -1,10 +1,12 @@
 import SwiftUI
+import AppKit
 import AppCore
+import SSHCore
 
-/// Settings → Terminal: the text size and the app-wide default theme. The theme gallery is two
-/// columns of `ThemeCard`s, "Automatic" first, then every bundled theme. Both choices are saved by
-/// `TerminalSettings` (this Mac only) and open tabs follow them at once. A host or group with its
-/// own theme keeps it.
+/// Settings → Terminal: font, text size, the app-wide default theme (package A's `ThemeGallery`,
+/// "Default" = Automatic first), then Behaviour. Everything is saved by `TerminalSettings` (this
+/// Mac only); open tabs follow font, size, theme and behaviour at once, the terminal type applies
+/// to new connections. A host or group with its own theme keeps it.
 struct TerminalSettingsPane: View {
     let settings: TerminalSettings
     var catalog: TerminalThemeCatalog = .shared
@@ -17,28 +19,25 @@ struct TerminalSettingsPane: View {
                     .font(.system(size: 22, weight: .semibold))
 
                 HStack {
+                    Text("Font")
+                        .font(.system(size: Theme.cardTitleFontSize))
+                    Spacer(minLength: 0)
+                    TerminalFontPicker(settings: settings)
+                }
+
+                HStack {
                     Text("Text Size")
                         .font(.system(size: Theme.cardTitleFontSize))
                     Spacer(minLength: 0)
                     TextSizeStepper(settings: settings)
                 }
 
-                Text("Theme")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                SectionHeading("Theme")
 
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 16), GridItem(.flexible(), spacing: 16)],
-                          spacing: 16) {
-                    ThemeCard(theme: nil, isSelected: settings.defaultThemeID == nil) {
-                        settings.defaultThemeID = nil
-                    }
-                    ForEach(catalog.themes) { theme in
-                        ThemeCard(theme: theme, isSelected: settings.defaultThemeID == theme.id) {
-                            settings.defaultThemeID = theme.id
-                        }
-                    }
+                ThemeGallery(catalog: catalog, selectedThemeID: settings.defaultThemeID, inheritedTheme: nil,
+                             showsDefault: true, columns: 2) { id in
+                    settings.defaultThemeID = id
                 }
-                .accessibilityElement(children: .contain)
                 .accessibilityLabel("Theme")
 
                 Text("Applies to every open tab now. A host or group with its own theme keeps it. Saved on this Mac only.")
@@ -47,6 +46,8 @@ struct TerminalSettingsPane: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 Button("Theme credits\u{2026}") { showsCredits = true }
+
+                TerminalBehaviourSection(settings: settings)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -54,6 +55,228 @@ struct TerminalSettingsPane: View {
         .sheet(isPresented: $showsCredits) {
             ThemeCreditsSheet(catalog: catalog)
         }
+    }
+}
+
+/// A pane section's small grey heading.
+private struct SectionHeading: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// Settings → Terminal → Behaviour: links, select-to-copy, bell, Option as Meta, bold as bright
+/// (all live on open tabs) and the terminal type (new connections).
+private struct TerminalBehaviourSection: View {
+    let settings: TerminalSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeading("Behaviour")
+
+            VStack(alignment: .leading, spacing: 12) {
+                SettingToggle(title: "Open links with \u{2318}-click",
+                              detail: "Hold \u{2318} to underline web, ssh and mail links; \u{2318}-click opens them in their default app.",
+                              isOn: Binding(get: { settings.opensLinksWithCommandClick },
+                                            set: { settings.opensLinksWithCommandClick = $0 }))
+                SettingToggle(title: "Select text to copy & right-click to paste",
+                              detail: "Selected text goes to the clipboard at once; a right-click pastes it.",
+                              isOn: Binding(get: { settings.selectToCopyRightClickToPaste },
+                                            set: { settings.selectToCopyRightClickToPaste = $0 }))
+                SettingToggle(title: "Bell sound",
+                              detail: "Play the system alert sound when a program rings the bell. Off: the bell is silent.",
+                              isOn: Binding(get: { settings.bellSound }, set: { settings.bellSound = $0 }))
+                SettingToggle(title: "Use Option as Meta key",
+                              detail: "Option+key sends Esc then the key, for shells and editors (Option+B, Option+F). Off: Option types special characters.",
+                              isOn: Binding(get: { settings.optionAsMetaKey }, set: { settings.optionAsMetaKey = $0 }))
+                SettingToggle(title: "Use bright colours for bold text",
+                              detail: "Bold text in the 8 basic colours is drawn in their bright versions.",
+                              isOn: Binding(get: { settings.boldUsesBrightColors },
+                                            set: { settings.boldUsesBrightColors = $0 }))
+
+                Divider()
+
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Terminal type")
+                            .font(.system(size: Theme.cardTitleFontSize))
+                        Text("The TERM value sent to the server. Applies to new connections.")
+                            .font(.system(size: Theme.cardSubtitleFontSize))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Picker("Terminal type", selection: Binding(get: { settings.terminalType },
+                                                              set: { settings.terminalType = $0 })) {
+                        ForEach(TerminalType.allCases, id: \.self) { type in
+                            Text(type.rawValue).tag(type)
+                        }
+                    }
+                    .labelsHidden()
+                    .fixedSize()
+                }
+            }
+            .padding(Theme.cardPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
+                    .fill(Theme.cardBackground)
+            }
+
+            Text("Saved on this Mac only. Open tabs follow these at once, except the terminal type.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// A switch with a title and a grey line under it.
+private struct SettingToggle: View {
+    let title: String
+    let detail: String
+    let isOn: Binding<Bool>
+
+    var body: some View {
+        Toggle(isOn: isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.system(size: Theme.cardTitleFontSize))
+                Text(detail)
+                    .font(.system(size: Theme.cardSubtitleFontSize))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .toggleStyle(.switch)
+    }
+}
+
+/// The Font row's button: the current family, drawn in itself. It opens a list of the Mac's
+/// monospaced families, SF Mono first, each drawn in its own font, with a check on the current one.
+/// A chosen family that is no longer installed is drawn in SF Mono and says so.
+struct TerminalFontPicker: View {
+    let settings: TerminalSettings
+    @State private var showsList = false
+
+    var body: some View {
+        let chosen = settings.fontName
+        let installed = chosen.map { TerminalFonts.isInstalled($0) } ?? true
+        Button {
+            showsList.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Text(chosen ?? TerminalFonts.systemName)
+                    .font(TerminalFonts.font(family: installed ? chosen : nil, size: 13))
+                if !installed {
+                    Text("(not installed \u{2014} using SF Mono)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityLabel("Font, \(chosen ?? TerminalFonts.systemName)")
+        .popover(isPresented: $showsList, arrowEdge: .bottom) {
+            TerminalFontList(selected: chosen) { family in
+                settings.fontName = family
+            }
+        }
+    }
+}
+
+/// The popover list. Clicking a row applies it at once (open tabs too) and keeps the list open
+/// for comparing; Esc or a click outside closes it.
+private struct TerminalFontList: View {
+    let selected: String?
+    let select: (String?) -> Void
+    @State private var families: [String] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    row(nil)
+                    ForEach(families, id: \.self) { family in
+                        row(family)
+                    }
+                }
+                .padding(6)
+            }
+            .frame(maxHeight: 360)
+
+            Divider()
+            Text("Other monospaced fonts appear here once installed, e.g. JetBrains Mono, Fira Mono or Source Code Pro.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+        }
+        .frame(width: 300)
+        .onAppear { families = TerminalFonts.monospacedFamilies() }
+    }
+
+    private func row(_ family: String?) -> some View {
+        let isSelected = family == selected
+        return Button {
+            select(family)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .opacity(isSelected ? 1 : 0)
+                    .frame(width: 14)
+                Text(family ?? TerminalFonts.systemName)
+                    .font(TerminalFonts.font(family: family, size: 14))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(family ?? TerminalFonts.systemName)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : [.isButton])
+    }
+}
+
+/// The Mac's monospaced fonts, through AppKit.
+@MainActor
+enum TerminalFonts {
+    static let systemName = "SF Mono"
+
+    /// Fixed-pitch families installed on this Mac (not SF Mono, which is always the first row),
+    /// sorted by name. Built once per app run; fonts installed later appear after a relaunch.
+    static func monospacedFamilies() -> [String] {
+        if let cached { return cached }
+        let manager = NSFontManager.shared
+        let families = (manager.availableFontNames(with: .fixedPitchFontMask) ?? [])
+            .compactMap { NSFont(name: $0, size: 13)?.familyName }
+        let list = TerminalFontChoice.pickerFamilies(fixedPitch: families)
+        cached = list
+        return list
+    }
+
+    private static var cached: [String]?
+
+    static func isInstalled(_ family: String) -> Bool {
+        NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: 13) != nil
+    }
+
+    /// `family` (nil or missing = SF Mono) as a SwiftUI font.
+    static func font(family: String?, size: CGFloat) -> Font {
+        Font(SessionTerminalView.terminalFont(family: family, size: Int(size)) as CTFont)
     }
 }
 
@@ -94,128 +317,6 @@ struct TextSizeStepper: View {
             @unknown default: break
             }
         }
-    }
-}
-
-/// One gallery card: the swatch, the name and "Light"/"Dark". `theme == nil` is Automatic.
-struct ThemeCard: View {
-    let theme: TerminalTheme?
-    let isSelected: Bool
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            VStack(alignment: .leading, spacing: 8) {
-                ThemeSwatch(theme: theme)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(name)
-                        .font(.system(size: Theme.cardTitleFontSize))
-                        .foregroundStyle(Color.primary)
-                    Text(subtitle)
-                        .font(.system(size: Theme.cardSubtitleFontSize))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(Theme.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                    .fill(Theme.cardBackground)
-            }
-            .overlay {
-                if isSelected {
-                    RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                        .strokeBorder(Theme.accent, lineWidth: 2)
-                }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(helpText)
-        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
-        .accessibilityLabel(name)
-    }
-
-    private var name: String { theme?.name ?? "Automatic" }
-
-    private var subtitle: String {
-        guard let theme else { return "Follows light and dark mode" }
-        return theme.appearance == .light ? "Light" : "Dark"
-    }
-
-    private var helpText: String {
-        guard let theme else { return "Automatic \u{2014} Reimagined Light or Reimagined Dark, following the system appearance" }
-        guard let credit = theme.credit else { return theme.name }
-        return "\(theme.name) \u{2014} by \(credit.author), \(credit.license)"
-    }
-}
-
-/// A miniature terminal: background, a foreground bar (60 % of the width), bars in ANSI 1...5 and a
-/// cursor block. Automatic draws Reimagined Light and Dark split on the diagonal.
-struct ThemeSwatch: View {
-    let theme: TerminalTheme?
-    var height: CGFloat = 64
-
-    var body: some View {
-        Group {
-            if let theme {
-                SwatchContent(theme: theme)
-            } else {
-                let catalog = TerminalThemeCatalog.shared
-                ZStack {
-                    SwatchContent(theme: catalog.automatic(prefersDark: false))
-                    SwatchContent(theme: catalog.automatic(prefersDark: true))
-                        .clipShape(LowerRightTriangle())
-                }
-            }
-        }
-        .frame(height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-private struct SwatchContent: View {
-    let theme: TerminalTheme
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            theme.background.swiftUIColor
-            GeometryReader { proxy in
-                VStack(alignment: .leading, spacing: 6) {
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(theme.foreground.swiftUIColor)
-                        .frame(width: (proxy.size.width - 20) * 0.6, height: 5)
-                    HStack(spacing: 4) {
-                        ForEach(1...5, id: \.self) { index in
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(theme.ansi[index].swiftUIColor)
-                                .frame(height: 5)
-                        }
-                    }
-                    Rectangle()
-                        .fill(theme.cursor.swiftUIColor)
-                        .frame(width: 7, height: 12)
-                }
-                .padding(10)
-            }
-        }
-    }
-}
-
-/// The bottom-right half of a rectangle, cut along the diagonal.
-private struct LowerRightTriangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
     }
 }
 
