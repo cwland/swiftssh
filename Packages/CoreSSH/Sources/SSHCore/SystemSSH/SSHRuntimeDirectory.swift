@@ -121,6 +121,14 @@ public struct SSHRuntimeDirectory: Sendable {
         return url
     }
 
+    /// Creates an empty `<uuid>.log` (0600) for `ssh -E`: ssh's debug output goes there instead of the
+    /// terminal. `SSHDebugLogReader` reads and removes it.
+    public func writeDebugLog() throws -> URL {
+        let url = root.appendingPathComponent("\(UUID().uuidString).log")
+        try create(url, contents: Data(), mode: 0o600)
+        return url
+    }
+
     /// Removes a file; a missing file is not an error.
     func remove(_ url: URL) {
         _ = unlink(url.path)
