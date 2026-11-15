@@ -61,6 +61,7 @@ private struct ReadyArea: View {
                     navigation: environment.navigation,
                     vault: vault,
                     sessions: sessions,
+                    terminalSettings: environment.terminalSettings,
                     hostsModel: hostsModel,
                     keychainModel: keychainModel,
                     logsModel: logsModel
@@ -88,6 +89,9 @@ private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
     let sessions: SessionManager
+    /// For Host Details' "Default (…)" theme label. Task 3 adds the `HostsView` parameter; the
+    /// merge (Task 5) passes this through as `terminalSettings: terminalSettings`.
+    let terminalSettings: TerminalSettings
     let hostsModel: HostsViewModel?
     let keychainModel: KeychainViewModel?
     let logsModel: LogsViewModel?
