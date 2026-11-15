@@ -10,7 +10,7 @@ import Darwin
 /// environment, capped output, a timeout, and Task cancellation, both of which kill `op`.
 ///
 /// Secrets: the output of `read` is returned to the caller only; it is never logged and never put
-/// in an error. Errors carry `op`'s stderr (shortened), which names references, not values.
+/// in an error. Errors carry `op`'s stderr (see `details(_:)`), which names references, not values.
 public struct ProcessOnePasswordCLI: OnePasswordCLI {
     public let executablePath: String
     /// The longest a single `op` call may take. Generous, because `op` waits for the user to approve
@@ -57,7 +57,7 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         guard SecretReference.isReference(reference) else {
             throw .failed("That isn't a 1Password secret reference (op://…).")
         }
-        let output = try await run(["read", "--no-newline", reference])
+        let output = try await run(["read", "--no-newline", reference], outputIsSecret: true)
         return String(decoding: output, as: UTF8.self)
     }
 
@@ -90,51 +90,80 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
 
     // MARK: Running op
 
-    private func run(_ arguments: [String]) async throws(OnePasswordError) -> Data {
+    /// `outputIsSecret`: stdout is a secret (`read`) and is never looked at for an error. Otherwise, when a
+    /// failed `op` printed nothing to stderr, its stdout explains the failure instead.
+    private func run(_ arguments: [String], outputIsSecret: Bool = false) async throws(OnePasswordError) -> Data {
         guard FileManager.default.isExecutableFile(atPath: executablePath) else { throw .cliNotFound }
         guard let result = await ChildProcess.run(executablePath: executablePath, arguments: arguments,
                                                   environment: environment, timeout: timeout,
                                                   stdoutLimit: stdoutLimit, stderrLimit: stderrLimit) else {
             throw .cliNotFound
         }
+        let stderrDetails = Self.details(result.stderr)
         switch result.stop {
-        case .timedOut: throw .timedOut
-        case .cancelled: throw .cancelled
+        case .timedOut: throw .timedOut(details: stderrDetails.isEmpty ? nil : stderrDetails)
+        case .cancelled: throw .cancelled(details: stderrDetails.isEmpty ? nil : stderrDetails)
         case .overflow: throw .failed("op printed more output than expected.")
         case nil: break
         }
-        guard result.status == 0 else { throw Self.error(stderr: result.stderr, status: result.status) }
+        guard result.status == 0 else {
+            let explanation = stderrDetails.isEmpty && !outputIsSecret ? result.stdout : result.stderr
+            throw Self.error(stderr: explanation, status: result.status)
+        }
         return result.stdout
     }
 
     /// Classifies a failed call by `op`'s stderr (its exit status is always 1; see research.md §2–3).
     static func error(stderr: Data, status: Int32) -> OnePasswordError {
-        let detail = shortened(stderr)
+        let detail = details(stderr)
         let text = detail.lowercased()
         func has(_ needles: String...) -> Bool { needles.contains { text.contains($0) } }
-        if has("authorization timeout") { return .timedOut }
-        if has("authorization prompt dismissed") { return .cancelled }
+        if has("authorization timeout") { return .timedOut(details: detail) }
+        if has("authorization prompt dismissed") { return .cancelled(details: detail) }
+        // "No accounts configured for use with 1Password CLI." comes with a list of options and an
+        // interactive prompt (stdin is /dev/null, so it ends); seen on macOS 27 with the integration off or
+        // 1Password's data not shared with the app.
         if has("connecting to desktop app", "lostconnectiontoapp", "connection reset", "not currently signed in",
                "no accounts configured") {
-            return .integrationOff
+            return .integrationOff(details: detail)
         }
         if has("isn't a vault", "isn't an item", "isn't a field", "could not find", "not found", "does not exist") {
             return .notFound(detail)
         }
-        if has("is locked") { return .appLocked } // [UNVERIFIED] wording; see research.md §3
+        if has("is locked") { return .appLocked(details: detail) } // [UNVERIFIED] wording; see research.md §3
         if detail.isEmpty { return .failed("op exited with status \(status)") }
         return .failed(detail)
     }
 
-    /// stderr as one line: `[ERROR] yyyy/mm/dd hh:mm:ss ` prefixes dropped, lines joined, at most 300 characters.
-    static func shortened(_ stderr: Data) -> String {
+    /// The longest `details` text, in characters.
+    static let detailsLimit = 500
+
+    /// `op`'s text as one safe line: terminal escape sequences and other control characters (and bidi
+    /// overrides) removed, tabs as spaces, `[ERROR] yyyy/mm/dd hh:mm:ss ` prefixes dropped, lines trimmed and
+    /// joined with spaces, at most `detailsLimit` characters (the last one "…" when cut).
+    static func details(_ output: Data) -> String {
+        let escape = try! Regex(#"\x{1B}(\[[0-?]*[ -/]*[@-~]|\][^\x{07}\x{1B}]*(\x{07}|\x{1B}\\)?|[@-_])"#)
         let prefix = try! Regex(#"^\[ERROR\] (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} )?"#)
-        let lines = String(decoding: stderr, as: UTF8.self)
+        let lines = String(decoding: output, as: UTF8.self)
+            .replacing(escape, with: "")
             .split(whereSeparator: \.isNewline)
-            .map { $0.replacing(prefix, with: "").trimmingCharacters(in: .whitespaces) }
+            .map { line in
+                let cleaned = String(String.UnicodeScalarView(line.unicodeScalars.compactMap(Self.cleaned)))
+                return cleaned.replacing(prefix, with: "").trimmingCharacters(in: .whitespaces)
+            }
             .filter { !$0.isEmpty }
         let joined = lines.joined(separator: " ")
-        return joined.count > 300 ? String(joined.prefix(299)) + "\u{2026}" : joined
+        return joined.count > detailsLimit ? String(joined.prefix(detailsLimit - 1)) + "\u{2026}" : joined
+    }
+
+    /// A tab becomes a space; control characters and bidi controls are dropped.
+    private static func cleaned(_ scalar: Unicode.Scalar) -> Unicode.Scalar? {
+        if scalar == "\t" { return " " }
+        if scalar.properties.generalCategory == .control { return nil }
+        switch scalar.value {
+        case 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069: return nil
+        default: return scalar
+        }
     }
 }
 
