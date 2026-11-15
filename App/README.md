@@ -146,3 +146,25 @@ The repository ships no logo files.
 
 The app is ad-hoc signed, so the first launch after each rebuild may ask for access to the
 vault key in your keychain: click "Always Allow".
+
+## Keep macOS permissions across rebuilds (recommended)
+
+By default each build is ad-hoc signed, so macOS treats every rebuild as a new app and forgets the
+permissions you gave it (for example **Files & Folders → "Data shared by 1Password"**). Sign your builds
+with your own free certificate once, and macOS keeps recognising the app:
+
+1. Open **Keychain Access → Keychain Access menu → Certificate Assistant → Create a Certificate…**
+2. Name: `Termius Reimagined Local` · Identity Type: **Self-Signed Root** · Certificate Type: **Code Signing** → **Create**.
+3. In Terminal, from the repo folder:
+   ```
+   echo 'CODE_SIGN_IDENTITY = Termius Reimagined Local' > App/Config/Local.xcconfig
+   ```
+4. `cd App && xcodegen generate`, then build as usual. The first build may ask to use the key — click **Always Allow**.
+5. Give the permissions one last time (Files & Folders → Termius Reimagined → "Data shared by 1Password"); they now stick.
+
+`App/Config/Local.xcconfig` is ignored by git, so each Mac has its own.
+
+## App icon
+
+The icon lives in `Sources/Assets.xcassets/AppIcon.appiconset` (rendered from `Design/appicon-dark.svg`).
+`Design/` also holds the light tile, the plain symbol and the menu-bar template as SVG masters.
