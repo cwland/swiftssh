@@ -22,11 +22,13 @@ struct TermiusReimaginedApp: App {
         .defaultSize(width: 1280, height: 800)
         .commands {
             SessionCommands(environment: environment)
+            TextSizeCommands(settings: environment.terminalSettings)
         }
 
-        // Cmd+, — Termius-style sidebar of panes (Connection, Sync, 1Password, OS Icons).
+        // Cmd+, — Termius-style sidebar of panes (Connection, Terminal, Sync, 1Password, OS Icons).
         Settings {
             SettingsView(connectionSettings: environment.connectionSettings,
+                         terminalSettings: environment.terminalSettings,
                          navigation: environment.settingsNavigation,
                          onePassword: environment.onePassword,
                          sync: environment.sync,
@@ -67,6 +69,33 @@ private struct SessionCommands: Commands {
                 }
                 .keyboardShortcut(KeyEquivalent(Character(String(number))), modifiers: .command)
             }
+        }
+    }
+}
+
+/// View menu text-size items: Bigger Text (Cmd+=), Smaller Text (Cmd+-) and Actual Size (Cmd+0).
+/// Open terminal tabs follow `TerminalSettings.fontSize`, so these resize them live. Bigger and
+/// Smaller disable at the ends of the 9\u{2013}24 pt range.
+private struct TextSizeCommands: Commands {
+    let settings: TerminalSettings
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Divider()
+            Button("Bigger Text") {
+                settings.increaseFontSize()
+            }
+            .keyboardShortcut("=", modifiers: .command)
+            .disabled(!settings.canIncreaseFontSize)
+            Button("Smaller Text") {
+                settings.decreaseFontSize()
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(!settings.canDecreaseFontSize)
+            Button("Actual Size") {
+                settings.resetFontSize()
+            }
+            .keyboardShortcut("0", modifiers: .command)
         }
     }
 }
