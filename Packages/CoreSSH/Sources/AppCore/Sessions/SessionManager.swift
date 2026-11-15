@@ -31,6 +31,15 @@ public final class TerminalTab: Identifiable {
     public fileprivate(set) var autoReconnect: AutoReconnectState?
     /// A next step to offer next to the current `.disconnected` message; cleared when a new attempt starts.
     public fileprivate(set) var suggestedAction: SuggestedAction?
+    /// A name the user gave this tab (Rename…); nil = the host's label. Never saved.
+    public fileprivate(set) var customTitle: String?
+    /// What the tab bar shows: the custom title, else `title`.
+    public var displayTitle: String { customTitle ?? title }
+    /// A theme for this tab only (quick connect, or a host that is gone); nil = resolved as usual.
+    /// Never saved.
+    public fileprivate(set) var themeOverrideID: String?
+    /// The window the tab belongs to; nil = the main window. See `SessionManager.activeWindowID`.
+    public fileprivate(set) var windowID: UUID?
 
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
@@ -173,8 +182,18 @@ fileprivate final class SessionAttempt {
 /// way; with "save", the reference as typed is stored, never its value.
 @MainActor @Observable
 public final class SessionManager {
+    /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
     public private(set) var tabs: [TerminalTab] = []
-    public var selectedTabID: UUID?
+    /// The selected tab of the active window; nil = Vaults. Setting a tab of another window is ignored.
+    public var selectedTabID: UUID? {
+        get { selectedTabID(inWindow: activeWindowID) }
+        set { select(tabID: newValue, inWindow: activeWindowID) }
+    }
+    /// The window the user works in (the key window); nil = the main window. New tabs open in it and
+    /// `selectedTabID` is its selection.
+    public var activeWindowID: UUID?
+    /// Each window's selected tab; a window without an entry shows Vaults.
+    private var selections: [UUID?: UUID] = [:]
 
     /// How long `closeAll()` waits for sessions to end.
     @ObservationIgnored var closeAllTimeout: Duration = .seconds(3)
@@ -240,6 +259,7 @@ public final class SessionManager {
     }
 
     private func add(_ tab: TerminalTab, plan: ConnectionPlan) -> TerminalTab {
+        tab.windowID = activeWindowID
         tabs.append(tab)
         selectedTabID = tab.id
         connect(tab, plan: plan)
@@ -251,9 +271,7 @@ public final class SessionManager {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs.remove(at: index)
         endAutoReconnect(of: tab)
-        if selectedTabID == tabID {
-            selectedTabID = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)].id
-        }
+        reselect(afterRemoving: tab, at: index)
         if let attempt = detachAttempt(of: tab) {
             let session = attempt.session
             Task { await session.close() }
@@ -273,7 +291,7 @@ public final class SessionManager {
     public func closeAll() async {
         let open = tabs
         tabs = []
-        selectedTabID = nil
+        selections = [:]
         for tab in open {
             endAutoReconnect(of: tab)
             _ = detachAttempt(of: tab)
@@ -299,6 +317,131 @@ public final class SessionManager {
                 done.resume()
             }
         }
+    }
+
+    // MARK: Tab order, windows, rename, duplicate, theme
+
+    /// The tabs of one window (nil = the main window), in tab bar order.
+    public func tabs(inWindow windowID: UUID?) -> [TerminalTab] {
+        tabs.filter { $0.windowID == windowID }
+    }
+
+    /// The window's selected tab id; nil = Vaults.
+    public func selectedTabID(inWindow windowID: UUID?) -> UUID? {
+        selections[windowID]
+    }
+
+    /// Selects a tab of the window, or Vaults (nil). A tab that is not open in that window is ignored.
+    public func select(tabID: UUID?, inWindow windowID: UUID?) {
+        guard let tabID else {
+            selections[windowID] = nil
+            return
+        }
+        guard let tab = tab(tabID), tab.windowID == windowID else { return }
+        selections[windowID] = tabID
+    }
+
+    /// Moves the tab to `index` among its window's tabs (clamped), the others keeping their order.
+    /// Sessions and the selection are untouched. Unknown ids are ignored.
+    public func moveTab(id: UUID, toIndex index: Int) {
+        guard let tab = tab(id) else { return }
+        var windowTabs = tabs(inWindow: tab.windowID)
+        guard let from = windowTabs.firstIndex(where: { $0 === tab }) else { return }
+        let to = max(0, min(index, windowTabs.count - 1))
+        guard from != to else { return }
+        windowTabs.remove(at: from)
+        windowTabs.insert(tab, at: to)
+        // The window's tabs fill the same places in `tabs`, in their new order.
+        var reordered = windowTabs.makeIterator()
+        tabs = tabs.map { $0.windowID == tab.windowID ? reordered.next()! : $0 }
+    }
+
+    /// Selects the next tab of the active window, wrapping; from Vaults, the first.
+    public func selectNextTab() { selectAdjacentTab(by: 1) }
+
+    /// Selects the previous tab of the active window, wrapping; from Vaults, the last.
+    public func selectPreviousTab() { selectAdjacentTab(by: -1) }
+
+    private func selectAdjacentTab(by step: Int) {
+        let windowTabs = tabs(inWindow: activeWindowID)
+        guard !windowTabs.isEmpty else { return }
+        let next: Int
+        if let current = selectedTabID, let index = windowTabs.firstIndex(where: { $0.id == current }) {
+            next = (index + step + windowTabs.count) % windowTabs.count
+        } else {
+            next = step > 0 ? 0 : windowTabs.count - 1
+        }
+        selections[activeWindowID] = windowTabs[next].id
+    }
+
+    /// Renames the tab only (the host keeps its label); a blank name goes back to the host's label.
+    public func rename(tabID: UUID, to name: String) {
+        guard let tab = tab(tabID) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        tab.customTitle = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Opens a new tab with a new session to the same host or quick connect target, right after the
+    /// source in its window, and selects it. It keeps the source's theme override, not its custom
+    /// title or a typed password. Nil when the source is not open.
+    @discardableResult
+    public func duplicate(tabID: UUID) -> TerminalTab? {
+        guard let source = tab(tabID), let index = tabs.firstIndex(where: { $0 === source }) else { return nil }
+        return openCopy(of: source, inWindow: source.windowID, at: index + 1)
+    }
+
+    /// The same, as the first tab of the window `windowID` (a new window), selected there.
+    @discardableResult
+    public func duplicate(tabID: UUID, inWindow windowID: UUID) -> TerminalTab? {
+        guard let source = tab(tabID) else { return nil }
+        return openCopy(of: source, inWindow: windowID, at: tabs.count)
+    }
+
+    private func openCopy(of source: TerminalTab, inWindow windowID: UUID?, at index: Int) -> TerminalTab {
+        let copy = TerminalTab(target: source.target, title: source.title, badge: source.badge)
+        copy.themeOverrideID = source.themeOverrideID
+        copy.windowID = windowID
+        tabs.insert(copy, at: index)
+        selections[windowID] = copy.id
+        connect(copy, plan: nil) // plans afresh; a host that can't be planned shows as disconnected
+        return copy
+    }
+
+    /// Closes every tab of the window (its window was closed). The main window (nil) is not affected.
+    public func closeWindow(_ windowID: UUID) {
+        for tab in tabs(inWindow: windowID) { close(tabID: tab.id) }
+        selections[windowID] = nil
+        if activeWindowID == windowID { activeWindowID = nil }
+    }
+
+    /// The theme chosen for the tab: its saved host's `themeID`, else its override; nil = Default.
+    public func themeChoice(tabID: UUID) -> String? {
+        guard let tab = tab(tabID) else { return nil }
+        if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { return host.themeID }
+        return tab.themeOverrideID
+    }
+
+    /// Applies a theme from the tab's theme panel (nil = Default). A saved host's tab saves it to the host
+    /// (all its tabs follow; it syncs); other tabs (quick connect, a deleted host) get a per-tab override.
+    public func applyTheme(_ themeID: String?, tabID: UUID) {
+        guard let tab = tab(tabID) else { return }
+        if let hostID = tab.hostID, var host = vault.get(SavedHost.self, id: hostID) {
+            tab.themeOverrideID = nil
+            guard host.themeID != themeID else { return }
+            host.themeID = themeID
+            vault.saveNow(host)
+        } else {
+            tab.themeOverrideID = themeID
+        }
+    }
+
+    /// After `tab` was removed from `tabs` at `index`: if it was its window's selection, selects the
+    /// window's tab that took its place, else the one before it, else Vaults.
+    private func reselect(afterRemoving tab: TerminalTab, at index: Int) {
+        guard selections[tab.windowID] == tab.id else { return }
+        let siblings = tabs(inWindow: tab.windowID)
+        let place = tabs[..<index].filter { $0.windowID == tab.windowID }.count
+        selections[tab.windowID] = siblings.isEmpty ? nil : siblings[min(place, siblings.count - 1)].id
     }
 
     // MARK: Auto-reconnect
