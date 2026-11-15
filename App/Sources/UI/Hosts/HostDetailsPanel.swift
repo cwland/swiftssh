@@ -199,6 +199,7 @@ private struct HostDetailsContent: View {
             }
             themeField
             tmuxField
+            startupSnippetField
             FieldColumn(title: "Parent group") {
                 Picker("Parent group", selection: $details.groupID) {
                     Text("None").tag(UUID?.none)
@@ -314,6 +315,41 @@ private struct HostDetailsContent: View {
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
+            }
+        }
+    }
+
+    /// "Startup snippet": runs after sign-in, before tmux attach. Only snippets without
+    /// `{{placeholders}}` can be chosen. A saved choice that is now deleted or has placeholders
+    /// stays visible as "(unavailable)" so the user can see it and pick another.
+    private var startupSnippetField: some View {
+        let candidates = details.startupCandidates()
+        let selected = details.startupSnippetID
+        let isUnavailable = selected.map { id in !candidates.contains { $0.id == id } } ?? false
+        let hasHidden = vault.all(Snippet.self).count > candidates.count
+        return FieldColumn(title: "Startup snippet") {
+            Picker("Startup snippet", selection: $details.startupSnippetID) {
+                Text("None").tag(UUID?.none)
+                if isUnavailable, let selected {
+                    Text("(unavailable)").tag(UUID?.some(selected))
+                }
+                ForEach(candidates) { snippet in
+                    if let package = snippet.package, !package.isEmpty {
+                        Text("\(snippet.name) \u{2013} \(package)").tag(UUID?.some(snippet.id))
+                    } else {
+                        Text(snippet.name).tag(UUID?.some(snippet.id))
+                    }
+                }
+            }
+            .labelsHidden()
+            .help("A snippet typed into the terminal each time this host connects")
+            Text("Runs after you sign in, before tmux attach.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            if hasHidden {
+                Text("Snippets with {{placeholders}} can\u{2019}t run at startup.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
             }
         }
     }
