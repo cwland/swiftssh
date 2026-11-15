@@ -243,6 +243,8 @@ private struct ScriptTextEditor: NSViewRepresentable {
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
         textView.smartInsertDeleteEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
+        textView.inlinePredictionType = .no // Tab must insert a tab, not accept a suggestion
         textView.string = text
         return scrollView
     }

@@ -187,12 +187,12 @@ struct SnippetsView: View {
     private var toolbar: some View {
         HStack(spacing: 12) {
             Menu {
-                Button("New snippet") { createSnippet() }
+                Button("New Snippet") { createSnippet() }
                 Button("New package\u{2026}") {
                     newPackageRequest = NewPackageRequest(snippetIDs: selectedIDs)
                 }
             } label: {
-                Label("New snippet", systemImage: "plus")
+                Label("New Snippet", systemImage: "plus")
             } primaryAction: {
                 createSnippet()
             }
@@ -414,7 +414,7 @@ struct SnippetsView: View {
     // MARK: Actions
 
     private func createSnippet() {
-        let snippet = model.create(name: "New snippet", script: "", package: nil)
+        let snippet = model.create(name: "New Snippet", script: "", package: nil)
         selection = [snippet.id]
     }
 
@@ -434,7 +434,7 @@ struct SnippetsView: View {
 
     private func createPackage(_ name: String, for request: NewPackageRequest) {
         if request.snippetIDs.isEmpty {
-            let snippet = model.create(name: "New snippet", script: "", package: name)
+            let snippet = model.create(name: "New Snippet", script: "", package: name)
             selection = [snippet.id]
         } else {
             model.move(request.snippetIDs, toPackage: name)
