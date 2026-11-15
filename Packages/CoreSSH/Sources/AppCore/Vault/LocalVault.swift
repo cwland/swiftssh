@@ -17,8 +17,9 @@ public enum LocalVaultError: Error, Equatable, Sendable, LocalizedError {
 }
 
 /// The app's local, observable record store. Records are kept as `PlainRecord`s in insertion
-/// order and decoded on query. Every change marks the record dirty and is persisted; deletes
-/// are tombstones.
+/// order and decoded on query. Every local change marks the record dirty and is persisted; deletes
+/// are tombstones. `LocalVaultSyncStore` exposes it to `SyncEngine`; records applied from a pull
+/// bump `revision` but are not dirty and don't call `localChangeHandler`.
 @MainActor @Observable
 public final class LocalVault {
     public private(set) var revision = 0
@@ -37,6 +38,9 @@ public final class LocalVault {
     /// Hosts the user set back to "Automatic" OS; the next connection probes them once more.
     /// In memory only: it is an app-session hint, not synced data.
     @ObservationIgnored private var osProbeRequests: Set<UUID> = []
+    /// Called after every local change (save, saveNow, delete), never for pulled records or other
+    /// sync bookkeeping. `SyncCoordinator` uses it to schedule a debounced sync.
+    @ObservationIgnored var localChangeHandler: (@MainActor () -> Void)?
 
     /// Asks for one more OS probe of this host on its next connection.
     public func requestOSProbe(for hostID: UUID) { osProbeRequests.insert(hostID) }
@@ -131,6 +135,7 @@ public final class LocalVault {
         model.deleted = true
         model.updatedAt = Timestamps.nextUpdate(previous: existing.updatedAt)
         store(try PlainRecord(model, deviceID: deviceID))
+        localChangeHandler?()
         try await enqueuePersist().value
     }
 
@@ -138,6 +143,7 @@ public final class LocalVault {
         var stored = model
         stored.updatedAt = Timestamps.nextUpdate(previous: records[model.id]?.updatedAt)
         store(try PlainRecord(stored, deviceID: deviceID))
+        localChangeHandler?()
         return stored
     }
 
@@ -186,5 +192,91 @@ public final class LocalVault {
             lastSaveError = error
             throw error
         }
+    }
+}
+
+// MARK: Sync store support (used by LocalVaultSyncStore and SyncCoordinator)
+
+extension LocalVault {
+    /// Dirty records in insertion order.
+    func syncDirtyRecords() -> [PlainRecord] {
+        order.compactMap { dirty.contains($0) ? records[$0] : nil }
+    }
+
+    func syncMarkClean(_ ids: [UUID: Date]) async throws {
+        var changed = false
+        for (id, updatedAt) in ids where dirty.contains(id) && records[id]?.updatedAt == updatedAt {
+            dirty.remove(id)
+            changed = true
+        }
+        if changed { try await enqueuePersist().value }
+    }
+
+    /// Stores each pulled record that wins `MergeRule` against the local copy, clean.
+    func syncApply(_ incoming: [PlainRecord]) async throws {
+        var changed = false
+        for record in incoming {
+            if let existing = records[record.id],
+               !MergeRule.incomingWins((record.updatedAt, record.deviceID),
+                                       over: (existing.updatedAt, existing.deviceID)) {
+                continue
+            }
+            if records[record.id] == nil { order.append(record.id) }
+            records[record.id] = record
+            dirty.remove(record.id)
+            changed = true
+        }
+        guard changed else { return }
+        revision += 1
+        try await enqueuePersist().value
+    }
+
+    func syncMarkAllDirty() async throws {
+        dirty = Set(order)
+        try await enqueuePersist().value
+    }
+
+    func syncRemoveAll() async throws {
+        records = [:]
+        order = []
+        dirty = []
+        revision += 1
+        try await enqueuePersist().value
+    }
+
+    var currentSyncState: SyncState { syncState }
+
+    /// Forgets the vault this Mac synced with (disconnect); the write is queued, `flush()` waits for it.
+    func syncResetState() {
+        syncState = SyncState(vaultID: nil, lastSeq: 0)
+        enqueuePersist()
+    }
+
+    func syncSetState(_ state: SyncState) async throws {
+        syncState = state
+        try await enqueuePersist().value
+    }
+
+    /// Every stored record (tombstones included), in insertion order.
+    var allRecords: [PlainRecord] { order.compactMap { records[$0] } }
+
+    /// Applies a join de-duplication plan: drops `plan.removedIDs` without tombstones and stores
+    /// `plan.updated` as local, dirty edits (new `updatedAt`). Doesn't call `localChangeHandler`.
+    func applyJoinPlan(_ plan: JoinDeduplicator.Plan) async throws {
+        guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty else { return }
+        for id in plan.removedIDs {
+            records[id] = nil
+            dirty.remove(id)
+        }
+        order.removeAll { plan.removedIDs.contains($0) }
+        for var record in plan.updated where records[record.id] != nil {
+            record.updatedAt = Timestamps.nextUpdate(previous: records[record.id]?.updatedAt)
+            record.deviceID = deviceID
+            record.payload = try JoinDeduplicator.restamp(record.payload, type: record.type,
+                                                          updatedAt: record.updatedAt)
+            store(record)
+        }
+        revision += 1
+        try await enqueuePersist().value
     }
 }
