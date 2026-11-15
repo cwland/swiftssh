@@ -11,6 +11,8 @@ struct SnippetsView: View {
     @Bindable var model: SnippetsViewModel
     let vault: LocalVault
     let sessions: SessionManager
+    /// Carries a snippet to select when another screen sends the user here (`snippetToSelect`).
+    let navigation: AppNavigation
 
     @State private var selection: Set<UUID> = []
     /// The snippet whose "Run on hosts…" sheet is open.
@@ -56,6 +58,8 @@ struct SnippetsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: panelKey)
+        .onAppear(perform: takeRequestedSelection)
+        .onChange(of: navigation.snippetToSelect) { _, _ in takeRequestedSelection() }
         .background(Theme.contentBackground)
         .sheet(item: $runSnippet) { snippet in
             RunOnHostsSheet(vault: vault, snippet: snippet, onRun: { hostIDs, text, save in
@@ -96,6 +100,13 @@ struct SnippetsView: View {
     /// Selected snippets that still exist (another device may have removed one).
     private var selectedIDs: [UUID] {
         allSnippetIDsInOrder.filter(selection.contains)
+    }
+
+    /// Selects the snippet another screen asked for (Edit / New Snippet from a terminal), once.
+    private func takeRequestedSelection() {
+        guard let id = navigation.snippetToSelect else { return }
+        navigation.snippetToSelect = nil
+        if model.snippet(id) != nil { selection = [id] }
     }
 
     /// The editor shows for a single selection.

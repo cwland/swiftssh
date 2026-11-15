@@ -1,3 +1,4 @@
+import Foundation
 import Observation
 
 public enum SidebarItem: String, CaseIterable, Sendable {
@@ -11,6 +12,9 @@ public enum TopTab: Hashable, Sendable {
 @MainActor @Observable
 public final class AppNavigation {
     public var sidebar: SidebarItem = .hosts
+    /// A snippet the Snippets screen should select when it next shows (Edit / New Snippet from a
+    /// terminal's snippets panel); the screen clears it once taken.
+    public var snippetToSelect: UUID?
     public var tabs: [TopTab] = [.vaults]
     public var selectedTab: TopTab = .vaults
 

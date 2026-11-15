@@ -80,7 +80,9 @@ public enum ConnectionPlanner {
         // Only system ssh signs with an agent; the session manager fills in the socket at connect time.
         if resolved.agentKey != nil { engine = .systemSSH }
 
+        // A snippet with {{placeholders}} can't be filled at startup: don't type it with the braces.
         let script = host.startupSnippetID.flatMap { vault.get(Snippet.self, id: $0)?.script }
+            .flatMap { SnippetTemplate($0).hasPlaceholders ? nil : $0 }
 
         return ConnectionPlan(hostID: host.id, label: host.label, host: address,
                               port: directory.effectivePort(for: host), username: username,

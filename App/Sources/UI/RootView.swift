@@ -282,6 +282,7 @@ private struct ReadyArea: View {
     /// The Snippets screen has no "select this snippet" entry point yet, so `id` only names the
     /// snippet meant (wired up at merge, see the S3 report).
     private func editSnippet(_ id: UUID) {
+        environment.navigation.snippetToSelect = id
         environment.navigation.sidebar = .snippets
         environment.showVaults()
     }
@@ -353,7 +354,7 @@ private struct MainArea: View {
             }
         case .snippets:
             if let snippetsModel {
-                SnippetsView(model: snippetsModel, vault: vault, sessions: sessions)
+                SnippetsView(model: snippetsModel, vault: vault, sessions: sessions, navigation: navigation)
             } else {
                 Theme.contentBackground
             }

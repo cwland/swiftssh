@@ -134,6 +134,15 @@ final class TerminalViewStore {
         }
     }
 
+    /// Pastes `text` into the tab's terminal the way ⌘V does: SwiftTerm wraps it in bracketed-paste
+    /// markers when the shell asked for them (so a multi-line paste is inserted, not run) and applies
+    /// its paste safety rules. False when the tab has no view yet.
+    func paste(_ text: String, tabID: UUID) -> Bool {
+        guard let view = entries[tabID]?.view else { return false }
+        view.pasteText(text)
+        return true
+    }
+
     /// Gives the tab's terminal the keyboard focus again (after the snippets panel pastes or runs);
     /// nothing while its view is not in a window.
     func focus(tabID: UUID) {

@@ -20,6 +20,8 @@ struct SnippetsSidePanel: View {
     let editSnippet: ((UUID) -> Void)?
     /// Gives the terminal the keyboard focus again.
     let focusTerminal: () -> Void
+    /// Pastes into this tab's terminal like ⌘V (bracketed paste when the shell asked for it).
+    let pasteIntoTerminal: (String) -> Bool
     let close: () -> Void
 
     static let width: CGFloat = 300
@@ -292,8 +294,15 @@ struct SnippetsSidePanel: View {
             pending = PendingDelivery(template: template, target: .thisTab(delivery))
             return
         }
-        _ = sessions.deliver(snippet.script, as: delivery, toTab: tab.id)
+        send(snippet.script, as: delivery)
         returnFocusToTerminal()
+    }
+
+    /// Run types the text and Return through the session; Paste goes through the terminal so a
+    /// multi-line snippet is inserted rather than run line by line (falls back to the session).
+    private func send(_ text: String, as delivery: SnippetDelivery) {
+        if delivery == .paste, pasteIntoTerminal(text) { return }
+        _ = sessions.deliver(text, as: delivery, toTab: tab.id)
     }
 
     /// Confirmed "Run in N tabs": runs it in every connected tab of this window (placeholders first).
@@ -316,8 +325,9 @@ struct SnippetsSidePanel: View {
     private func deliverFilled(_ text: String, for pending: PendingDelivery) {
         switch pending.target {
         case .thisTab(let delivery):
-            // The tab may have dropped while the form was open: `deliver` then types nothing.
-            _ = sessions.deliver(text, as: delivery, toTab: tab.id)
+            // The tab may have dropped while the form was open: then nothing is typed.
+            guard isConnected else { break }
+            send(text, as: delivery)
         case .allTabs:
             _ = sessions.deliverToAllTabs(text, as: .run, inWindow: tab.windowID)
         }

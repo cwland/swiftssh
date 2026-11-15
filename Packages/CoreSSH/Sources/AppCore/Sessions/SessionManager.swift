@@ -764,9 +764,12 @@ public final class SessionManager {
     /// tab is not open or not connected (`.connected` with a live session). Placeholders must already
     /// be filled.
     @discardableResult
-    public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID) -> Bool {
+    /// `bracketedPaste`: the terminal has bracketed paste on (the shell asked for it), so a `.paste`
+    /// is wrapped in its markers and a multi-line paste is inserted, not run line by line.
+    public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID,
+                        bracketedPaste: Bool = false) -> Bool {
         guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
-        let typed = Self.deliveryText(text, as: delivery)
+        let typed = Self.deliveryText(text, as: delivery, bracketedPaste: bracketedPaste)
         if !typed.isEmpty { attempt.inputs.yield(.bytes(Array(typed.utf8))) }
         return true
     }
@@ -804,9 +807,14 @@ public final class SessionManager {
 
     /// What is typed for a snippet: every newline (`\n`, `\r\n` or `\r`) becomes a carriage return
     /// (Return), and `.run` adds one at the end unless the text already ends with a newline.
-    static func deliveryText(_ text: String, as delivery: SnippetDelivery) -> String {
+    static func deliveryText(_ text: String, as delivery: SnippetDelivery, bracketedPaste: Bool = false) -> String {
         var typed = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
         if delivery == .run, !typed.hasSuffix("\r") { typed += "\r" }
+        if delivery == .paste, bracketedPaste {
+            // An end marker inside the text would end the paste early and run the rest.
+            typed = typed.replacingOccurrences(of: "\u{1B}[201~", with: "")
+            typed = "\u{1B}[200~" + typed + "\u{1B}[201~"
+        }
         return typed
     }
 

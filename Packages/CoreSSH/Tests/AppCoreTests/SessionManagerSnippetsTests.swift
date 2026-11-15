@@ -164,6 +164,22 @@ final class SessionManagerSnippetsTests: XCTestCase {
         XCTAssertEqual(s.sends, ["uptime\r", "df\r", "ls\r"])
     }
 
+    func testBracketedPasteWrapsTheTextSoTheShellDoesNotRunIt() async throws {
+        let (tab, s) = try await connectedTab()
+        XCTAssertTrue(manager.deliver("cd /srv\nls", as: .paste, toTab: tab.id, bracketedPaste: true))
+        await waitUntil("sent") { s.sends.count == 1 }
+        XCTAssertEqual(s.sends, ["\u{1B}[200~cd /srv\rls\u{1B}[201~"])
+    }
+
+    func testBracketedPasteStripsAnEmbeddedEndMarker() async {
+        XCTAssertEqual(SessionManager.deliveryText("a\u{1B}[201~b", as: .paste, bracketedPaste: true),
+                       "\u{1B}[200~ab\u{1B}[201~")
+    }
+
+    func testRunIgnoresBracketedPaste() async {
+        XCTAssertEqual(SessionManager.deliveryText("ls", as: .run, bracketedPaste: true), "ls\r")
+    }
+
     func testDeliveryTextRules() async {
         XCTAssertEqual(SessionManager.deliveryText("x", as: .paste), "x")
         XCTAssertEqual(SessionManager.deliveryText("x", as: .run), "x\r")

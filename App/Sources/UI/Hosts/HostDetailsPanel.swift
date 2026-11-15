@@ -326,7 +326,7 @@ private struct HostDetailsContent: View {
         let candidates = details.startupCandidates()
         let selected = details.startupSnippetID
         let isUnavailable = selected.map { id in !candidates.contains { $0.id == id } } ?? false
-        let hasHidden = vault.all(Snippet.self).count > candidates.count
+        let hasHidden = details.hiddenStartupSnippetCount > 0
         return FieldColumn(title: "Startup snippet") {
             Picker("Startup snippet", selection: $details.startupSnippetID) {
                 Text("None").tag(UUID?.none)

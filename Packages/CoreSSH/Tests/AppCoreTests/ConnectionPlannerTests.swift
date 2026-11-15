@@ -159,6 +159,15 @@ final class ConnectionPlannerTests: XCTestCase {
         XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
     }
 
+    func testStartupSnippetWithPlaceholdersIsNotTyped() async throws {
+        let vault = try await makeVault()
+        let snippet = try await vault.save(Snippet(name: "s", script: "cd {{dir}}"))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "u",
+                                                  startupSnippetID: snippet.id))
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript,
+                     "a placeholder can't be filled at startup, so the script isn't typed with braces")
+    }
+
     func testMissingAddressOrUsernameThrows() async throws {
         let vault = try await makeVault()
         let noAddress = try await vault.save(SavedHost(label: "1", address: "  ", username: "u"))
