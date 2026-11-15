@@ -15,7 +15,7 @@ enum KeychainError: Error, Equatable, LocalizedError {
             let detail = (SecCopyErrorMessageString(status, nil) as String?) ?? "Unknown error"
             return "Keychain error \(status): \(detail)"
         case .unexpectedItemData:
-            return "The Keychain returned the vault key in an unexpected format."
+            return "The Keychain returned a key in an unexpected format."
         }
     }
 }

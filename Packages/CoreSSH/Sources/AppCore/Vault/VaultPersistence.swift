@@ -8,14 +8,19 @@ public struct VaultFileContents: Codable, Equatable, Sendable {
     public var syncState: SyncState
     public var records: [PlainRecord]
     public var dirty: Set<UUID>
+    /// Set while a merge join is pending: the ids of the records this Mac had before the join
+    /// started, so a retried join (even after a relaunch) tells local records from pulled ones.
+    /// Absent in files written before it existed.
+    public var mergeJoinLocalIDs: Set<UUID>?
 
     public init(version: Int = 1, deviceID: String, syncState: SyncState = SyncState(vaultID: nil, lastSeq: 0),
-                records: [PlainRecord] = [], dirty: Set<UUID> = []) {
+                records: [PlainRecord] = [], dirty: Set<UUID> = [], mergeJoinLocalIDs: Set<UUID>? = nil) {
         self.version = version
         self.deviceID = deviceID
         self.syncState = syncState
         self.records = records
         self.dirty = dirty
+        self.mergeJoinLocalIDs = mergeJoinLocalIDs
     }
 }
 

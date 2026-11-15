@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged by Xcode with the generated keys (GENERATE_INFOPLIST_FILE = YES). Sync servers are
+	     reached over plain http on Tailscale/LAN addresses (not "local" to ATS) and http://localhost.
+	     Do NOT add NSAllowsLocalNetworking: its presence makes macOS ignore NSAllowsArbitraryLoads. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

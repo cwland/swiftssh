@@ -1,7 +1,7 @@
 import AppKit
 import AppCore
 
-/// Before the app quits, ends every terminal session (so their connection logs are closed) and
+/// Before the app quits, stops sync, ends every terminal session (so their connection logs are closed) and
 /// waits for queued vault writes, so the last edits are on disk. If the final write fails, asks
 /// before quitting so unsaved changes aren't lost silently.
 @MainActor
@@ -15,12 +15,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let environment, case .ready(let vault) = environment.state else {
             return .terminateNow
         }
+        // No sync may start (or apply pulled records) while the last writes are flushed.
+        environment.stopSync()
         Task { @MainActor in
             await environment.sessions?.closeAll()
             await vault.flush()
             var shouldQuit = true
             if let error = vault.lastSaveError {
                 shouldQuit = Self.confirmQuitDespiteSaveError(error)
+            }
+            if !shouldQuit {
+                // The app keeps running: resume syncing.
+                environment.sync?.start()
             }
             NSApp.reply(toApplicationShouldTerminate: shouldQuit)
         }
