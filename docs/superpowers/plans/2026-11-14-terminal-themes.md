@@ -523,3 +523,7 @@ The `copyright` string in each JSON credit is the copyright line of that file, s
 - `mbadolato/iTerm2-Color-Schemes` as a *source* — MIT, but an aggregator whose values differ from upstream in places; used only to cross-check.
 - Nord palette repo (`nordtheme/nord`, Apache-2.0) as the source — fine to bundle, but we use the MIT `nordtheme/alacritty` port to keep one license and no NOTICE file.
 - Every candidate on Cory's list passed the license check; none was rejected.
+
+## Addendum (Cory's answers, 2026-11-14) — overrides the plan text above
+- Text-size shortcuts ARE in scope: View menu (or a "Terminal" commands group) items "Bigger Text" ⌘=, "Smaller Text" ⌘−, "Actual Size" ⌘0, calling TerminalSettings increase/decrease/reset (add `resetFontSize()` in Task 1, test `testResetFontSizeReturnsTo13`). Menu commands live in TermiusReimaginedApp.swift → owned by Task 2. Disable at bounds (canIncrease/canDecrease).
+- Everything else as recommended: per-Mac default + size, Automatic first and default, group right-click submenu, names Reimagined Light/Dark, Cory's list only; upstream colors except a documented minimal fix where text would be invisible (e.g. Flexoki Light white == background) — note each fix in the catalog JSON credits/notes.
