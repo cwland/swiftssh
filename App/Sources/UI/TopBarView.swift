@@ -758,8 +758,16 @@ private struct WindowDragArea: NSViewRepresentable {
     final class DragView: NSView {
         override var mouseDownCanMoveWindow: Bool { true }
 
+        /// Over a tab, the tab gets the click (and its drag), not this view.
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let hit = super.hitTest(point) else { return nil }
+            let windowPoint = superview?.convert(point, to: nil) ?? point
+            return WindowDragBlocker.covers(windowPoint, in: window) ? nil : hit
+        }
+
         override func mouseDown(with event: NSEvent) {
-            if let window {
+            // `WindowDragBlocker` makes the window unmovable while a tab is pressed.
+            if let window, window.isMovable {
                 if event.clickCount == 2 {
                     window.performZoom(nil)
                 } else {

@@ -9,6 +9,19 @@ import AppKit
 /// and makes the window unmovable until the button is released; the tab's own drag (reorder, drop on a terminal)
 /// is unaffected. Empty parts of the bar still move the window.
 struct WindowDragBlocker: NSViewRepresentable {
+    /// The blockers on screen, for `covers(_:in:)`.
+    @MainActor private static let blockers = NSHashTable<BlockerView>.weakObjects()
+
+    /// Whether `windowPoint` (window coordinates) is over a tab in `window`. The top bar's own
+    /// window-drag view (`WindowDragArea`) steps aside there, so the tab gets the mouse-down.
+    @MainActor static func covers(_ windowPoint: NSPoint, in window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return blockers.allObjects.contains { view in
+            view.window === window && !view.isHiddenOrHasHiddenAncestor
+                && view.bounds.contains(view.convert(windowPoint, from: nil))
+        }
+    }
+
     func makeNSView(context: Context) -> BlockerView { BlockerView() }
 
     func updateNSView(_ view: BlockerView, context: Context) {}
@@ -21,12 +34,18 @@ struct WindowDragBlocker: NSViewRepresentable {
 
         override func viewWillMove(toWindow newWindow: NSWindow?) {
             super.viewWillMove(toWindow: newWindow)
-            if newWindow == nil { stopWatching() }
+            if newWindow == nil {
+                stopWatching()
+                WindowDragBlocker.blockers.remove(self)
+            }
         }
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window != nil, monitor == nil { startWatching() }
+            if window != nil {
+                WindowDragBlocker.blockers.add(self)
+                if monitor == nil { startWatching() }
+            }
         }
 
         private func startWatching() {
