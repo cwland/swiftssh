@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024"><defs>
+    <linearGradient id="g" x1="0.15" y1="0.1" x2="0.85" y2="0.95">
+      <stop offset="0" stop-color="#2EE6F5"/>
+      <stop offset="0.5" stop-color="#2D9CF0"/>
+      <stop offset="1" stop-color="#4C3FE0"/>
+    </linearGradient>
+    <linearGradient id="lock" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3FD6F2"/>
+      <stop offset="1" stop-color="#3B5BE6"/>
+    </linearGradient>
+    <marker id="headA" viewBox="0 0 10 10" refX="3" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#3E78EC" stroke="#3E78EC" stroke-width="1.2" stroke-linejoin="round"/>
+    </marker>
+    <marker id="headB" viewBox="0 0 10 10" refX="3" refY="5" markerWidth="3.2" markerHeight="3.2" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#30C8F2" stroke="#30C8F2" stroke-width="1.2" stroke-linejoin="round"/>
+    </marker>
+  <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#EEF2F8"/></linearGradient></defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/><rect x="101.5" y="101.5" width="821" height="821" rx="184" fill="none" stroke="#00000014" stroke-width="3"/>
+<g transform="translate(512 512) scale(0.66) translate(-512 -512)">
+  <g fill="none" stroke="url(#g)" stroke-width="64" stroke-linecap="round">
+    <path d="M380 590 C 290 630, 186 560, 192 432 C 200 282, 346 176, 512 176 C 640 176, 730 222, 776 300" marker-end="url(#headA)"/>
+    <path d="M644 434 C 734 394, 838 464, 832 592 C 824 742, 678 848, 512 848 C 384 848, 294 802, 248 724" marker-end="url(#headB)"/>
+  </g>
+  <path d="M440 470 v-52 a72 72 0 0 1 144 0 v52" fill="none" stroke="url(#lock)" stroke-width="40" stroke-linecap="round"/>
+  <rect x="396" y="462" width="232" height="186" rx="34" fill="url(#lock)"/>
+  <circle cx="512" cy="538" r="24" fill="#0B1020"/>
+  <rect x="500" y="548" width="24" height="54" rx="10" fill="#0B1020"/>
+
+</g></svg>
