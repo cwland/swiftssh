@@ -745,4 +745,75 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         _ = try manager.splitTab(opened.paneIDs[0], at: .right)
         check(opened)
     }
+
+    // MARK: v0.11 tab bar and pane polish
+
+    func testSwapPanesTradesPlacesKeepingTheLayout() async throws {
+        let (ws, tabs) = try await workspace("a", "b", "c")
+        manager.setRatio(0.25, atPath: [], in: ws.id)
+        let shapeBefore = ws.root
+        manager.swapPanes(tabs[0].id, tabs[2].id, in: ws.id)
+        XCTAssertEqual(ws.paneIDs, [tabs[2].id, tabs[1].id, tabs[0].id])
+        XCTAssertEqual(ws.root, shapeBefore.reordered([tabs[2].id, tabs[1].id, tabs[0].id]), "same shape and ratios")
+        XCTAssertEqual(manager.tabs(inWindow: nil).map(\.id), ws.paneIDs, "tab order follows reading order")
+        manager.swapPanes(tabs[0].id, UUID(), in: ws.id)
+        manager.swapPanes(tabs[0].id, tabs[0].id, in: ws.id)
+        manager.swapPanes(tabs[0].id, tabs[1].id, in: UUID())
+        XCTAssertEqual(ws.paneIDs, [tabs[2].id, tabs[1].id, tabs[0].id], "ignored")
+    }
+
+    func testSwapPanesIgnoresAPaneOfAnotherWorkspace() async throws {
+        let (first, one) = try await workspace("a", "b")
+        let (_, two) = try await workspace("c", "d")
+        manager.swapPanes(one[0].id, two[0].id, in: first.id)
+        XCTAssertEqual(first.paneIDs, [one[0].id, one[1].id])
+    }
+
+    func testClosingThePaneBeforeTheLastAsksToSaveOnlyWithUnsavedChangesAndTheSetting() async throws {
+        let (ws, tabs) = try await workspace("a", "b")
+        // Never saved: unsaved changes.
+        XCTAssertTrue(manager.workspaceToSaveBeforeClosing(pane: tabs[0].id, asksToSave: true) === ws)
+        XCTAssertNil(manager.workspaceToSaveBeforeClosing(pane: tabs[0].id, asksToSave: false), "setting off")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("ws-\(UUID()).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = WorkspaceTemplateStore(fileURL: url)
+        _ = try store.save(ws, sessions: manager)
+        XCTAssertNil(manager.workspaceToSaveBeforeClosing(pane: tabs[1].id, asksToSave: true), "saved, unchanged")
+        manager.setRatio(0.3, atPath: [], in: ws.id)
+        XCTAssertTrue(manager.workspaceToSaveBeforeClosing(pane: tabs[1].id, asksToSave: true) === ws, "saved, changed")
+        let plain = hostTab("p")
+        XCTAssertNil(manager.workspaceToSaveBeforeClosing(pane: plain.id, asksToSave: true), "a plain tab")
+        XCTAssertNil(manager.workspaceToSaveBeforeClosing(pane: UUID(), asksToSave: true))
+    }
+
+    func testClosingAPaneThatLeavesAWorkspaceNeverAsks() async throws {
+        let (_, tabs) = try await workspace("a", "b", "c")
+        XCTAssertNil(manager.workspaceToSaveBeforeClosing(pane: tabs[0].id, asksToSave: true),
+                     "two panes are left: still a workspace")
+    }
+
+    func testIsDraggingWorkspace() async throws {
+        let (ws, tabs) = try await workspace("a", "b")
+        XCTAssertFalse(manager.isDraggingWorkspace)
+        manager.draggedTabID = tabs[0].id
+        XCTAssertFalse(manager.isDraggingWorkspace)
+        manager.draggedTabID = ws.id
+        XCTAssertTrue(manager.isDraggingWorkspace)
+        manager.draggedTabID = nil
+        XCTAssertFalse(manager.isDraggingWorkspace)
+    }
+
+    func testDraggingAWorkspaceToAStripPositionMovesItWithItsPanes() async throws {
+        let a = hostTab("a"), b = hostTab("b"), c = hostTab("c"), d = hostTab("d"), e = hostTab("e")
+        let ws = try XCTUnwrap(manager.makeWorkspace(from: [b.id, c.id], name: nil)) // a ws d e
+        // Dropped on "e" (strip index 3): it takes e's place.
+        manager.moveTab(id: ws.id, toIndex: 3)
+        XCTAssertEqual(strip(), [.tab(a.id), .tab(d.id), .tab(e.id), .workspace(ws.id)])
+        XCTAssertEqual(manager.tabs.map(\.id), [a.id, d.id, e.id, b.id, c.id])
+        // Dropped on "d" (index 1).
+        manager.moveTab(id: ws.id, toIndex: 1)
+        XCTAssertEqual(strip(), [.tab(a.id), .workspace(ws.id), .tab(d.id), .tab(e.id)])
+        XCTAssertEqual(manager.selectedItem(inWindow: nil), .workspace(ws.id), "the selection is untouched")
+    }
 }
+

@@ -171,11 +171,19 @@ enum PaneLabel {
 struct PaneContextMenu: View {
     let paneID: UUID
     let isIncludedInBroadcast: Bool
+    /// False at 16 panes: Split Right / Split Down are shown disabled.
+    var canSplit = true
     let actions: PaneActions
 
     var body: some View {
         Button("Move to New Tab") { actions.popOut(paneID) }
         Button("Rename\u{2026}") { actions.rename(paneID) }
+        Divider()
+        // A new connection to the same host beside this pane, as the tab bar's menu does for a tab.
+        Button("Split Right") { actions.split(paneID, .right) }
+            .disabled(!canSplit)
+        Button("Split Down") { actions.split(paneID, .bottom) }
+            .disabled(!canSplit)
         Divider()
         if isIncludedInBroadcast {
             Button("Exclude from Broadcast") { actions.setIncludedInBroadcast(paneID, false) }
@@ -196,6 +204,8 @@ struct PaneActions {
     let focus: @MainActor (UUID) -> Void
     let close: @MainActor (UUID) -> Void
     let popOut: @MainActor (UUID) -> Void
+    /// Split Right / Split Down: a new connection to the pane's host on that side of it, focused.
+    let split: @MainActor (UUID, DropEdge) -> Void
     /// Asks for the pane's tab title (the host keeps its name).
     let rename: @MainActor (UUID) -> Void
     let setIncludedInBroadcast: @MainActor (UUID, Bool) -> Void

@@ -113,6 +113,13 @@ public indirect enum PaneNode: Equatable, Sendable {
         return placing(&iterator)
     }
 
+    /// The same shape and ratios with the panes `a` and `b` trading places (Focus mode's list reorder).
+    /// Unchanged when they are the same pane or either is not in the tree.
+    public func swapping(_ a: UUID, _ b: UUID) -> PaneNode {
+        guard a != b, contains(a), contains(b) else { return self }
+        return reordered(paneIDs.map { $0 == a ? b : ($0 == b ? a : $0) })
+    }
+
     private func placing(_ ids: inout IndexingIterator<[UUID]>) -> PaneNode {
         switch self {
         case .pane: return .pane(ids.next()!)

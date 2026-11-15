@@ -29,6 +29,8 @@ enum Theme {
     static let contentBackground = Color.dynamic(light: "#EEF0F2", dark: .windowBackground)
     static let searchFieldBackground = Color.dynamic(light: "#E4E7EB", dark: .quaternaryLabel)
     static let accent = Color(hex: "#3B82F6")
+    /// Where a dragged tab or host lands on a terminal (the half that becomes the new pane).
+    static let dropHighlight = Color(hex: "#22C55E")
     /// Cards stand apart from the content area: white on the light grey background, one step
     /// lighter than the background in Dark Aqua.
     static let cardBackground = Color.dynamic(light: "#FFFFFF", dark: .raisedSurface)

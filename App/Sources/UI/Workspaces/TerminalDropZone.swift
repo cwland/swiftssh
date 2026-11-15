@@ -4,9 +4,9 @@ import UniformTypeIdentifiers
 import AppCore
 
 /// Drop target over a terminal area (a workspace pane, Focus mode's terminal, or a plain terminal
-/// tab): while a terminal tab, a host card or a pane is dragged over it, a translucent overlay says
-/// what dropping does and highlights the half (left/right/top/bottom, by the cursor's nearest edge)
-/// where it lands. The drop reports the payload's id and that edge.
+/// tab): while a terminal tab, a host card or a pane is dragged over it, a green translucent highlight
+/// covers only the half (left/right/top/bottom, by the cursor's nearest edge) where the new pane will
+/// go; the rest of the terminal stays as it is. The drop reports the payload's id and that edge.
 ///
 /// Usage (W3, on a plain tab's `TerminalTabView`):
 /// ```swift
@@ -15,8 +15,7 @@ import AppCore
 /// While hovering, the dragged text can't be read yet, so any text drag shows the overlay; the drop
 /// itself only acts on our payloads (`WorkspaceDragPayload`) and ignores other text.
 enum TerminalDropZone {
-    static let defaultMessage = "Drag & Drop a terminal tab here to see it in a workspace view"
-    static let moveMessage = "Drop to move this terminal here"
+    /// Shown (instead of a highlight) when the workspace is full and only pane moves are accepted.
     static let fullMessage = "A workspace holds at most 16 terminals"
 
     /// The edge nearest to `point` (the area is split along its diagonals, so each edge owns a
@@ -51,9 +50,9 @@ extension View {
     ///
     /// - `isEnabled`: false turns the zone off (no overlay, no drops).
     /// - `acceptsNewTerminals`: false (the workspace already has 16 panes) ignores tab and host drops
-    ///   and says so in the overlay; pane moves still work.
-    /// - `isMovingPane`: a pane of this workspace is being dragged (its header): the overlay says
-    ///   "move" instead of the tab hint.
+    ///   and says so in the overlay instead of highlighting; pane moves still work.
+    /// - `isMovingPane`: a pane of this workspace is being dragged (its header): the landing half is
+    ///   highlighted even when the workspace is full.
     /// - `isDragSource`: this area is the dragged pane itself; it refuses the drop.
     func terminalDropZone(isEnabled: Bool = true,
                           acceptsNewTerminals: Bool = true,
@@ -94,8 +93,8 @@ struct TerminalDropZoneModifier: ViewModifier {
             }
             .overlay {
                 if let hoverEdge, isEnabled, !isDragSource {
-                    TerminalDropZoneOverlay(edge: hoverEdge, message: message,
-                                            highlightsHalf: isMovingPane || acceptsNewTerminals)
+                    TerminalDropZoneOverlay(edge: hoverEdge,
+                                            message: isMovingPane || acceptsNewTerminals ? nil : TerminalDropZone.fullMessage)
                         .transition(.opacity)
                 }
             }
@@ -132,10 +131,6 @@ struct TerminalDropZoneModifier: ViewModifier {
             ))
     }
 
-    private var message: String {
-        if isMovingPane { return TerminalDropZone.moveMessage }
-        return acceptsNewTerminals ? TerminalDropZone.defaultMessage : TerminalDropZone.fullMessage
-    }
 }
 
 private struct TerminalDropDelegate: DropDelegate {
@@ -175,42 +170,42 @@ private struct TerminalDropDelegate: DropDelegate {
     }
 }
 
-/// The overlay shown while a drag is over a terminal area: the area dimmed, the landing half
-/// tinted with the accent and outlined, and the hint in the middle. Never takes clicks.
+/// The overlay shown while a drag is over a terminal area: a green translucent box over the half where
+/// the new pane goes. With a `message` (a full workspace refusing new terminals) only the message shows,
+/// no highlight. The terminal is never dimmed. Never takes clicks.
 struct TerminalDropZoneOverlay: View {
     let edge: DropEdge
-    let message: String
-    var highlightsHalf = true
+    var message: String? = nil
 
     var body: some View {
         GeometryReader { proxy in
             let half = TerminalDropZone.halfRect(edge, in: proxy.size)
             ZStack(alignment: .topLeading) {
-                Color.black.opacity(0.35)
-                if highlightsHalf {
+                if let message {
+                    Text(message)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color.white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Capsule().fill(Color.black.opacity(0.6)))
+                        .frame(maxWidth: max(proxy.size.width - 24, 0))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+                } else {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .fill(Theme.accent.opacity(0.28))
+                        .fill(Theme.dropHighlight.opacity(0.25))
                         .overlay {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .strokeBorder(Theme.accent, lineWidth: 2)
+                                .strokeBorder(Theme.dropHighlight.opacity(0.8), lineWidth: 2)
                         }
                         .frame(width: max(half.width - 8, 0), height: max(half.height - 8, 0))
                         .position(x: half.midX, y: half.midY)
                 }
-                Text(message)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(Color.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(Color.black.opacity(0.6)))
-                    .frame(maxWidth: max(proxy.size.width - 24, 0))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
             }
         }
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(message)
+        .accessibilityLabel(message ?? "Drop here to split")
     }
 }

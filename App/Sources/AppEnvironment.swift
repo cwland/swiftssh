@@ -236,8 +236,25 @@ final class AppEnvironment {
     }
 
     /// Closes the tab at once, connected or not (no confirmation). A workspace pane closes as a pane
-    /// (the workspace turns back into a plain tab when one is left).
+    /// (the workspace turns back into a plain tab when one is left). When that pane is the one before
+    /// the last, the workspace has unsaved changes and "Ask to save workspaces when closing" is on, its
+    /// window's tab bar first asks Save / Don't Save / Cancel (`closingPaneRequest`); the pane closes
+    /// after Save or Don't Save (`closeTabWithoutAsking`).
     func closeTab(tabID: UUID) {
+        guard let sessions else { return }
+        if sessions.workspaceToSaveBeforeClosing(pane: tabID,
+                                                 asksToSave: connectionSettings.askToSaveWorkspaces) != nil {
+            closingPaneRequest = tabID
+            return
+        }
+        closeTabWithoutAsking(tabID: tabID)
+    }
+
+    /// A pane waiting for the tab bar's Save / Don't Save / Cancel before it closes (see `closeTab`).
+    var closingPaneRequest: UUID?
+
+    /// Closes the tab or pane at once, never asking.
+    func closeTabWithoutAsking(tabID: UUID) {
         guard let sessions else { return }
         if let workspace = sessions.workspace(containing: tabID) {
             closePane(tabID, of: workspace)
