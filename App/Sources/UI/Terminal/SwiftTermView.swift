@@ -3,7 +3,8 @@ import AppKit
 import AppCore
 import SwiftTerm
 
-// SwiftTerm also defines `Color`; this file uses only AppKit colors.
+// SwiftTerm also defines `Color`; this file uses only AppKit colors. Theme colors come from
+// AppCore's `TerminalThemeCatalog` (conversions in TerminalTheme+AppKit.swift).
 
 /// Shows a tab's SwiftTerm view. The view itself lives in `TerminalViewStore`, not here, so
 /// switching tabs (which tears this representable down) keeps the scrollback.
@@ -178,52 +179,16 @@ final class SessionTerminalView: TerminalView {
         applyTheme()
     }
 
+    /// Automatic: Reimagined Light or Dark from the theme catalog, by the effective appearance.
     private func applyTheme() {
         let dark = effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         guard dark != appliedDarkTheme else { return }
         appliedDarkTheme = dark
-        let theme = dark ? TerminalTheme.dark : TerminalTheme.light
-        nativeBackgroundColor = theme.background
-        nativeForegroundColor = theme.foreground
-        caretColor = theme.caret
-        selectedTextBackgroundColor = theme.selection
-    }
-}
-
-/// Two fixed themes until themes proper arrive (milestone 5). Light matches the content
-/// background (#EEF0F2).
-struct TerminalTheme {
-    let background: NSColor
-    let foreground: NSColor
-    let caret: NSColor
-    let selection: NSColor
-
-    static var light: TerminalTheme {
-        TerminalTheme(
-            background: rgb(0xEE, 0xF0, 0xF2),
-            foreground: rgb(0x1F, 0x23, 0x28),
-            caret: rgb(0x3B, 0x82, 0xF6),
-            selection: rgb(0xB6, 0xD2, 0xFB)
-        )
-    }
-
-    static var dark: TerminalTheme {
-        TerminalTheme(
-            background: rgb(0x1B, 0x1D, 0x2A),
-            foreground: rgb(0xE4, 0xE6, 0xEB),
-            caret: rgb(0x6C, 0xA2, 0xF8),
-            selection: rgb(0x3A, 0x4A, 0x6B)
-        )
-    }
-
-    private static func rgb(_ red: Int, _ green: Int, _ blue: Int) -> NSColor {
-        NSColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
-    }
-
-    /// The background as a SwiftUI color, for the area around the terminal.
-    static var dynamicBackground: SwiftUI.Color {
-        SwiftUI.Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark.background : light.background
-        })
+        let theme = TerminalThemeCatalog.shared.automatic(prefersDark: dark)
+        installColors(theme.swiftTermPalette)
+        nativeBackgroundColor = theme.background.nsColor
+        nativeForegroundColor = theme.foreground.nsColor
+        caretColor = theme.cursor.nsColor
+        selectedTextBackgroundColor = theme.selection.nsColor
     }
 }

@@ -41,7 +41,7 @@ struct TerminalTabView: View {
                     }
                 }
         }
-        .background(TerminalTheme.dynamicBackground)
+        .background(TerminalTheme.dynamicAutomaticBackground())
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
                 .interactiveDismissDisabled()

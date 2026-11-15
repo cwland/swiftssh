@@ -26,6 +26,8 @@ final class AppEnvironment {
     let navigation: AppNavigation
     /// Per-Mac connection preferences (Settings → Connection); read when a session is opened.
     let connectionSettings = ConnectionSettings()
+    /// Per-Mac terminal preferences (Settings → Terminal).
+    let terminalSettings = TerminalSettings()
     /// Per-Mac 1Password path overrides (Settings → 1Password → Advanced).
     let onePasswordSettings: OnePasswordSettings
     /// The 1Password setup status; also finds the agent socket and `op` for sessions.
