@@ -133,7 +133,7 @@ final class SSHAgentClientTests: XCTestCase {
             for (i, byte) in path.utf8.enumerated() { buffer[i] = byte }
         }
         let bound = withUnsafePointer(to: &address) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { posixBind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
         XCTAssertEqual(bound, 0)
         XCTAssertEqual(listen(fd, 4), 0)
@@ -147,6 +147,15 @@ final class SSHAgentClientTests: XCTestCase {
         }
         XCTAssertLessThan(Date().timeIntervalSince(started), 3)
     }
+}
+
+/// Inside an XCTestCase (an NSObject on macOS), plain `bind` resolves to Cocoa's bindings method.
+private func posixBind(_ fd: Int32, _ address: UnsafePointer<sockaddr>, _ length: socklen_t) -> Int32 {
+    #if canImport(Glibc)
+    Glibc.bind(fd, address, length)
+    #else
+    Darwin.bind(fd, address, length)
+    #endif
 }
 
 #if canImport(Glibc)
