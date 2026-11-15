@@ -36,6 +36,19 @@ enum OnePasswordLinks {
             + "'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'"
     }
 
+    /// Creates 1Password's SSH agent config file (which picks the vaults the agent offers) and opens it
+    /// in TextEdit. Shown for the user to run in Terminal.
+    static let agentConfigCommand = "mkdir -p ~/.config/1Password/ssh && touch ~/.config/1Password/ssh/agent.toml && open -e ~/.config/1Password/ssh/agent.toml"
+
+    /// Example agent.toml: the Private vault plus one more.
+    static let agentConfigExample = """
+    [[ssh-keys]]
+    vault = "Private"
+
+    [[ssh-keys]]
+    vault = "Your vault name"
+    """
+
     /// Bare when it holds only safe characters, else single-quoted for zsh.
     static func shellWord(_ text: String) -> String {
         let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+:,./_-")

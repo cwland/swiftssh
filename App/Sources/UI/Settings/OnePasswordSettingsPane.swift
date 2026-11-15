@@ -207,14 +207,36 @@ struct OnePasswordSettingsPane: View {
                     .disabled(checked && !setup.isAppInstalled)
             }
             SubStep(2, "Generate a key (Ed25519) and save it in the **Private** vault.")
-            SubStep(3, "The agent offers only Private-vault keys. Add vaults in \(developer) \u{2192} SSH Agent.")
+            SubStep(3, "The agent offers only Private-vault keys. Another vault? See below.")
             SubStep(4, "Put the public key on each server: copy this, replace PORT, USER and HOST.")
             CopyableCommand(command: OnePasswordLinks.keyInstallCommand())
                 .padding(.leading, SubStepMetrics.indent)
             SubStep(5, "Run it in Terminal. It asks for the server\u{2019}s password once.")
             StepNote("Host Details fills in PORT, USER and HOST: \u{201C}Copy key-install command\u{201D} on a host that uses the 1Password SSH agent. Terminal needs \u{201C}Data shared by 1Password\u{201D} too (step 3).")
             StepNote("Synology: turn on Control Panel \u{2192} User & Group \u{2192} Advanced \u{2192} Enable user home service, and run chmod 755 ~ on the NAS.")
+            otherVault
         }
+    }
+
+    /// Keys in a vault other than Private: 1Password's agent.toml lists the vaults the agent offers.
+    private var otherVault: some View {
+        DisclosureGroup("Keys in another vault?") {
+            VStack(alignment: .leading, spacing: 6) {
+                SubStep(1, "Run this in Terminal. It creates the agent\u{2019}s config file and opens it.")
+                CopyableCommand(command: OnePasswordLinks.agentConfigCommand)
+                    .padding(.leading, SubStepMetrics.indent)
+                SubStep(2, "Paste this. Put your vault\u{2019}s name in place of \u{201C}Your vault name\u{201D}.")
+                CopyableCommand(command: OnePasswordLinks.agentConfigExample)
+                    .padding(.leading, SubStepMetrics.indent)
+                SubStep(3, "Save the file, then click Recheck.") {
+                    Button("Recheck") { setup.refresh() }
+                }
+                SubStep(4, "Key still missing? Quit 1Password (Cmd+Q) and open it again.")
+                StepNote("Once this file exists, 1Password offers only the vaults listed. Keep \u{201C}Private\u{201D} if you still want it.")
+            }
+            .padding(.top, 6)
+        }
+        .font(.system(size: 12, weight: .medium))
     }
 
     @ViewBuilder
