@@ -225,7 +225,6 @@ private struct ReadyArea: View {
     var body: some View {
         Group {
             if let workspace = selectedWorkspace {
-                // MERGE(W2): WorkspaceView init as in the W2 report (closePane required; editHost takes the pane's tab).
                 WorkspaceView(workspace: workspace, sessions: sessions, store: environment.terminalViews,
                               vault: vault, terminalSettings: environment.terminalSettings,
                               sidePanel: sidePanel,
@@ -246,7 +245,6 @@ private struct ReadyArea: View {
                                 editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
                     // A tab dragged from the bar, or a host card, dropped on a half of the terminal
                     // turns this tab into a workspace with both.
-                    // MERGE(W2): `.terminalDropZone(isEnabled:acceptsNewTerminals:isMovingPane:isDragSource:onDropTab:onDropHost:onDropPane:)`.
                     .terminalDropZone(
                         onDropTab: { droppedID, edge in dropTab(droppedID, onto: tab, at: edge) },
                         onDropHost: { hostID, edge in dropHost(hostID, onto: tab, at: edge) }

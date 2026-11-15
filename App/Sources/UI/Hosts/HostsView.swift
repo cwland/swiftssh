@@ -319,7 +319,6 @@ struct HostsView: View {
                         model.click(hostID: host.id, modifier: Self.clickModifier(NSEvent.modifierFlags))
                     })
                     // Onto a terminal: opens the host beside it, as a workspace.
-                    // MERGE(W2): host payload `WorkspaceDragPayload.itemProvider(hostID:)`.
                     .onDrag {
                         WorkspaceDragPayload.itemProvider(hostID: host.id)
                     }

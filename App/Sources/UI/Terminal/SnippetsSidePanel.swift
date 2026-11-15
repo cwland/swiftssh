@@ -93,7 +93,9 @@ struct SnippetsSidePanel: View {
                 .keyboardShortcut(.defaultAction)
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("It is typed into every connected tab of this window and Return is pressed.")
+            Text(workspaceID == nil
+                 ? "It is typed into every connected tab of this window and Return is pressed."
+                 : "It is typed into every connected pane of this workspace that takes part in broadcast, and Return is pressed.")
         }
         .alert("Paste \(unsafePasteLineCount) lines?",
                isPresented: Binding(get: { confirmingUnsafePaste != nil },
@@ -256,7 +258,7 @@ struct SnippetsSidePanel: View {
                 .disabled(!isConnected)
             Button("Run") { deliver(snippet, as: .run) }
                 .disabled(!isConnected)
-            Button("Run in All Tabs\u{2026}") { confirmingRunInAllTabs = snippet }
+            Button(workspaceID == nil ? "Run in All Tabs\u{2026}" : "Run in All Panes\u{2026}") { confirmingRunInAllTabs = snippet }
                 .disabled(connectableTabCount == 0)
             if let editSnippet {
                 Divider()
@@ -277,8 +279,22 @@ struct SnippetsSidePanel: View {
 
     static let notConnectedReason = "Paste and Run work while this tab is connected."
 
+    /// Inside a workspace, "all" means the workspace's panes; otherwise every tab of this window.
+    private var workspaceID: UUID? { sessions.workspace(containing: tab.id)?.id }
+
     private var connectableTabCount: Int {
-        sessions.connectableTabCount(inWindow: tab.windowID)
+        if let workspaceID { return sessions.connectablePaneCount(inWorkspace: workspaceID) }
+        return sessions.connectableTabCount(inWindow: tab.windowID)
+    }
+
+    private var allNoun: (one: String, many: String) { workspaceID == nil ? ("tab", "tabs") : ("pane", "panes") }
+
+    private func runInAll(_ text: String) {
+        if let workspaceID {
+            _ = sessions.deliverToAllPanes(text, as: .run, inWorkspace: workspaceID)
+        } else {
+            _ = sessions.deliverToAllTabs(text, as: .run, inWindow: tab.windowID)
+        }
     }
 
     private var searchText: Binding<String> {
@@ -288,7 +304,7 @@ struct SnippetsSidePanel: View {
     private var runInAllTabsTitle: String {
         guard let snippet = confirmingRunInAllTabs else { return "" }
         let count = connectableTabCount
-        return "Run \u{201C}\(snippet.panelTitle)\u{201D} in \(count) \(count == 1 ? "tab" : "tabs")?"
+        return "Run \u{201C}\(snippet.panelTitle)\u{201D} in \(count) \(count == 1 ? allNoun.one : allNoun.many)?"
     }
 
     private var removeTitle: String {
@@ -350,7 +366,7 @@ struct SnippetsSidePanel: View {
             }
             return
         }
-        _ = sessions.deliverToAllTabs(snippet.script, as: .run, inWindow: tab.windowID)
+        runInAll(snippet.script)
         returnFocusToTerminal()
     }
 
@@ -362,7 +378,7 @@ struct SnippetsSidePanel: View {
             guard isConnected else { break }
             send(text, as: delivery)
         case .allTabs:
-            _ = sessions.deliverToAllTabs(text, as: .run, inWindow: tab.windowID)
+            runInAll(text)
         }
         focusAfterSheet = true
         self.pending = nil
