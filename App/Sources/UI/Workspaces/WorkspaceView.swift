@@ -91,7 +91,7 @@ struct WorkspaceView: View {
             FocusModeView(workspace: workspace, sessions: sessions, vault: vault, actions: actions,
                           draggingPaneID: $draggingPaneID,
                           beginPaneDrag: { beginPaneDrag($0) },
-                          movePane: { movePane($0, beside: $1, at: $2) }) { id in
+                          swapPanes: { swapPanes($0, $1) }) { id in
                 pane(id, showsHeader: false)
             }
         }
@@ -148,7 +148,8 @@ struct WorkspaceView: View {
                                close: { actions.close(id) })
                         .onDrag { beginPaneDrag(id) }
                         .contextMenu {
-                            PaneContextMenu(paneID: id, isIncludedInBroadcast: isIncluded, actions: actions)
+                            PaneContextMenu(paneID: id, isIncludedInBroadcast: isIncluded,
+                                            canSplit: workspace.paneIDs.count < Self.maximumPanes, actions: actions)
                         }
                 }
                 TerminalTabView(tab: tab, sessions: sessions, store: store, vault: vault,
@@ -171,7 +172,9 @@ struct WorkspaceView: View {
             .background {
                 MouseDownWatch { actions.focus(id) }
             }
-            .terminalDropZone(acceptsNewTerminals: workspace.paneIDs.count < Self.maximumPanes,
+            // A workspace dragged in the tab bar only reorders there.
+            .terminalDropZone(isEnabled: !sessions.isDraggingWorkspace,
+                              acceptsNewTerminals: workspace.paneIDs.count < Self.maximumPanes,
                               isMovingPane: draggingPaneID != nil,
                               isDragSource: draggingPaneID == id,
                               onDropTab: { tabID, edge in dropTab(tabID, beside: id, at: edge) },
@@ -218,12 +221,20 @@ struct WorkspaceView: View {
         let showHistory = showHistory
         let rename = $renamingPaneID
         let renameText = $renameText
+        let dropError = $dropError
         return PaneActions(
             focus: { id in
                 if workspace.focusedPaneID != id { sessions.focusPane(id) }
             },
             close: { id in closePane(id) },
             popOut: { id in sessions.popOutPane(id) },
+            split: { id, edge in
+                do {
+                    try sessions.splitTab(id, at: edge)
+                } catch {
+                    dropError.wrappedValue = error.localizedDescription
+                }
+            },
             rename: { id in
                 let tab = sessions.tabs.first { $0.id == id }
                 renameText.wrappedValue = tab.map { $0.customTitle ?? $0.title } ?? ""
@@ -292,6 +303,14 @@ struct WorkspaceView: View {
         guard paneID != target, workspace.paneIDs.contains(paneID), workspace.paneIDs.contains(target) else { return }
         withAnimation(.easeOut(duration: 0.15)) {
             sessions.movePane(paneID, beside: target, at: edge, in: workspace.id)
+        }
+    }
+
+    /// A Focus mode row dropped on another row: the two panes trade places in the layout.
+    private func swapPanes(_ paneID: UUID, _ target: UUID) {
+        draggingPaneID = nil
+        withAnimation(.easeOut(duration: 0.15)) {
+            sessions.swapPanes(paneID, target, in: workspace.id)
         }
     }
 

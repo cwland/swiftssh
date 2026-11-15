@@ -4,7 +4,8 @@ import AppCore
 import CoreModels
 
 /// A workspace in Focus mode: on the left the list "Terminals • N" (OS badge, name, "ssh, <user>",
-/// status dot; the selected row is highlighted and has × to close it; rows drag to reorder), with
+/// status dot; the selected row is highlighted and has × to close it; a row dropped on another row
+/// swaps the two panes' places in the Split view layout), with
 /// "Back to Split view" (⌘⇧M) and Broadcast (⌘B) buttons at the right of its header; on the right the selected pane's terminal,
 /// which is also the input target while broadcasting. Switching panes or modes never interrupts a
 /// session: only the selected pane's terminal view is hosted, the others keep running in
@@ -21,8 +22,8 @@ struct FocusModeView<Terminal: View>: View {
     @Binding var draggingPaneID: UUID?
     /// Starts dragging a pane: records it and returns its payload.
     let beginPaneDrag: (UUID) -> NSItemProvider
-    /// A row dropped on another row's upper (`.top`) or lower (`.bottom`) half.
-    let movePane: @MainActor (UUID, UUID, DropEdge) -> Void
+    /// A row (first id) dropped on another row (second id): the two panes trade places.
+    let swapPanes: @MainActor (UUID, UUID) -> Void
     /// The selected pane's terminal.
     @ViewBuilder let terminal: (UUID) -> Terminal
 
@@ -104,9 +105,10 @@ struct FocusModeView<Terminal: View>: View {
         )
         .onTapGesture { actions.focus(id) }
         .onDrag { beginPaneDrag(id) }
-        .modifier(RowDropTarget(rowID: id, draggingPaneID: $draggingPaneID, movePane: movePane))
+        .modifier(RowDropTarget(rowID: id, draggingPaneID: $draggingPaneID, swapPanes: swapPanes))
         .contextMenu {
-            PaneContextMenu(paneID: id, isIncludedInBroadcast: isIncluded, actions: actions)
+            PaneContextMenu(paneID: id, isIncludedInBroadcast: isIncluded,
+                            canSplit: workspace.paneIDs.count < WorkspaceView.maximumPanes, actions: actions)
         }
     }
 }
@@ -158,47 +160,39 @@ struct FocusModeRow: View {
     }
 }
 
-/// Reordering rows: a pane dropped on a row's upper half lands before it, on the lower half after
-/// it (`movePane(dragged, row, .top / .bottom)`). An accent line shows where.
+/// Reordering rows: a pane dropped on a row trades places with it (`swapPanes(dragged, row)`), in the
+/// list and in the Split view layout, whose shape and sizes stay. An accent outline marks the row.
 private struct RowDropTarget: ViewModifier {
     let rowID: UUID
     @Binding var draggingPaneID: UUID?
-    let movePane: @MainActor (UUID, UUID, DropEdge) -> Void
+    let swapPanes: @MainActor (UUID, UUID) -> Void
 
-    @State private var edge: DropEdge?
+    @State private var isTargeted = false
 
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: edge == .bottom ? .bottom : .top) {
-                if edge != nil {
-                    RoundedRectangle(cornerRadius: 1.5)
-                        .fill(Theme.accent)
-                        .frame(height: 3)
-                        .offset(y: edge == .bottom ? 2 : -2)
+            .overlay {
+                if isTargeted {
+                    RoundedRectangle(cornerRadius: Theme.sidebarRowCornerRadius, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: 2)
                         .allowsHitTesting(false)
                 }
             }
-            .onDrop(of: [.text], delegate: RowDropDelegate(rowID: rowID, height: FocusModeRow.height,
-                                                           draggingPaneID: $draggingPaneID, edge: $edge,
-                                                           movePane: movePane))
+            .onDrop(of: [.text], delegate: RowDropDelegate(rowID: rowID, draggingPaneID: $draggingPaneID,
+                                                           isTargeted: $isTargeted, swapPanes: swapPanes))
     }
 }
 
 private struct RowDropDelegate: DropDelegate {
     let rowID: UUID
-    let height: CGFloat
     @Binding var draggingPaneID: UUID?
-    @Binding var edge: DropEdge?
-    let movePane: @MainActor (UUID, UUID, DropEdge) -> Void
+    @Binding var isTargeted: Bool
+    let swapPanes: @MainActor (UUID, UUID) -> Void
 
     /// Only a pane drag (started in this workspace) reorders; the row itself is no target.
     private var isPaneDrag: Bool {
         guard let draggingPaneID else { return false }
         return draggingPaneID != rowID
-    }
-
-    private func landingEdge(for info: DropInfo) -> DropEdge {
-        info.location.y < height / 2 ? .top : .bottom
     }
 
     func validateDrop(info: DropInfo) -> Bool {
@@ -207,29 +201,25 @@ private struct RowDropDelegate: DropDelegate {
 
     func dropEntered(info: DropInfo) {
         guard isPaneDrag else { return }
-        edge = landingEdge(for: info)
+        isTargeted = true
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard isPaneDrag else { return DropProposal(operation: .forbidden) }
-        let new = landingEdge(for: info)
-        if edge != new { edge = new }
-        return DropProposal(operation: .move)
+        DropProposal(operation: isPaneDrag ? .move : .forbidden)
     }
 
     func dropExited(info: DropInfo) {
-        edge = nil
+        isTargeted = false
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        let landing = edge ?? landingEdge(for: info)
-        edge = nil
+        isTargeted = false
         guard isPaneDrag else { return false }
         let target = rowID
-        let movePane = movePane
+        let swapPanes = swapPanes
         return WorkspaceDragPayload.load(from: info.itemProviders(for: [.text])) { payload in
             guard case .pane(let paneID) = payload else { return }
-            movePane(paneID, target, landing)
+            swapPanes(paneID, target)
         }
     }
 }

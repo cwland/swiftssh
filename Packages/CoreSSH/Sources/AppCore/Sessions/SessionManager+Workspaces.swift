@@ -289,6 +289,14 @@ extension SessionManager {
         normalizeOrder(inWindow: workspace.windowID)
     }
 
+    /// The two panes trade places in the layout; its shape and ratios stay (Focus mode's list: a row
+    /// dropped on another row). Ignored for unknown ids, the same pane twice, or a pane of another workspace.
+    public func swapPanes(_ a: UUID, _ b: UUID, in workspaceID: UUID) {
+        guard let workspace = workspacesByID[workspaceID], a != b, workspace.contains(a), workspace.contains(b) else { return }
+        workspace.setRoot(workspace.root.swapping(a, b))
+        normalizeOrder(inWindow: workspace.windowID)
+    }
+
     /// Sets the ratio of the split at `path` (see `PaneNode.settingRatio`).
     public func setRatio(_ ratio: Double, atPath path: [Int], in workspaceID: UUID) {
         guard let workspace = workspacesByID[workspaceID] else { return }
@@ -314,6 +322,17 @@ extension SessionManager {
         items.insert(.tab(paneID), at: place + 1)
         applyOrder(items, inWindow: window)
         selections[window] = paneID
+    }
+
+    /// The workspace to offer Save / Don't Save / Cancel for before closing the pane `paneID`: closing it
+    /// would leave one pane (the workspace turns into a plain tab and its layout is gone), the workspace
+    /// has unsaved changes (or was never saved), and `asksToSave` (Settings → "Ask to save workspaces
+    /// when closing") is on. Nil means close at once.
+    public func workspaceToSaveBeforeClosing(pane paneID: UUID, asksToSave: Bool) -> Workspace? {
+        guard asksToSave, let workspace = workspace(containing: paneID),
+              workspace.paneIDs.count == Workspace.paneLimit.lowerBound,
+              workspace.hasUnsavedChanges else { return nil }
+        return workspace
     }
 
     /// Ends the pane's session and removes it (as `close(tabID:)`); the dissolve rule applies.

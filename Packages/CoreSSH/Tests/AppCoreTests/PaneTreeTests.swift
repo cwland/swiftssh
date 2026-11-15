@@ -153,4 +153,20 @@ final class PaneTreeTests: XCTestCase {
         XCTAssertEqual(tree.reordered([a, b]), tree)
         XCTAssertEqual(tree.reordered([a, b, d]), tree)
     }
+
+    // MARK: swapping
+
+    func testSwappingTradesTwoPanesPlacesAndKeepsShapeAndRatios() {
+        let tree = PaneNode.split(.horizontal, ratio: 0.3, .pane(a), .split(.vertical, ratio: 0.6, .pane(b), .pane(c)))
+        XCTAssertEqual(tree.swapping(a, c),
+                       .split(.horizontal, ratio: 0.3, .pane(c), .split(.vertical, ratio: 0.6, .pane(b), .pane(a))))
+        XCTAssertEqual(tree.swapping(c, a), tree.swapping(a, c))
+    }
+
+    func testSwappingWithItselfOrAnUnknownPaneChangesNothing() {
+        let tree = PaneNode.split(.horizontal, ratio: 0.3, .pane(a), .pane(b))
+        XCTAssertEqual(tree.swapping(a, a), tree)
+        XCTAssertEqual(tree.swapping(a, d), tree)
+        XCTAssertEqual(tree.swapping(d, b), tree)
+    }
 }

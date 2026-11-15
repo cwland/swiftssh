@@ -92,7 +92,10 @@ struct RootView: View {
                 hasSavedCopy: { environment.workspaceTemplates.hasSavedCopy(of: $0) },
                 namingRequest: environment.namingWorkspaceID,
                 clearNamingRequest: { environment.namingWorkspaceID = nil },
-                openTemplate: { try environment.openWorkspaceTemplate($0) }
+                openTemplate: { try environment.openWorkspaceTemplate($0) },
+                closingPaneRequest: environment.closingPaneRequest,
+                clearClosingPaneRequest: { environment.closingPaneRequest = nil },
+                closePaneNow: { environment.closeTabWithoutAsking(tabID: $0) }
             )
             Group {
                 switch environment.state {
@@ -273,8 +276,10 @@ private struct ReadyArea: View {
                                 editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
                     // A tab dragged from the bar, or a host card, dropped on a half of the terminal
                     // turns this tab into a workspace with both.
-                    // Not the tab itself: dropping it on its own terminal can't split anything.
+                    // Not the tab itself: dropping it on its own terminal can't split anything. A
+                    // dragged workspace only reorders in the tab bar.
                     .terminalDropZone(
+                        isEnabled: !sessions.isDraggingWorkspace,
                         isDragSource: sessions.draggedTabID == tab.id,
                         onDropTab: { droppedID, edge in dropTab(droppedID, onto: tab, at: edge) },
                         onDropHost: { hostID, edge in dropHost(hostID, onto: tab, at: edge) }
