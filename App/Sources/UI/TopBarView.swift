@@ -188,8 +188,7 @@ struct TopBarView: View {
         }
     }
 
-    /// Reordering by strip position: the dragged tab takes the target item's place among the window's
-    /// tabs (a workspace's place is its first pane's, or its last pane's when the tab comes from its left).
+    /// Reordering by strip position: the dragged tab takes the target item's place in the tab bar.
     private func dropDelegate(targetID: UUID, index: Int, sessions: SessionManager) -> TabDropDelegate {
         TabDropDelegate(
             targetID: targetID,
@@ -197,23 +196,12 @@ struct TopBarView: View {
             dropTargetID: $dropTargetID,
             draggingTabID: $draggingTabID,
             move: { id, stripIndex in
-                // Only plain tabs of this window reorder here.
-                let windowTabs = sessions.tabs(inWindow: windowID)
+                // Only plain tabs of this window reorder here. `moveTab` counts tab-bar items, so
+                // the target's strip position is the index (a workspace is one item).
                 let strip = sessions.strip(inWindow: windowID)
-                guard windowTabs.contains(where: { $0.id == id }), strip.contains(.tab(id)),
-                      strip.indices.contains(stripIndex),
-                      let from = strip.firstIndex(of: .tab(id)) else { return }
-                let positions: [Int]
-                switch strip[stripIndex] {
-                case .tab(let target):
-                    positions = windowTabs.firstIndex(where: { $0.id == target }).map { [$0] } ?? []
-                case .workspace(let workspaceID):
-                    let paneIDs = Set(sessions.workspace(workspaceID)?.paneIDs ?? [])
-                    positions = windowTabs.indices.filter { paneIDs.contains(windowTabs[$0].id) }
-                }
-                guard let to = from < stripIndex ? positions.max() : positions.min() else { return }
+                guard strip.contains(.tab(id)), strip.indices.contains(stripIndex) else { return }
                 withAnimation(.easeOut(duration: 0.15)) {
-                    sessions.moveTab(id: id, toIndex: to)
+                    sessions.moveTab(id: id, toIndex: stripIndex)
                 }
             }
         )

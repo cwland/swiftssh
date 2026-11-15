@@ -79,6 +79,14 @@ public final class Workspace: Identifiable {
         return newOutputPanes.contains(paneID) && paneID != focusedPaneID ? .newOutput : .none
     }
 
+    /// The one pane whose host-key or password question is shown now: the focused pane when it is
+    /// waiting, else the first waiting pane in layout order. The others wait their turn, so the
+    /// window never stacks several sheets.
+    public var promptingPaneID: UUID? {
+        if status(of: focusedPaneID) == .waitingForInput { return focusedPaneID }
+        return paneIDs.first { status(of: $0) == .waitingForInput }
+    }
+
     /// Whether the pane gets broadcast input (when broadcasting).
     public func isIncludedInBroadcast(_ paneID: UUID) -> Bool {
         contains(paneID) && !excludedFromBroadcast.contains(paneID)

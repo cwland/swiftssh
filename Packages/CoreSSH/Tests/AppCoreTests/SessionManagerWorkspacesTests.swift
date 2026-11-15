@@ -529,6 +529,18 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         XCTAssertEqual(factory.session("c")!.sends, [])
     }
 
+    func testRunInAllTabsTypesOncePerTabEvenWhileAWorkspaceBroadcasts() async throws {
+        let (ws, _) = try await workspace("a", "b")
+        manager.toggleBroadcast(in: ws.id)
+        let plain = hostTab("p")
+        await connected(plain)
+        XCTAssertEqual(manager.deliverToAllTabs("w", as: .run, inWindow: nil), 3)
+        await waitUntil("all") { ["a", "b", "p"].allSatisfy { self.factory.session($0)!.sentText == "w\r" } }
+        try? await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(factory.session("a")!.sentText, "w\r", "not again through the broadcast")
+        XCTAssertEqual(factory.session("b")!.sentText, "w\r")
+    }
+
     func testRunInAllPanes() async throws {
         let (ws, tabs) = try await workspace("a", "b", "c")
         let plain = hostTab("p")
@@ -586,6 +598,21 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         manager.focusPane(tabs[1].id)
         XCTAssertEqual(ws.status(of: tabs[1].id), .failed)
         XCTAssertEqual(ws.status(of: UUID()), .none)
+    }
+
+    func testOnePromptAtATimeFocusedPaneFirst() async throws {
+        let (ws, tabs) = try await workspace("a", "b")
+        XCTAssertNil(ws.promptingPaneID)
+        let first = quick("w1")
+        let second = quick("w2")
+        manager.addPane(tabID: first.id, to: ws.id, beside: tabs[0].id, at: .right)
+        manager.addPane(tabID: second.id, to: ws.id, beside: first.id, at: .right)
+        manager.focusPane(tabs[0].id)
+        XCTAssertEqual(ws.promptingPaneID, first.id, "the first waiting pane in order")
+        manager.focusPane(second.id)
+        XCTAssertEqual(ws.promptingPaneID, second.id, "the focused pane's question comes first")
+        manager.close(tabID: second.id)
+        XCTAssertEqual(ws.promptingPaneID, first.id)
     }
 
     // MARK: Unsaved changes

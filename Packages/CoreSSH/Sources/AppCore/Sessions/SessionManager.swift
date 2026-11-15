@@ -871,12 +871,21 @@ public final class SessionManager {
     /// is wrapped in its markers and a multi-line paste is inserted, not run line by line.
     public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID,
                         bracketedPaste: Bool = false) -> Bool {
+        deliver(text, as: delivery, toTab: tabID, bracketedPaste: bracketedPaste, broadcasting: true)
+    }
+
+    /// `broadcasting: false` types into this tab only, even when it is a broadcasting workspace's
+    /// focused pane ("Run in all tabs" already reaches every pane itself).
+    private func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID,
+                         bracketedPaste: Bool, broadcasting: Bool) -> Bool {
         guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
         let typed = Self.deliveryText(text, as: delivery, bracketedPaste: bracketedPaste)
         guard !typed.isEmpty else { return true }
         let bytes = Array(typed.utf8)
         attempt.inputs.yield(.bytes(bytes))
-        for target in broadcastTargets(fromTab: tabID) { sendIfConnected(tabID: target, bytes) }
+        if broadcasting {
+            for target in broadcastTargets(fromTab: tabID) { sendIfConnected(tabID: target, bytes) }
+        }
         return true
     }
 
@@ -884,7 +893,9 @@ public final class SessionManager {
     /// other tabs and windows are left alone. Returns how many tabs it was typed into.
     @discardableResult
     public func deliverToAllTabs(_ text: String, as delivery: SnippetDelivery, inWindow windowID: UUID?) -> Int {
-        tabs(inWindow: windowID).filter { deliver(text, as: delivery, toTab: $0.id) }.count
+        tabs(inWindow: windowID).filter {
+            deliver(text, as: delivery, toTab: $0.id, bracketedPaste: false, broadcasting: false)
+        }.count
     }
 
     /// How many tabs `deliverToAllTabs` would type into now (for its confirmation).

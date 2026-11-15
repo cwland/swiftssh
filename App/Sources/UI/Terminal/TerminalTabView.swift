@@ -161,8 +161,15 @@ struct TerminalTabView: View {
 
     /// The sheet follows the tab's state; it closes when the state moves on. Only the sheet's own
     /// buttons answer, so the setter has nothing to do.
+    /// In a workspace only one pane shows its question at a time (`Workspace.promptingPaneID`): the
+    /// others wait with their amber dot, so the window never stacks several sheets.
     private var promptBinding: Binding<TerminalPrompt?> {
-        Binding(get: { TerminalPrompt(state: tab.state) }, set: { _ in })
+        Binding(get: {
+            if let workspace = sessions.workspace(containing: tab.id), workspace.promptingPaneID != tab.id {
+                return nil
+            }
+            return TerminalPrompt(state: tab.state)
+        }, set: { _ in })
     }
 
     @ViewBuilder

@@ -139,7 +139,7 @@ final class TerminalViewStore {
     /// its paste safety rules. False when the tab has no view yet.
     func paste(_ text: String, tabID: UUID) -> Bool {
         guard let view = entries[tabID]?.view else { return false }
-        view.pasteText(text)
+        view.pasteAsUser(text)
         return true
     }
 
@@ -210,7 +210,14 @@ final class TerminalBridge: TerminalViewDelegate {
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        sessions?.sendInput(fromTab: tabID, Array(data))
+        // Only what the user typed or pasted may be broadcast to a workspace's other panes. The
+        // terminal's own replies (cursor-position/device reports, clipboard answers) and mouse
+        // reports belong to this pane alone.
+        if view.isUserInput {
+            sessions?.sendInput(fromTab: tabID, Array(data))
+        } else {
+            sessions?.send(tabID: tabID, Array(data))
+        }
     }
 
     func scrolled(source: TerminalView, position: Double) {}
@@ -263,6 +270,41 @@ final class TerminalBridge: TerminalViewDelegate {
 /// by the caller (SwiftUI's color scheme), so this view no longer re-themes itself on appearance
 /// changes.
 final class SessionTerminalView: TerminalView {
+    /// Set while output is fed to the terminal: anything it sends back then is an automatic reply.
+    private var isFeedingOutput = false
+    /// Set while a paste or text input from the user is being handled.
+    private var userInputDepth = 0
+
+    /// Whether data the terminal sends right now comes from the user: a paste, text input, or a key
+    /// press in this view's window while it has the keyboard focus. Never while output is fed
+    /// (automatic replies) and never for mouse events (mouse reports).
+    var isUserInput: Bool {
+        if isFeedingOutput { return false }
+        if userInputDepth > 0 { return true }
+        guard let event = NSApp.currentEvent, event.type == .keyDown,
+              let window, event.window === window, window.firstResponder === self else { return false }
+        return true
+    }
+
+    override func paste(_ sender: Any) {
+        userInputDepth += 1
+        defer { userInputDepth -= 1 }
+        super.paste(sender)
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        userInputDepth += 1
+        defer { userInputDepth -= 1 }
+        super.insertText(string, replacementRange: replacementRange)
+    }
+
+    /// Pastes text from the app (snippets) as user input.
+    func pasteAsUser(_ text: String) {
+        userInputDepth += 1
+        defer { userInputDepth -= 1 }
+        pasteText(text)
+    }
+
     /// Called with each new grid size, once per change.
     var onSizeChange: ((Int, Int) -> Void)?
     private var reportedSize: (cols: Int, rows: Int)?
@@ -394,7 +436,9 @@ final class SessionTerminalView: TerminalView {
     func receive(_ bytes: [UInt8]) {
         let output = highlighter.process(bytes[...])
         if !output.isEmpty {
+            isFeedingOutput = true
             feed(byteArray: output[...])
+            isFeedingOutput = false
         }
         lastOutput = .now
         scheduleIdleFlush()
@@ -429,7 +473,9 @@ final class SessionTerminalView: TerminalView {
     func flushHighlighter() {
         let held = highlighter.flush()
         if !held.isEmpty {
+            isFeedingOutput = true
             feed(byteArray: held[...])
+            isFeedingOutput = false
         }
     }
 
