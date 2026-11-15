@@ -1043,6 +1043,8 @@ public final class SessionManager {
         }
         plan.keepAlive = keepAlivePolicy() // read once per attempt: open tabs keep theirs, Reconnect uses the current one
         plan.terminalType = terminalType() // the same for TERM
+        // An automatic reconnect try gives up fast while the server is still down.
+        if case .reconnecting = tab.autoReconnect { plan.connectTimeout = .seconds(5) }
         tab.title = plan.label
         if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { tab.badge = host.osBadge }
 

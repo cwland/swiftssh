@@ -1019,6 +1019,8 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
         let attempt = factory.sessions[1]
         guard case .password("pw") = attempt.plan.credential else { return XCTFail("saved credentials") }
         XCTAssertEqual(attempt.plan.keepAlive, KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5))
+        XCTAssertEqual(attempt.plan.connectTimeout, .seconds(5), "an automatic try gives up fast")
+        XCTAssertEqual(factory.sessions[0].plan.connectTimeout, .seconds(15), "a connection you start waits longer")
 
         attempt.emit(.ready)
         await waitUntil("cleared") { tab.autoReconnect == nil }

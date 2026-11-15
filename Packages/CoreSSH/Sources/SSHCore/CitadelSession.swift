@@ -59,8 +59,10 @@ public final class CitadelSession: TerminalSession {
         case resize(cols: Int, rows: Int)
     }
 
-    public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration = .seconds(15)) {
-        self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
+    /// `connectTimeout` nil = the plan's.
+    public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration? = nil) {
+        self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout ?? plan.connectTimeout,
+                  commandTimeout: .seconds(15))
     }
 
     /// How long each of the two probes of `checkConnection` may wait for its answer.

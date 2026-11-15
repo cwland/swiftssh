@@ -50,9 +50,11 @@ struct TerminalTabView: View {
                             .transition(.opacity)
                     }
                 }
-                .animation(.easeOut(duration: 0.25), value: showsConnectionScreen)
-                .overlay(alignment: .topLeading) {
-                    if let state = tab.autoReconnect, isAutoReconnecting {
+                .animation(.easeOut(duration: 0.3), value: showsConnectionScreen)
+                // The countdown to the next try, bottom left (as in Termius), over the terminal or the
+                // failed screen; while a try runs, the connection screen shows it instead.
+                .overlay(alignment: .bottomLeading) {
+                    if let state = tab.autoReconnect, case .waiting = state {
                         ReconnectPopup(
                             state: state,
                             // This window's tabs only: other windows have their own popups.
@@ -62,8 +64,10 @@ struct TerminalTabView: View {
                             dismiss: { sessions.stopAutoReconnect(tabID: tab.id) }
                         )
                         .padding(12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
+                .animation(.easeOut(duration: 0.25), value: isWaitingForTry)
                 // Only behind the terminal: the disconnected banner keeps the system look, so its
                 // text stays readable when the theme and Light/Dark Mode differ.
                 .background(appearance.theme.background.swiftUIColor)
@@ -127,10 +131,16 @@ struct TerminalTabView: View {
     // MARK: Connection screen
 
     /// While connecting (host key and password sheets come over it), and after a failure of an
-    /// attempt that never connected. A tab that connected and then dropped keeps the banner; the
-    /// auto-reconnect popup keeps the terminal visible as before.
+    /// attempt that never connected. Reconnecting on its own, as in Termius: the first countdown after
+    /// a drop keeps the terminal (old text) in view; each try shows this screen, a failed try its
+    /// red log (with the countdown to the next try over it), and giving up the same with Start over.
+    /// Once a try gets in, the screen fades into the terminal (old text kept, new login below).
     private var showsConnectionScreen: Bool {
-        if isAutoReconnecting { return false }
+        switch tab.autoReconnect {
+        case .reconnecting, .gaveUp: return true
+        case .waiting(let attempt, _, _): return attempt > 1 // a try already failed
+        case nil: break
+        }
         switch tab.state {
         case .connecting, .awaitingHostKey, .awaitingPassword: return true
         // A tab that was live once keeps its scrollback and the banner (incl. "Couldn't reconnect…").
@@ -140,6 +150,11 @@ struct TerminalTabView: View {
     }
 
     // MARK: Auto-reconnect
+
+    private var isWaitingForTry: Bool {
+        if case .waiting = tab.autoReconnect { return true }
+        return false
+    }
 
     /// The popup (not the banner) is up while a countdown or an automatic try is running.
     private var isAutoReconnecting: Bool {

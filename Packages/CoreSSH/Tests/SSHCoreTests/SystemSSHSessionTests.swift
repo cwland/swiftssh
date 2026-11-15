@@ -226,6 +226,10 @@ final class SystemSSHSessionTests: XCTestCase {
             return pick(interactive)
         }
         XCTAssertEqual(alive(.standard), ["ServerAliveInterval=5", "ServerAliveCountMax=2"])
+        let quick = SystemSSHSession.optionArguments(port: 22, username: "u", knownHosts: URL(fileURLWithPath: "/k"),
+                                                     controlMaster: "no", controlPath: "/c", keepAlive: .standard,
+                                                     connectTimeout: .seconds(5))
+        XCTAssertTrue(quick.contains("ConnectTimeout=5"), "an automatic try's shorter timeout reaches ssh")
         XCTAssertEqual(alive(KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5)),
                        ["ServerAliveInterval=60", "ServerAliveCountMax=5"])
         XCTAssertEqual(alive(.off), ["ServerAliveInterval=0"])

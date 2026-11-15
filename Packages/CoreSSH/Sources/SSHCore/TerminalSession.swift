@@ -75,6 +75,9 @@ public struct ConnectionPlan: Sendable {
     public var agentKey: AgentKeyChoice?
     /// `TERM` for the remote shell (both engines).
     public var terminalType: TerminalType
+    /// How long reaching and signing in to the server may take. Shorter for automatic reconnect tries,
+    /// so a server that is still booting fails fast and the next try comes sooner.
+    public var connectTimeout: Duration = .seconds(15)
 
     /// An `.agent` credential always gets `.systemSSH`, whatever `engine` says.
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,

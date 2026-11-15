@@ -375,7 +375,8 @@ public final class SystemSSHSession: TerminalSession {
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
                                           knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms,
-                                          keepAlive: plan.keepAlive, debugLog: debugLog?.url)
+                                          keepAlive: plan.keepAlive, connectTimeout: plan.connectTimeout,
+                                          debugLog: debugLog?.url)
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
@@ -797,11 +798,12 @@ public final class SystemSSHSession: TerminalSession {
     /// `HostKeyAlgorithms` limited to the trusted key's type.
     static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                              knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String,
-                             keepAlive: KeepAlivePolicy = .standard, debugLog: URL? = nil) -> [String] {
+                             keepAlive: KeepAlivePolicy = .standard, connectTimeout: Duration = .seconds(15),
+                             debugLog: URL? = nil) -> [String] {
         // `-v -E`: debug output to the log file, never the terminal.
         var arguments = ["-tt"] + (debugLog.map { ["-v", "-E", $0.path] } ?? []) + optionArguments(port: port, username: username, knownHosts: knownHosts,
                                                   controlMaster: "auto", controlPath: controlPath(runtime),
-                                                  keepAlive: keepAlive)
+                                                  keepAlive: keepAlive, connectTimeout: connectTimeout)
         switch auth {
         case .key(let keyFile):
             arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path] + publicKeyOnlyArguments
@@ -852,7 +854,8 @@ public final class SystemSSHSession: TerminalSession {
     /// `-F /dev/null` (the user's ssh configuration never applies), port, user and the shared `-o` options.
     /// Paths are double-quoted because ssh splits `-o` values at spaces ("Application Support").
     static func optionArguments(port: Int, username: String, knownHosts: URL, controlMaster: String,
-                                controlPath: String, keepAlive: KeepAlivePolicy) -> [String] {
+                                controlPath: String, keepAlive: KeepAlivePolicy,
+                                connectTimeout: Duration = .seconds(15)) -> [String] {
         [
             "-F", "/dev/null",
             "-p", String(port), "-l", username,
@@ -863,7 +866,7 @@ public final class SystemSSHSession: TerminalSession {
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlPersist=15",
         ] + aliveArguments(keepAlive) + [
-            "-o", "ConnectTimeout=15",
+            "-o", "ConnectTimeout=\(max(1, connectTimeout.components.seconds))",
         ]
     }
 
