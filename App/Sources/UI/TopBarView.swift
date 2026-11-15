@@ -264,7 +264,7 @@ struct TopBarView: View {
 
     private func split(_ tabID: UUID, at edge: DropEdge) {
         do {
-            try splitTab(tabID, at: edge)
+            try splitTab(tabID, edge)
         } catch {
             present(error, title: "The tab couldn\u{2019}t be split")
         }
