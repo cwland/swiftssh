@@ -347,7 +347,7 @@ public final class SystemSSHSession: TerminalSession {
         do {
             // ssh sends its own TERM in the PTY request.
             ssh = try PTYProcess(executable: sshPath, arguments: arguments, environment: environment,
-                                 terminalType: plan.terminalType.rawValue, cols: cols, rows: rows, rawMode: false)
+                                 terminalType: plan.terminalType, cols: cols, rows: rows, rawMode: false)
         } catch {
             finish(.failed(.connectionFailed("Could not run ssh")))
             return

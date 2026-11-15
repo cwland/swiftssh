@@ -52,8 +52,8 @@ public final class TerminalSettings {
     }
 
     /// The terminal font's family name; nil = SF Mono (the system monospaced font). Setting "" is
-    /// the same as nil. A font that is no longer installed is drawn in SF Mono
-    /// (`TerminalFontChoice.resolved`), but the choice is kept in case it comes back.
+    /// the same as nil. A font that is no longer installed is drawn in SF Mono, but the choice is
+    /// kept in case it comes back.
     public var fontName: String? {
         get { storedFontName }
         set {
@@ -174,10 +174,37 @@ public struct TerminalBehaviour: Equatable, Sendable {
 
 /// The font picker's rules (the installed font list itself comes from AppKit).
 public enum TerminalFontChoice {
-    /// The family to draw with: `chosen` when it is installed, else nil (SF Mono).
-    public static func resolved(_ chosen: String?, isInstalled: (String) -> Bool) -> String? {
-        guard let chosen, isInstalled(chosen) else { return nil }
-        return chosen
+    /// One face of a font family, as AppKit lists it (`availableMembers(ofFontFamily:)`).
+    public struct Member: Equatable, Sendable {
+        /// PostScript name.
+        public var name: String
+        /// AppKit weight, 0–15 (5 = regular).
+        public var weight: Int
+        public var isBold: Bool
+        public var isItalic: Bool
+
+        public init(name: String, weight: Int, isBold: Bool, isItalic: Bool) {
+            self.name = name
+            self.weight = weight
+            self.isBold = isBold
+            self.isItalic = isItalic
+        }
+    }
+
+    /// The face to draw a family with: upright and not bold, nearest to regular weight (5; a tie
+    /// goes to the lighter one); failing that, the upright face nearest to regular; failing that,
+    /// the first face. nil only for an empty list.
+    public static func preferredMember(_ members: [Member]) -> String? {
+        func nearest(_ candidates: [Member]) -> Member? {
+            candidates.enumerated().min { a, b in
+                let da = abs(a.element.weight - 5), db = abs(b.element.weight - 5)
+                if da != db { return da < db }
+                if a.element.weight != b.element.weight { return a.element.weight < b.element.weight }
+                return a.offset < b.offset
+            }?.element
+        }
+        let upright = members.filter { !$0.isItalic }
+        return (nearest(upright.filter { !$0.isBold }) ?? nearest(upright) ?? members.first)?.name
     }
 
     /// The picker's rows after "SF Mono": fixed-pitch families sorted by name (case-insensitive),

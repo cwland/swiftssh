@@ -54,7 +54,7 @@ public final class PTYProcess: Sendable {
     }
 
     public convenience init(executable: String, arguments: [String], environment: [String: String],
-                            terminalType: String = TerminalType.default.rawValue,
+                            terminalType: TerminalType = .default,
                             cols: Int, rows: Int) throws {
         try self.init(executable: executable, arguments: arguments, environment: environment,
                       terminalType: terminalType, cols: cols, rows: rows, rawMode: false)
@@ -63,12 +63,12 @@ public final class PTYProcess: Sendable {
     /// `rawMode` starts the terminal without line discipline processing (no echo, no `\n` → `\r\n`),
     /// for capturing a command's output byte for byte.
     init(executable: String, arguments: [String], environment: [String: String],
-         terminalType: String = TerminalType.default.rawValue,
+         terminalType: TerminalType = .default,
          cols: Int, rows: Int, rawMode: Bool) throws {
         // Everything the child needs is prepared before fork: after fork, only async-signal-safe calls.
         let path = CStringArray([executable])
         let argv = CStringArray([executable] + arguments)
-        let envp = CStringArray(Self.childEnvironment(environment, terminalType: terminalType).map { "\($0.key)=\($0.value)" }.sorted())
+        let envp = CStringArray(Self.childEnvironment(environment, terminalType: terminalType.rawValue).map { "\($0.key)=\($0.value)" }.sorted())
         let descriptorLimit = Self.descriptorLimit()
         guard let pathPointer = path.pointer[0] else { throw POSIXError(.ENOMEM) }
         let argvPointer = argv.pointer

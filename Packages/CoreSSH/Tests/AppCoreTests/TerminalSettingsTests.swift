@@ -254,10 +254,42 @@ final class TerminalSettingsTests: XCTestCase {
 
     // MARK: Fonts
 
-    func testResolvedFontNameFallsBackToSFMonoWhenMissing() async {
-        XCTAssertNil(TerminalFontChoice.resolved(nil, isInstalled: { _ in true }))
-        XCTAssertEqual(TerminalFontChoice.resolved("Menlo", isInstalled: { $0 == "Menlo" }), "Menlo")
-        XCTAssertNil(TerminalFontChoice.resolved("Fira Mono", isInstalled: { _ in false }))
+    func testPreferredMemberIsTheRegularFace() async {
+        let members = [
+            TerminalFontChoice.Member(name: "Fira-Bold", weight: 9, isBold: true, isItalic: false),
+            TerminalFontChoice.Member(name: "Fira-Regular", weight: 5, isBold: false, isItalic: false),
+            TerminalFontChoice.Member(name: "Fira-Italic", weight: 5, isBold: false, isItalic: true),
+        ]
+        XCTAssertEqual(TerminalFontChoice.preferredMember(members), "Fira-Regular")
+    }
+
+    func testPreferredMemberWithoutARegularWeightTakesTheNearestUprightOne() async {
+        let members = [
+            TerminalFontChoice.Member(name: "Mono-Heavy", weight: 11, isBold: true, isItalic: false),
+            TerminalFontChoice.Member(name: "Mono-LightItalic", weight: 4, isBold: false, isItalic: true),
+            TerminalFontChoice.Member(name: "Mono-Light", weight: 3, isBold: false, isItalic: false),
+            TerminalFontChoice.Member(name: "Mono-Medium", weight: 6, isBold: false, isItalic: false),
+        ]
+        XCTAssertEqual(TerminalFontChoice.preferredMember(members), "Mono-Medium")
+    }
+
+    func testPreferredMemberFallsBackToAnyFace() async {
+        XCTAssertEqual(TerminalFontChoice.preferredMember([
+            TerminalFontChoice.Member(name: "Only-BoldItalic", weight: 9, isBold: true, isItalic: true),
+        ]), "Only-BoldItalic")
+        XCTAssertNil(TerminalFontChoice.preferredMember([]))
+    }
+
+    // MARK: Select to copy
+
+    func testCopiesOnlyANewSelectionAndNotWhileTheProgramTracksTheMouse() async {
+        XCTAssertTrue(SelectionCopyRule.shouldCopy(before: nil, after: "word", programTracksMouse: false))
+        XCTAssertTrue(SelectionCopyRule.shouldCopy(before: "old", after: "new", programTracksMouse: false))
+        XCTAssertFalse(SelectionCopyRule.shouldCopy(before: "same", after: "same", programTracksMouse: false),
+                       "a click that leaves the selection as it was (e.g. in a mouse-tracking program) doesn't re-copy")
+        XCTAssertFalse(SelectionCopyRule.shouldCopy(before: nil, after: nil, programTracksMouse: false))
+        XCTAssertFalse(SelectionCopyRule.shouldCopy(before: nil, after: "", programTracksMouse: false))
+        XCTAssertFalse(SelectionCopyRule.shouldCopy(before: nil, after: "word", programTracksMouse: true))
     }
 
     func testFontListIsSortedUniqueAndSkipsHiddenFamilies() async {

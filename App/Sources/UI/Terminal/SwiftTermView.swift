@@ -113,7 +113,25 @@ final class TerminalViewStore {
         tab.outputSink = { [weak view] bytes in
             view?.receive(bytes)
         }
+        followSessionEnd(of: tab, view: view)
         return view
+    }
+
+    /// When the tab's session ends, the highlighter's held bytes (at most an incomplete escape or
+    /// UTF-8 sequence) are fed at once instead of after the idle delay. Observation fires once per
+    /// registration, so this registers again each time, until the tab or its view is gone.
+    private func followSessionEnd(of tab: TerminalTab, view: SessionTerminalView) {
+        let state = withObservationTracking {
+            tab.state
+        } onChange: { [weak self, weak tab, weak view] in
+            Task { @MainActor in
+                guard let self, let tab, let view, self.entries[tab.id]?.view === view else { return }
+                self.followSessionEnd(of: tab, view: view)
+            }
+        }
+        if case .disconnected = state {
+            view.flushHighlighter()
+        }
     }
 
     /// Releases the views of tabs that are no longer open. SwiftTerm requires `updateUiClosed()`
@@ -170,11 +188,37 @@ final class TerminalBridge: TerminalViewDelegate {
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 
     /// SwiftTerm calls this for a ⌘-click on a link (detected or OSC 8) while link reporting is on
-    /// (Settings → Terminal → "Open links with ⌘-click"). Only http, https, ssh and mailto open;
-    /// anything else is ignored without a prompt.
+    /// (Settings → Terminal → "Open links with ⌘-click"). `TerminalLinkFilter` decides: only safe
+    /// http, https and mailto links open; anything else is ignored without a prompt. An OSC 8 link
+    /// can show text other than its target, and SwiftTerm 1.99.3 doesn't tell us the text it was
+    /// drawn as, so every OSC 8 link asks first, showing the full URL.
     func requestOpenLink(source: TerminalView, request: TerminalLinkRequest) {
-        guard view.opensLinks, let url = TerminalLinkFilter.openableURL(request.link) else { return }
-        NSWorkspace.shared.open(url)
+        guard view.opensLinks else { return }
+        switch TerminalLinkFilter.decision(link: request.link, isExplicit: request.isExplicit, visibleText: nil) {
+        case .ignore:
+            return
+        case .open(let url):
+            NSWorkspace.shared.open(url)
+        case .confirm(let url):
+            confirmOpening(url)
+        }
+    }
+
+    private func confirmOpening(_ url: URL) {
+        let alert = NSAlert()
+        alert.messageText = "Open this link?"
+        alert.informativeText = "The program in this terminal made a link whose text may not show where it goes:\n\n\(url.absoluteString)"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        let open = { (response: NSApplication.ModalResponse) in
+            if response == .alertFirstButtonReturn { NSWorkspace.shared.open(url) }
+        }
+        if let window = view.window {
+            alert.beginSheetModal(for: window, completionHandler: open)
+        } else {
+            open(alert.runModal())
+        }
     }
 
     /// Only reached with `bellStyle == .sound` (the "Bell sound" setting).
@@ -197,12 +241,16 @@ final class SessionTerminalView: TerminalView {
     private(set) var opensLinks = TerminalBehaviour().opensLinks
     /// "Select text to copy & right-click to paste".
     private var selectToCopyRightClickToPaste = TerminalBehaviour().selectToCopyRightClickToPaste
+    /// The selection when the left button went down, to copy only a new selection on mouse-up.
+    private var selectionAtMouseDown: String?
     /// Keyword highlighting for this tab's output (package E). Always in the path, also when
     /// disabled (then it passes bytes through unchanged), so it keeps tracking colours and the
-    /// alternate screen and turning it on mid-session is correct.
+    /// alternate screen and turning it on mid-session is correct. It holds back nothing but an
+    /// incomplete escape or UTF-8 sequence at the end of a chunk (bounded), so typed characters
+    /// echo without delay.
     private let highlighter = KeywordHighlighter()
-    /// When output last arrived; a word held back at the end of a chunk is released after
-    /// `idleFlushDelay` without more output.
+    /// When output last arrived. Held bytes are released `idleFlushDelay` after the last output
+    /// (a safety net: normally the next chunk completes them) or at once when the session ends.
     private var lastOutput = ContinuousClock.now
     private var idleFlushScheduled = false
     private static let idleFlushDelay = Duration.milliseconds(50)
@@ -211,10 +259,29 @@ final class SessionTerminalView: TerminalView {
     /// installed (any more).
     static func terminalFont(family: String?, size: Int) -> NSFont {
         let pointSize = CGFloat(size)
-        if let family, let font = NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: pointSize) {
+        if let family, let font = font(family: family, size: pointSize) {
             return font
         }
         return NSFont.monospacedSystemFont(ofSize: pointSize, weight: .regular)
+    }
+
+    /// The family's regular face, or (a family without one) the face `TerminalFontChoice`
+    /// prefers among the installed members; nil when the family isn't installed.
+    static func font(family: String, size: CGFloat) -> NSFont? {
+        let manager = NSFontManager.shared
+        if let font = manager.font(withFamily: family, traits: [], weight: 5, size: size) {
+            return font
+        }
+        // Each member is [PostScript name, style name, weight, traits].
+        let members = (manager.availableMembers(ofFontFamily: family) ?? []).compactMap { entry -> TerminalFontChoice.Member? in
+            guard entry.count >= 4, let name = entry[0] as? String,
+                  let weight = (entry[2] as? NSNumber)?.intValue,
+                  let traits = (entry[3] as? NSNumber)?.uintValue else { return nil }
+            let mask = NSFontTraitMask(rawValue: traits)
+            return TerminalFontChoice.Member(name: name, weight: weight, isBold: mask.contains(.boldFontMask),
+                                             isItalic: mask.contains(.italicFontMask))
+        }
+        return TerminalFontChoice.preferredMember(members).flatMap { NSFont(name: $0, size: size) }
     }
 
     init(font: NSFont) {
@@ -314,14 +381,11 @@ final class SessionTerminalView: TerminalView {
         guard !idleFlushScheduled else { return }
         idleFlushScheduled = true
         Task { @MainActor [weak self] in
-            while let self {
-                let due = self.lastOutput + Self.idleFlushDelay
+            // `self` is re-read weakly on every turn, so the sleep doesn't keep a closed tab's view.
+            while let due = self.map({ $0.lastOutput + SessionTerminalView.idleFlushDelay }) {
                 if ContinuousClock.now >= due {
-                    self.idleFlushScheduled = false
-                    let held = self.highlighter.flush()
-                    if !held.isEmpty {
-                        self.feed(byteArray: held[...])
-                    }
+                    self?.idleFlushScheduled = false
+                    self?.flushHighlighter()
                     return
                 }
                 try? await Task.sleep(until: due, clock: .continuous)
@@ -329,16 +393,36 @@ final class SessionTerminalView: TerminalView {
         }
     }
 
+    /// Feeds whatever the highlighter still holds (idle, or the session ended).
+    func flushHighlighter() {
+        let held = highlighter.flush()
+        if !held.isEmpty {
+            feed(byteArray: held[...])
+        }
+    }
+
     // MARK: Select to copy, right-click to paste
 
-    /// With "Select text to copy" on, a mouse-up that leaves a selection (drag, double- or
-    /// triple-click) puts it on the clipboard.
+    override func mouseDown(with event: NSEvent) {
+        selectionAtMouseDown = selectToCopyRightClickToPaste ? getSelection() : nil
+        super.mouseDown(with: event)
+    }
+
+    /// With "Select text to copy" on, a mouse-up that made a new selection (drag, double- or
+    /// triple-click) puts it on the clipboard. Not while the program tracks the mouse: SwiftTerm
+    /// then leaves an old selection in place, and each click would copy it again.
     override func mouseUp(with event: NSEvent) {
+        let tracking = programTracksMouse(event)
         super.mouseUp(with: event)
-        guard selectToCopyRightClickToPaste, let text = getSelection(), !text.isEmpty else { return }
+        guard selectToCopyRightClickToPaste else { return }
+        let before = selectionAtMouseDown
+        selectionAtMouseDown = nil
+        let after = getSelection()
+        guard SelectionCopyRule.shouldCopy(before: before, after: after, programTracksMouse: tracking),
+              let after else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        pasteboard.setString(after, forType: .string)
     }
 
     /// With "right-click to paste" on, a right-click pastes, unless the program is tracking the

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreText
 import AppCore
 import SSHCore
 
@@ -283,15 +284,28 @@ struct TerminalFontPicker: View {
 private struct TerminalFontList: View {
     let selected: String?
     let select: (String?) -> Void
-    @State private var families: [String] = []
+    /// nil while the list is being built (a moment, off the main thread, on the first open).
+    @State private var families: [String]? = TerminalFonts.cachedFamilies
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     row(nil)
-                    ForEach(families, id: \.self) { family in
-                        row(family)
+                    if let families {
+                        ForEach(families, id: \.self) { family in
+                            row(family)
+                        }
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Finding monospaced fonts\u{2026}")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 30)
+                        .padding(.vertical, 6)
                     }
                 }
                 .padding(6)
@@ -306,7 +320,9 @@ private struct TerminalFontList: View {
                 .padding(10)
         }
         .frame(width: 300)
-        .onAppear { families = TerminalFonts.monospacedFamilies() }
+        .task {
+            if families == nil { families = await TerminalFonts.monospacedFamilies() }
+        }
     }
 
     private func row(_ family: String?) -> some View {
@@ -340,21 +356,32 @@ enum TerminalFonts {
     static let systemName = "SF Mono"
 
     /// Fixed-pitch families installed on this Mac (not SF Mono, which is always the first row),
-    /// sorted by name. Built once per app run; fonts installed later appear after a relaunch.
-    static func monospacedFamilies() -> [String] {
-        if let cached { return cached }
-        let manager = NSFontManager.shared
-        let families = (manager.availableFontNames(with: .fixedPitchFontMask) ?? [])
-            .compactMap { NSFont(name: $0, size: 13)?.familyName }
-        let list = TerminalFontChoice.pickerFamilies(fixedPitch: families)
-        cached = list
+    /// sorted by name. Built once per app run, off the main thread, from font descriptors only
+    /// (no font is loaded); fonts installed later appear after a relaunch.
+    static func monospacedFamilies() async -> [String] {
+        if let cachedFamilies { return cachedFamilies }
+        let list = await Task.detached(priority: .userInitiated) { loadMonospacedFamilies() }.value
+        cachedFamilies = list
         return list
     }
 
-    private static var cached: [String]?
+    private(set) static var cachedFamilies: [String]?
+
+    /// CoreText (thread-safe): every installed face whose symbolic traits say monospaced.
+    nonisolated private static func loadMonospacedFamilies() -> [String] {
+        let collection = CTFontCollectionCreateFromAvailableFonts(nil)
+        let descriptors = (CTFontCollectionCreateMatchingFontDescriptors(collection) as? [CTFontDescriptor]) ?? []
+        let families = descriptors.compactMap { descriptor -> String? in
+            guard let traits = CTFontDescriptorCopyAttribute(descriptor, kCTFontTraitsAttribute) as? [String: Any],
+                  let symbolic = (traits[kCTFontSymbolicTrait as String] as? NSNumber)?.uint32Value,
+                  CTFontSymbolicTraits(rawValue: symbolic).contains(.traitMonoSpace) else { return nil }
+            return CTFontDescriptorCopyAttribute(descriptor, kCTFontFamilyNameAttribute) as? String
+        }
+        return TerminalFontChoice.pickerFamilies(fixedPitch: families)
+    }
 
     static func isInstalled(_ family: String) -> Bool {
-        NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: 13) != nil
+        SessionTerminalView.font(family: family, size: 13) != nil
     }
 
     /// `family` (nil or missing = SF Mono) as a SwiftUI font.
