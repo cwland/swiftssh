@@ -28,6 +28,9 @@ struct SnippetsView: View {
     @State private var showsSaved = false
 
     @State private var savedToastTask: Task<Void, Never>?
+    /// The toast's text ("Saved", or "Added 3 snippets" after the library).
+    @State private var toastText = "Saved"
+    @State private var showsLibrary = false
     /// The snippet whose "Run on hosts…" sheet is open.
     @State private var runSnippet: Snippet?
     @State private var newPackageRequest: NewPackageRequest?
@@ -77,7 +80,7 @@ struct SnippetsView: View {
         .animation(.easeInOut(duration: 0.2), value: panelKey)
         .overlay(alignment: .bottom) {
             if showsSaved {
-                Label("Saved", systemImage: "checkmark.circle.fill")
+                Label(toastText, systemImage: "checkmark.circle.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.white)
                     .padding(.horizontal, 16)
@@ -85,7 +88,7 @@ struct SnippetsView: View {
                     .background(Capsule().fill(Color.black.opacity(0.78)))
                     .padding(.bottom, 24)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
-                    .accessibilityLabel("Snippet saved")
+                    .accessibilityLabel(toastText)
             }
         }
         .animation(.easeOut(duration: 0.2), value: showsSaved)
@@ -98,6 +101,12 @@ struct SnippetsView: View {
             }, onCancel: {
                 runSnippet = nil
             })
+        }
+        .sheet(isPresented: $showsLibrary) {
+            SnippetLibrarySheet(vault: vault, onAdded: { count in
+                showsLibrary = false
+                showSavedToast(count == 1 ? "Added 1 snippet" : "Added \(count) snippets")
+            }, onCancel: { showsLibrary = false })
         }
         .sheet(item: $newPackageRequest) { request in
             NewPackageSheet(
@@ -224,6 +233,7 @@ struct SnippetsView: View {
         HStack(spacing: 12) {
             Menu {
                 Button("New Snippet") { createSnippet() }
+                Button("New Snippet from Library\u{2026}") { showsLibrary = true }
                 // Always a new package with a new snippet in it; moving snippets is the cards'
                 // "Move to → New package…" (the selection here was usually just the last clicked card).
                 Button("New package\u{2026}") {
@@ -454,8 +464,9 @@ struct SnippetsView: View {
 
     // MARK: Actions
 
-    private func showSavedToast() {
+    private func showSavedToast(_ text: String = "Saved") {
         savedToastTask?.cancel()
+        toastText = text
         showsSaved = true
         savedToastTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(1.5))
