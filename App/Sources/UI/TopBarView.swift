@@ -746,8 +746,12 @@ extension TopTab {
     }
 }
 
-/// An AppKit view that moves the window when dragged and zooms it on double-click, so the custom top bar behaves like a
-/// title bar.
+/// The empty parts of the top bar act as the title bar: drag to move the window, double-click to zoom.
+///
+/// macOS's own title-bar dragging is turned off for the window (`isMovable = false`): the system title
+/// bar sits above the app's views, so it would move the window from the top part of a tab. This view
+/// turns moving on just for a drag that starts on it, and hands that drag to macOS (`performDrag`, so
+/// edge snapping and tiling still work); the window is unmovable again once the button is released.
 private struct WindowDragArea: NSViewRepresentable {
     func makeNSView(context: Context) -> DragView {
         DragView()
@@ -756,7 +760,14 @@ private struct WindowDragArea: NSViewRepresentable {
     func updateNSView(_ nsView: DragView, context: Context) {}
 
     final class DragView: NSView {
-        override var mouseDownCanMoveWindow: Bool { true }
+        private var isDragging = false
+
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if !isDragging { window?.isMovable = false }
+        }
 
         /// Over a tab, the tab gets the click (and its drag), not this view.
         override func hitTest(_ point: NSPoint) -> NSView? {
@@ -766,15 +777,20 @@ private struct WindowDragArea: NSViewRepresentable {
         }
 
         override func mouseDown(with event: NSEvent) {
-            // `WindowDragBlocker` makes the window unmovable while a tab is pressed.
-            if let window, window.isMovable {
-                if event.clickCount == 2 {
-                    window.performZoom(nil)
-                } else {
-                    window.performDrag(with: event)
+            guard let window else { return super.mouseDown(with: event) }
+            if event.clickCount == 2 {
+                window.performZoom(nil)
+                return
+            }
+            isDragging = true
+            window.isMovable = true
+            window.performDrag(with: event)
+            Task { @MainActor [weak self, weak window] in
+                while NSEvent.pressedMouseButtons != 0 {
+                    try? await Task.sleep(for: .milliseconds(50))
                 }
-            } else {
-                super.mouseDown(with: event)
+                self?.isDragging = false
+                window?.isMovable = false
             }
         }
     }
