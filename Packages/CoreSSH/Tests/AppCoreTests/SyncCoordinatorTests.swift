@@ -146,6 +146,16 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertTrue(SyncSetupError.unreachable("the connection was refused").message.contains("refused"))
     }
 
+    func testRedirectAndATSErrorsHaveActionableMessages() async {
+        let redirect = "The sync server redirected the request. Use the final address (check your proxy) in Settings → Sync."
+        XCTAssertEqual(SyncSetupError(SyncTransportError.redirected), .redirected)
+        XCTAssertEqual(SyncSetupError.redirected.message, redirect)
+        let ats = "macOS blocked a plain http:// connection. Use your https:// proxy address."
+        XCTAssertEqual(SyncSetupError(SyncTransportError.insecureConnectionBlocked), .insecureConnectionBlocked)
+        XCTAssertEqual(SyncSetupError(URLError(.appTransportSecurityRequiresSecureConnection)), .insecureConnectionBlocked)
+        XCTAssertEqual(SyncSetupError.insecureConnectionBlocked.message, ats)
+    }
+
     // MARK: Connecting
 
     func testTestConnectionReportsVaultExistenceAndSavesNothing() async throws {

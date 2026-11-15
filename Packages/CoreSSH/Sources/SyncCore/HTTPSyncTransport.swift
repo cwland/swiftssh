@@ -14,6 +14,11 @@ public enum SyncTransportError: Error, Equatable {
     case http(status: Int, message: String)
     /// The server answered with something that isn't HTTP.
     case invalidResponse
+    /// The server (or a proxy) answered with a 3xx redirect. Redirects are never followed, so the
+    /// API key is only ever sent to the configured address.
+    case redirected
+    /// macOS App Transport Security refused a plain http:// connection.
+    case insecureConnectionBlocked
 }
 
 /// `SyncTransport` over the sync server's HTTP API (`/v1`, Bearer-key auth). `baseURL` may carry a
@@ -26,7 +31,13 @@ public struct HTTPSyncTransport: SyncTransport {
     private let apiKey: String
     private let session: URLSession
 
-    public init(baseURL: URL, apiKey: String, session: URLSession = .shared) {
+    /// The default session: like `.shared`, but it never follows redirects (`RedirectBlocker`).
+    public static let defaultSession = URLSession(configuration: .default, delegate: RedirectBlocker(),
+                                                  delegateQueue: nil)
+
+    /// `session` should not follow redirects (the default doesn't); a 3xx answer throws
+    /// `SyncTransportError.redirected` either way.
+    public init(baseURL: URL, apiKey: String, session: URLSession = HTTPSyncTransport.defaultSession) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.session = session
@@ -106,10 +117,10 @@ public struct HTTPSyncTransport: SyncTransport {
         do {
             (data, response) = try await session.data(for: request)
         } catch let error as URLError {
-            if error.code == .cancelled { throw CancellationError() }
-            throw SyncTransportError.unreachable(Self.describe(error.code))
+            throw Self.transportError(for: error)
         }
         guard let http = response as? HTTPURLResponse else { throw SyncTransportError.invalidResponse }
+        if (300 ..< 400).contains(http.statusCode) { throw SyncTransportError.redirected }
         return (http.statusCode, data)
     }
 
@@ -117,9 +128,21 @@ public struct HTTPSyncTransport: SyncTransport {
         if let error = Self.statusError(status, data) { throw error }
     }
 
-    /// nil for 2xx; `.unauthorized` for 401/403; otherwise `.http` with the server's `error` text.
+    /// What a `URLError` from the session becomes: `CancellationError` for a cancelled task,
+    /// `.insecureConnectionBlocked` for an ATS refusal, otherwise `.unreachable` with a fixed phrase.
+    static func transportError(for error: URLError) -> Error {
+        switch error.code {
+        case .cancelled: CancellationError()
+        case .appTransportSecurityRequiresSecureConnection: SyncTransportError.insecureConnectionBlocked
+        default: SyncTransportError.unreachable(describe(error.code))
+        }
+    }
+
+    /// nil for 2xx; `.redirected` for 3xx; `.unauthorized` for 401/403; otherwise `.http` with the
+    /// server's `error` text.
     static func statusError(_ status: Int, _ data: Data) -> Error? {
         if (200 ..< 300).contains(status) { return nil }
+        if (300 ..< 400).contains(status) { return SyncTransportError.redirected }
         if status == 401 || status == 403 { return SyncTransportError.unauthorized }
         struct ErrorBody: Decodable { let error: String }
         let message = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error ?? ""
@@ -142,4 +165,24 @@ public struct HTTPSyncTransport: SyncTransport {
         default: "network error \(code.rawValue)"
         }
     }
+}
+
+/// A session delegate that refuses every HTTP redirect, so the 3xx answer itself is returned and
+/// the Authorization header is never re-sent to another address.
+public final class RedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
+    public override init() {}
+
+    #if canImport(FoundationNetworking)
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                           newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+    #else
+    // Apple platforms: the async form of the same delegate requirement (avoids a near-miss on the
+    // completion handler's `@Sendable` annotation).
+    public func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                           newRequest request: URLRequest) async -> URLRequest? {
+        nil
+    }
+    #endif
 }

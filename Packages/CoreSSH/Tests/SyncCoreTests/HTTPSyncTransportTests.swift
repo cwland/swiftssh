@@ -55,6 +55,55 @@ final class HTTPSyncTransportTests: XCTestCase {
                        .http(status: 502, message: "Bad gateway"))
     }
 
+    /// A 302 (e.g. a proxy sending http → https or adding a slash) must not be followed: the
+    /// redirect target never sees the request, so the Bearer key can't leak to it.
+    func testRedirectsAreNotFollowedAndMapToRedirected() async throws {
+        let target = try LoopbackHTTPServer { _ in
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        }
+        defer { target.stop() }
+        let targetPort = target.port
+        let redirector = try LoopbackHTTPServer { head in
+            let path = head.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+            return "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:\(targetPort)\(path)\r\n"
+                + "Content-Length: 0\r\nConnection: close\r\n\r\n"
+        }
+        defer { redirector.stop() }
+
+        let t = HTTPSyncTransport(baseURL: redirector.baseURL, apiKey: "secret-key-123")
+        let calls: [() async throws -> Void] = [
+            { _ = try await t.getVault() },
+            { try await t.health() },
+            { _ = try await t.fetch(since: 0, limit: 500) },
+        ]
+        for call in calls {
+            do {
+                try await call()
+                XCTFail("expected redirected")
+            } catch let error as SyncTransportError {
+                XCTAssertEqual(error, .redirected)
+            }
+        }
+        XCTAssertEqual(redirector.requests.count, 3)
+        XCTAssertTrue(redirector.requests[0].contains("Bearer secret-key-123"), "sanity: the key went to the first hop")
+        XCTAssertEqual(target.requests, [], "the redirect target never received a request")
+        XCTAssertFalse(target.requests.joined().contains("secret-key-123"))
+    }
+
+    func testAnyThreeHundredStatusMapsToRedirected() {
+        for status in [301, 302, 303, 307, 308] {
+            XCTAssertEqual(HTTPSyncTransport.statusError(status, Data()) as? SyncTransportError, .redirected)
+        }
+    }
+
+    func testATSBlockMapsToInsecureConnectionBlocked() {
+        XCTAssertEqual(HTTPSyncTransport.transportError(for: URLError(.appTransportSecurityRequiresSecureConnection))
+                       as? SyncTransportError, .insecureConnectionBlocked)
+        XCTAssertEqual(HTTPSyncTransport.transportError(for: URLError(.cannotConnectToHost)) as? SyncTransportError,
+                       .unreachable("the connection was refused"))
+        XCTAssertTrue(HTTPSyncTransport.transportError(for: URLError(.cancelled)) is CancellationError)
+    }
+
     func testConnectionFailureMapsToUnreachableWithoutTheKey() async {
         // Port 1 on loopback: nothing listens, so the connection is refused at once.
         let t = transport("http://127.0.0.1:1", key: "secret-key-123")
