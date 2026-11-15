@@ -169,6 +169,10 @@ public final class TerminalTab: Identifiable {
     @ObservationIgnored fileprivate var countdownToken = 0
     /// The message of the latest dropped connection or failed try, shown again when the user stops a try.
     @ObservationIgnored fileprivate var dropMessage: String?
+    /// Text to type once the tab's first connection is ready (`runOnHosts`), after the startup script
+    /// and tmux attach. Typed once; dropped by Reconnect / Start over and automatic tries, so it never
+    /// runs again on a later connection. A typed password (also after a rejected one) keeps it.
+    @ObservationIgnored fileprivate var textAfterFirstReady: String?
     @ObservationIgnored private var pendingOutput: [[UInt8]] = []
     @ObservationIgnored private var pendingBytes = 0
     @ObservationIgnored private var pendingTruncated = false
@@ -221,6 +225,12 @@ public final class TerminalTab: Identifiable {
         if truncated { outputSink(Self.truncationMarker) }
         for chunk in chunks { outputSink(chunk) }
     }
+}
+
+/// How a snippet is typed into a terminal: `paste` inserts it without running it; `run` also presses
+/// Return.
+public enum SnippetDelivery: Sendable, Equatable {
+    case paste, run
 }
 
 fileprivate enum SessionTarget {
@@ -384,6 +394,7 @@ public final class SessionManager {
     public func reconnect(tabID: UUID) {
         guard let tab = tab(tabID) else { return }
         endAutoReconnect(of: tab)
+        tab.textAfterFirstReady = nil
         connect(tab, plan: nil)
     }
 
@@ -660,6 +671,7 @@ public final class SessionManager {
     /// must be typed, or the host can't be planned any more) ends auto-reconnect; the tab shows why.
     private func startTry(_ tab: TerminalTab, attempt: Int) {
         cancelCountdown(of: tab)
+        tab.textAfterFirstReady = nil
         tab.autoReconnect = .reconnecting(attempt: attempt)
         connect(tab, plan: nil)
         if tab.attempt == nil, tab.resolvingSecrets == nil { tab.autoReconnect = nil }
@@ -744,6 +756,64 @@ public final class SessionManager {
 
     public func send(tabID: UUID, _ bytes: [UInt8]) {
         tab(tabID)?.attempt?.inputs.yield(.bytes(bytes))
+    }
+
+    // MARK: Snippets
+
+    /// Types `text` into the tab as `deliveryText(_:as:)` gives it. False, and nothing sent, when the
+    /// tab is not open or not connected (`.connected` with a live session). Placeholders must already
+    /// be filled.
+    @discardableResult
+    public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID) -> Bool {
+        guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
+        let typed = Self.deliveryText(text, as: delivery)
+        if !typed.isEmpty { attempt.inputs.yield(.bytes(Array(typed.utf8))) }
+        return true
+    }
+
+    /// "Run in all tabs": delivers `text` to every connected tab of the window (nil = the main window);
+    /// other tabs and windows are left alone. Returns how many tabs it was typed into.
+    @discardableResult
+    public func deliverToAllTabs(_ text: String, as delivery: SnippetDelivery, inWindow windowID: UUID?) -> Int {
+        tabs(inWindow: windowID).filter { deliver(text, as: delivery, toTab: $0.id) }.count
+    }
+
+    /// How many tabs `deliverToAllTabs` would type into now (for its confirmation).
+    public func connectableTabCount(inWindow windowID: UUID?) -> Int {
+        tabs(inWindow: windowID).filter { Self.liveAttempt(of: $0) != nil }.count
+    }
+
+    /// "Run on several hosts": opens a new tab per host (each host once, in order) in the main window,
+    /// connecting as `open(hostID:)` does (prompts as usual), and types `text` as `.run` once that tab's
+    /// first connection is ready, after the startup snippet and tmux attach, so it runs inside the session
+    /// the user sees. It is typed on that first connection only: never again on Reconnect or an
+    /// automatic reconnect (a first try that fails before it is ready drops it). Every host is planned
+    /// first: when one can't be (missing, no address, no username), its error is thrown and no tab opens.
+    @discardableResult
+    public func runOnHosts(_ hostIDs: [UUID], text: String) throws -> [TerminalTab] {
+        var seen: Set<UUID> = []
+        let ids = hostIDs.filter { seen.insert($0).inserted }
+        let plans = try ids.map { try ConnectionPlanner.plan(hostID: $0, vault: vault) }
+        let typed = Self.deliveryText(text, as: .run)
+        return zip(ids, plans).map { id, plan in
+            let tab = TerminalTab(target: .host(id), title: plan.label, badge: vault.get(SavedHost.self, id: id)?.osBadge)
+            tab.textAfterFirstReady = typed
+            return add(tab, plan: plan)
+        }
+    }
+
+    /// What is typed for a snippet: every newline (`\n`, `\r\n` or `\r`) becomes a carriage return
+    /// (Return), and `.run` adds one at the end unless the text already ends with a newline.
+    static func deliveryText(_ text: String, as delivery: SnippetDelivery) -> String {
+        var typed = text.replacingOccurrences(of: "\r\n", with: "\r").replacingOccurrences(of: "\n", with: "\r")
+        if delivery == .run, !typed.hasSuffix("\r") { typed += "\r" }
+        return typed
+    }
+
+    /// The tab's session when the tab is connected and it can take input.
+    private static func liveAttempt(of tab: TerminalTab) -> SessionAttempt? {
+        guard tab.state == .connected else { return nil }
+        return tab.attempt
     }
 
     public func resize(tabID: UUID, cols: Int, rows: Int) {
@@ -1081,6 +1151,10 @@ public final class SessionManager {
             attempt.inputs.yield(.bytes(Array((script + "\n").utf8)))
         }
         attachTmuxIfChosen(attempt, tab: tab)
+        if let text = tab.textAfterFirstReady {
+            tab.textAfterFirstReady = nil
+            if !text.isEmpty { attempt.inputs.yield(.bytes(Array(text.utf8))) }
+        }
     }
 
     // MARK: Attach to tmux
