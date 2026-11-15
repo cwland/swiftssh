@@ -188,6 +188,7 @@ public final class SessionManager {
     @ObservationIgnored private let deviceName: String
     @ObservationIgnored private let defaultUsername: String
     @ObservationIgnored private let keepAlivePolicy: @MainActor () -> KeepAlivePolicy
+    @ObservationIgnored private let terminalType: @MainActor () -> TerminalType
     @ObservationIgnored private let autoReconnectEnabled: @MainActor () -> Bool
     @ObservationIgnored private let agentSocket: @MainActor () -> String?
     @ObservationIgnored private let now: @Sendable () -> Date
@@ -207,7 +208,9 @@ public final class SessionManager {
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
                 agentSocket: @escaping @MainActor () -> String? = { nil },
-                opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil }) {
+                opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil },
+                terminalType: @escaping @MainActor () -> TerminalType = { .default }) {
+        self.terminalType = terminalType
         self.agentSocket = agentSocket
         self.opClient = opClient
         self.keepAlivePolicy = keepAlivePolicy
@@ -515,6 +518,7 @@ public final class SessionManager {
             }
         }
         plan.keepAlive = keepAlivePolicy() // read once per attempt: open tabs keep theirs, Reconnect uses the current one
+        plan.terminalType = terminalType() // the same for TERM
         tab.title = plan.label
         if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { tab.badge = host.osBadge }
 

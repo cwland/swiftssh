@@ -453,6 +453,18 @@ final class CitadelSessionTests: XCTestCase {
         XCTAssertEqual(log.components(separatedBy: "Accepted password").count - 1, 1, "credentials sent once:\n\(log)")
     }
 
+    func testPTYRequestUsesThePlansTerminalType() async throws {
+        var plan = plan(.password(server.password))
+        plan.terminalType = .vt100
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        await session.send(Array("echo term-is-$TERM-end\n".utf8))
+        try await recorder.waitForOutput(containing: "term-is-vt100-end")
+        await session.close()
+    }
+
     // MARK: Helpers
 
     private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {

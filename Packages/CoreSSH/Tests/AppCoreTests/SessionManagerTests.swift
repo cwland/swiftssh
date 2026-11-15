@@ -156,6 +156,33 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertEqual(factory.sessions[2].plan.keepAlive, .relaxed)
     }
 
+    func testPlansDefaultToXterm256Color() async throws {
+        _ = try manager.open(hostID: passwordHost().id)
+        XCTAssertEqual(factory.sessions[0].plan.terminalType, .xterm256color)
+    }
+
+    func testEachAttemptGetsTheTerminalTypeCurrentAtThatTime() async throws {
+        var current = TerminalType.vt100
+        let factory = factory!
+        manager = SessionManager(vault: vault, knownHosts: store,
+                                 makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                                 deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                                 terminalType: { current })
+        let tab = try manager.open(hostID: passwordHost().id)
+        await waitUntil("connected") { tab.state == .connected }
+        XCTAssertEqual(factory.sessions[0].plan.terminalType, .vt100)
+
+        current = .linux // open tabs keep theirs; Reconnect and new tabs use the current one
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("second session") { factory.sessions.count == 2 }
+        XCTAssertEqual(factory.sessions[1].plan.terminalType, .linux)
+
+        current = .xterm
+        _ = try manager.open(hostID: passwordHost(label: "Second").id)
+        XCTAssertEqual(factory.sessions.last?.plan.terminalType, .xterm)
+        XCTAssertEqual(factory.sessions.count, 3)
+    }
+
     // MARK: Helpers
 
     private func waitUntil(_ what: String = "condition", timeout: TimeInterval = 2,

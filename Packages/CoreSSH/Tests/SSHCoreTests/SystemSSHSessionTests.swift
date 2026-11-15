@@ -422,6 +422,20 @@ final class SystemSSHSessionTests: XCTestCase {
 
     // MARK: Connecting
 
+    func testSSHRequestsThePlansTerminalType() async throws {
+        var p = plan(.password(server.password))
+        p.terminalType = .vt100
+        let session = SystemSSHSession(plan: p, hostKeys: TestEvaluator(decision: .trusted),
+                                       knownHostsLines: { [] }, runtime: runtime)
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        await session.send(Array("echo term-is-$TERM-end\n".utf8))
+        try await recorder.waitForOutput(containing: "term-is-vt100-end")
+        await session.close()
+        try await recorder.waitForFinish()
+    }
+
     func testPasswordLoginThroughAskpass() async throws {
         let evaluator = TestEvaluator(decision: .trusted)
         let session = makeSession(.password(server.password), evaluator: evaluator)
