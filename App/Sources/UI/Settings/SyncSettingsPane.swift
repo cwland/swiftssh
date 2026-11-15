@@ -25,6 +25,12 @@ struct SyncSettingsPane: View {
                 }
 
                 if let sync {
+                    if let error = sync.lastError {
+                        Label(error.message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     content(sync)
                 } else {
                     SyncCard {
