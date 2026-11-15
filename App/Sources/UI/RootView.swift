@@ -44,8 +44,8 @@ struct RootView: View {
     var isTerminalWindow = false
 
     @Environment(\.openWindow) private var openWindow
-    /// The tab whose Change Theme panel is open.
-    @State private var themePanelTabID: UUID?
+    /// The side panel (Change Theme or Snippets) open over one of this window's tabs.
+    @State private var sidePanel: TerminalSidePanel?
     @State private var didOpenRequestedTab = false
     /// The duplicate could not be opened (its source tab is gone): the window closes as soon as it is known.
     @State private var openFailed = false
@@ -65,7 +65,11 @@ struct RootView: View {
                 closeTab: { environment.closeTab(tabID: $0) },
                 changeTheme: { tabID in
                     environment.sessions?.select(tabID: tabID, inWindow: windowID)
-                    themePanelTabID = tabID
+                    sidePanel = TerminalSidePanel(tabID: tabID, kind: .theme)
+                },
+                showSnippets: { tabID in
+                    environment.sessions?.select(tabID: tabID, inWindow: windowID)
+                    sidePanel = TerminalSidePanel(tabID: tabID, kind: .snippets)
                 },
                 duplicateInNewWindow: { tabID in
                     openWindow(id: TerminalWindowRequest.sceneID, value: TerminalWindowRequest(sourceTabID: tabID))
@@ -81,7 +85,7 @@ struct RootView: View {
                     if let sessions = environment.sessions {
                         ReadyArea(environment: environment, vault: vault, sessions: sessions,
                                   windowID: windowID, isTerminalWindow: isTerminalWindow,
-                                  themePanelTabID: $themePanelTabID)
+                                  sidePanel: $sidePanel)
                     }
                 case .failed(let failure):
                     VaultErrorView(failure: failure) {
@@ -204,7 +208,7 @@ private struct ReadyArea: View {
     let sessions: SessionManager
     let windowID: UUID?
     let isTerminalWindow: Bool
-    @Binding var themePanelTabID: UUID?
+    @Binding var sidePanel: TerminalSidePanel?
 
     @State private var hostsModel: HostsViewModel?
     @State private var keychainModel: KeychainViewModel?
@@ -217,9 +221,10 @@ private struct ReadyArea: View {
                 TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews,
                                 vault: vault, terminalSettings: environment.terminalSettings,
                                 closeTab: { environment.closeTab(tabID: tab.id) },
-                                showsThemePanel: themePanelTabID == tab.id,
-                                closeThemePanel: { themePanelTabID = nil },
-                                editHost: isTerminalWindow ? nil : { editHost(of: tab) })
+                                sidePanel: sidePanel?.tabID == tab.id ? sidePanel?.kind : nil,
+                                closeSidePanel: { sidePanel = nil },
+                                editHost: isTerminalWindow ? nil : { editHost(of: tab) },
+                                editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
                     .id(tab.id)
             } else if isTerminalWindow {
                 // Only while the window opens or closes.
@@ -254,12 +259,14 @@ private struct ReadyArea: View {
         .onChange(of: sessions.tabs.map(\.id)) { _, openIDs in
             // Every window's tabs: a window must not drop another window's terminal views.
             environment.terminalViews.retain(only: Set(openIDs))
-            if let id = themePanelTabID, !openIDs.contains(id) { themePanelTabID = nil }
+            if let id = sidePanel?.tabID, !openIDs.contains(id) { sidePanel = nil }
         }
         // The panel belongs to the tab it was opened on; switching tabs closes it.
         .onChange(of: selectedTab?.id) { _, id in
-            if themePanelTabID != id { themePanelTabID = nil }
+            if sidePanel?.tabID != id { sidePanel = nil }
         }
+        // Cmd+.: the snippets panel of this window's selected tab.
+        .focusedSceneValue(\.snippetsPanelToggle, snippetsPanelToggle)
     }
 
     /// "Edit host" on the connection screen: Vaults → Hosts with the tab's host selected (its Host
@@ -269,6 +276,24 @@ private struct ReadyArea: View {
         environment.navigation.sidebar = .hosts
         hostsModel?.selectedHostID = hostID
         environment.showVaults()
+    }
+
+    /// Edit / New Snippet in the snippets panel: Vaults → Snippets. The tab stays open. Main window only.
+    /// The Snippets screen has no "select this snippet" entry point yet, so `id` only names the
+    /// snippet meant (wired up at merge, see the S3 report).
+    private func editSnippet(_ id: UUID) {
+        environment.navigation.sidebar = .snippets
+        environment.showVaults()
+    }
+
+    /// Opens the snippets panel on the selected tab (closing Change Theme), or closes it.
+    private var snippetsPanelToggle: SnippetsPanelToggle {
+        guard let tabID = selectedTab?.id else { return SnippetsPanelToggle() }
+        let panel = TerminalSidePanel(tabID: tabID, kind: .snippets)
+        let binding = $sidePanel
+        return SnippetsPanelToggle(isOpen: sidePanel == panel) {
+            binding.wrappedValue = binding.wrappedValue == panel ? nil : panel
+        }
     }
 
     /// This window's selected tab; nil while Vaults is selected.

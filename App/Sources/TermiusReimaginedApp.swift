@@ -56,10 +56,12 @@ struct TermiusReimaginedApp: App {
 
 /// Keyboard commands for terminal tabs, acting on the focused window's tabs (`WindowScope`): Cmd+W
 /// closes the selected tab (or the window on Vaults), Cmd+1 shows Vaults, Cmd+2…9 select tabs,
-/// Cmd+Shift+[ / ] the previous and next tab, Cmd+R reconnects a disconnected tab.
+/// Cmd+Shift+[ / ] the previous and next tab, Cmd+R reconnects a disconnected tab, Cmd+. shows or
+/// hides the selected tab's snippets panel.
 private struct SessionCommands: Commands {
     let environment: AppEnvironment
     @FocusedValue(\.windowScope) private var scope
+    @FocusedValue(\.snippetsPanelToggle) private var snippetsPanel
 
     var body: some Commands {
         // Replaces the standard File > Close (Cmd+W).
@@ -74,6 +76,11 @@ private struct SessionCommands: Commands {
                 environment.reconnectSelectedTab(in: scope)
             }
             .keyboardShortcut("r", modifiers: .command)
+            Button(snippetsPanel?.isOpen == true ? "Hide Snippets" : "Show Snippets") {
+                snippetsPanel?.toggle?()
+            }
+            .keyboardShortcut(".", modifiers: .command)
+            .disabled(snippetsPanel?.toggle == nil)
             Divider()
             Button("Show Previous Tab") {
                 environment.selectAdjacentTab(by: -1, in: scope)

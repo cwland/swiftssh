@@ -22,6 +22,8 @@ struct TopBarView: View {
     let closeTab: (UUID) -> Void
     /// Change Theme…: opens the theme panel over the tab (after selecting it).
     var changeTheme: (UUID) -> Void = { _ in }
+    /// Snippets…: opens the snippets panel over the tab (after selecting it).
+    var showSnippets: (UUID) -> Void = { _ in }
     /// Duplicate in New Window.
     var duplicateInNewWindow: (UUID) -> Void = { _ in }
 
@@ -137,6 +139,9 @@ struct TopBarView: View {
     private func tabMenu(for tab: TerminalTab, sessions: SessionManager) -> some View {
         Button("Change Theme\u{2026}") {
             changeTheme(tab.id)
+        }
+        Button("Snippets\u{2026}") {
+            showSnippets(tab.id)
         }
         Button("Rename\u{2026}") {
             renameText = tab.customTitle ?? tab.title

@@ -134,6 +134,13 @@ final class TerminalViewStore {
         }
     }
 
+    /// Gives the tab's terminal the keyboard focus again (after the snippets panel pastes or runs);
+    /// nothing while its view is not in a window.
+    func focus(tabID: UUID) {
+        guard let view = entries[tabID]?.view, let window = view.window else { return }
+        window.makeFirstResponder(view)
+    }
+
     /// Releases the views of tabs that are no longer open. SwiftTerm requires `updateUiClosed()`
     /// before a view is let go; when it returns false (GPU work still in flight) the entry is kept
     /// and released on a later call.
