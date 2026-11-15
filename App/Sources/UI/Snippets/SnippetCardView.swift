@@ -7,6 +7,10 @@ import CoreModels
 struct SnippetCardView: View {
     let snippet: Snippet
     let isSelected: Bool
+    /// The pencil (shown while hovered or selected) opens the editor.
+    var onEdit: (() -> Void)? = nil
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: Theme.cardPadding) {
@@ -29,6 +33,11 @@ struct SnippetCardView: View {
             if let package = snippet.package {
                 PackageChip(name: package)
             }
+            if let onEdit {
+                CardEditButton(action: onEdit)
+                    .opacity(isHovering || isSelected ? 1 : 0)
+                    .allowsHitTesting(isHovering || isSelected)
+            }
         }
         .padding(.horizontal, Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -42,6 +51,7 @@ struct SnippetCardView: View {
                 .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
         }
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
+        .onHover { isHovering = $0 }
     }
 
     static func displayName(of snippet: Snippet) -> String {

@@ -4,7 +4,8 @@ import AppCore
 import CoreModels
 
 /// The Snippets screen: search bar, toolbar, snippet cards in package sections, and the snippet editor
-/// on the right for the selected snippet. ⌘-click selects several (to move or remove them together);
+/// on the right, opened by a card's pencil or Edit Snippet (a click only selects; double-click runs on
+/// hosts). ⌘-click selects several (to move or remove them together);
 /// drag cards onto a package's section header to move them there. Packages exist only through their
 /// snippets. All data goes through `SnippetsViewModel`.
 struct SnippetsView: View {
@@ -15,6 +16,12 @@ struct SnippetsView: View {
     let navigation: AppNavigation
 
     @State private var selection: Set<UUID> = []
+
+    /// The snippet whose editor is open: only from its pencil, Edit Snippet, or a new snippet;
+
+    /// a click just selects.
+
+    @State private var editingSnippetID: UUID?
     /// The snippet whose "Run on hosts…" sheet is open.
     @State private var runSnippet: Snippet?
     @State private var newPackageRequest: NewPackageRequest?
@@ -38,12 +45,12 @@ struct SnippetsView: View {
             mainColumn
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            if let snippet = selectedSnippet {
+            if let snippet = editingSnippet {
                 Divider()
                 SnippetEditorPanel(
                     model: model,
                     snippet: snippet,
-                    onClose: { selection = [] },
+                    onClose: { editingSnippetID = nil },
                     onRun: { runSnippet = snippet },
                     onDuplicate: { duplicate(snippet.id) },
                     onDelete: { confirmRemove([snippet.id]) },
@@ -106,18 +113,23 @@ struct SnippetsView: View {
     private func takeRequestedSelection() {
         guard let id = navigation.snippetToSelect else { return }
         navigation.snippetToSelect = nil
-        if model.snippet(id) != nil { selection = [id] }
+        if model.snippet(id) != nil { edit(id) }
     }
 
-    /// The editor shows for a single selection.
-    private var selectedSnippet: Snippet? {
-        guard selection.count == 1, let id = selection.first else { return nil }
-        return vault.get(Snippet.self, id: id)
+    /// The snippet whose editor is open, nil if none or it was removed.
+    private var editingSnippet: Snippet? {
+        editingSnippetID.flatMap { vault.get(Snippet.self, id: $0) }
+    }
+
+    /// Opens the snippet's editor and makes it the only selected one.
+    private func edit(_ id: UUID) {
+        selection = [id]
+        editingSnippetID = id
     }
 
     /// Changes when the right-hand panel changes (for its animation).
     private var panelKey: String {
-        if let snippet = selectedSnippet { return snippet.id.uuidString }
+        if let snippet = editingSnippet { return snippet.id.uuidString }
         return selectedIDs.count > 1 ? "many" : ""
     }
 
@@ -264,7 +276,8 @@ struct SnippetsView: View {
     }
 
     private func card(for snippet: Snippet) -> some View {
-        SnippetCardView(snippet: snippet, isSelected: selection.contains(snippet.id))
+        SnippetCardView(snippet: snippet, isSelected: selection.contains(snippet.id),
+                        onEdit: { edit(snippet.id) })
             .onTapGesture(count: 2) {
                 selection = [snippet.id]
                 runSnippet = snippet
@@ -285,6 +298,8 @@ struct SnippetsView: View {
     @ViewBuilder
     private func cardMenu(for snippet: Snippet) -> some View {
         let targets = actionTargets(for: snippet.id)
+        Button("Edit Snippet") { edit(snippet.id) }
+        Divider()
         Button("Run on hosts\u{2026}") {
             selection = [snippet.id]
             runSnippet = snippet
@@ -415,7 +430,7 @@ struct SnippetsView: View {
 
     private func createSnippet() {
         let snippet = model.create(name: "New Snippet", script: "", package: nil)
-        selection = [snippet.id]
+        edit(snippet.id)
     }
 
     private func duplicate(_ id: UUID) {
@@ -435,7 +450,7 @@ struct SnippetsView: View {
     private func createPackage(_ name: String, for request: NewPackageRequest) {
         if request.snippetIDs.isEmpty {
             let snippet = model.create(name: "New Snippet", script: "", package: name)
-            selection = [snippet.id]
+            edit(snippet.id)
         } else {
             model.move(request.snippetIDs, toPackage: name)
         }
