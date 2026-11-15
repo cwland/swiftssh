@@ -149,14 +149,27 @@ public final class HostDetailsViewModel {
     // MARK: Startup snippet
 
     /// The snippet typed after login; nil = none (also when the stored one is missing or deleted).
-    /// Saves at once; setting the stored value again does nothing.
+    /// Saves at once; setting the stored value again does nothing (nil clears a stale stored id).
     public var startupSnippetID: UUID? {
-        get { nil } // stub
-        set {} // stub
+        get {
+            guard let id = host?.startupSnippetID, vault.get(Snippet.self, id: id) != nil else { return nil }
+            return id
+        }
+        set { update { $0.startupSnippetID = newValue } }
     }
 
-    /// Snippets that can be a startup snippet: those without placeholders, A–Z.
-    public func startupCandidates() -> [Snippet] { [] } // stub
+    /// Snippets that can be a startup snippet: those without placeholders, A–Z (as
+    /// `SnippetsViewModel.startupCandidates()`).
+    public func startupCandidates() -> [Snippet] {
+        _ = vault.revision
+        return SnippetsViewModel(vault: vault).startupCandidates()
+    }
+
+    /// Snippets left out of `startupCandidates()` because they have placeholders (for the picker's note).
+    public var hiddenStartupSnippetCount: Int {
+        _ = vault.revision
+        return vault.all(Snippet.self).filter { SnippetTemplate($0.script).hasPlaceholders }.count
+    }
 
     // MARK: Attach to tmux
 
