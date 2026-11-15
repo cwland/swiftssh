@@ -5,7 +5,7 @@ import CoreModels
 
 /// A workspace in Focus mode: on the left the list "Terminals • N" (OS badge, name, "ssh, <user>",
 /// status dot; the selected row is highlighted and has × to close it; rows drag to reorder), with
-/// Split view (⌘⇧M) and Broadcast (⌘B) buttons at its top; on the right the selected pane's terminal,
+/// "Back to Split view" (⌘⇧M) and Broadcast (⌘B) buttons at the right of its header; on the right the selected pane's terminal,
 /// which is also the input target while broadcasting. Switching panes or modes never interrupts a
 /// session: only the selected pane's terminal view is hosted, the others keep running in
 /// `TerminalViewStore`.
@@ -57,15 +57,16 @@ struct FocusModeView<Terminal: View>: View {
         let ids = workspace.paneIDs
         return VStack(spacing: 0) {
             HStack(spacing: 6) {
-                HeaderButton(symbol: "square.split.2x2",
-                             help: "Split view \u{2318}\u{21E7}M",
-                             label: "Split view",
-                             action: { actions.enterSplitView() })
                 Text("Terminals \u{2022} \(ids.count)")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                 Spacer(minLength: 4)
+                // The reverse of the pane header's Focus mode button (arrows out → arrows in).
+                HeaderButton(symbol: "arrow.down.right.and.arrow.up.left",
+                             help: "Back to Split view \u{2318}\u{21E7}M",
+                             label: "Back to Split view",
+                             action: { actions.enterSplitView() })
                 HeaderButton(symbol: "dot.radiowaves.left.and.right",
                              isOn: workspace.isBroadcasting,
                              help: workspace.isBroadcasting ? "Stop broadcasting input (\u{2318}B)" : "Broadcast input \u{2318}B",
