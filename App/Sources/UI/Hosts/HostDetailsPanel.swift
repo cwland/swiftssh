@@ -81,7 +81,7 @@ private struct HostDetailsContent: View {
             Button("Delete host", role: .destructive) { deleteHost() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\u{201C}\(details.label)\u{201D} will be removed from this vault.")
+            Text("\u{201C}\(details.label)\u{201D} will be removed from this vault. You can restore it from Settings \u{2192} Recently Deleted.")
         }
         .alert("Something went wrong", isPresented: $showError) {
             Button("OK", role: .cancel) {}

@@ -64,6 +64,7 @@ struct SettingsView: View {
         case .sync: SyncSettingsPane(sync: sync, vault: vault)
         case .onePassword: OnePasswordSettingsPane(setup: onePassword)
         case .osIcons: OSIconsSettingsPane()
+        case .recentlyDeleted: RecentlyDeletedPane(vault: vault)
         }
     }
 

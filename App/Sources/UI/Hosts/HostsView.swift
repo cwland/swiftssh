@@ -628,9 +628,9 @@ struct HostsView: View {
     private var removeMessage: String {
         if hostsToRemove.count == 1, let id = hostsToRemove.first,
            let host = vault.get(SavedHost.self, id: id) {
-            return "\u{201C}\(host.label.isEmpty ? "Untitled host" : host.label)\u{201D} will be removed from this vault and your other Macs. Open sessions stay open."
+            return "\u{201C}\(host.label.isEmpty ? "Untitled host" : host.label)\u{201D} will be removed from this vault and your other Macs. Open sessions stay open. You can restore it from Settings \u{2192} Recently Deleted."
         }
-        return "They will be removed from this vault and your other Macs. Open sessions stay open."
+        return "They will be removed from this vault and your other Macs. Open sessions stay open. You can restore them from Settings \u{2192} Recently Deleted."
     }
 
     /// Add to Workspace: each host joins the open workspace as a new pane; the workspace is shown.

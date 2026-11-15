@@ -80,6 +80,16 @@ public final class LocalVault {
         }
     }
 
+    /// Deleted records (tombstones) of type `M` that can still be read, in insertion order. A tombstone
+    /// keeps the record's last contents until it is wiped (see `RecentlyDeletedViewModel`).
+    public func deletedRecords<M: SyncableModel>(_: M.Type) -> [M] {
+        _ = revision
+        return order.compactMap { id in
+            guard let record = records[id], record.type == M.recordType, record.deleted else { return nil }
+            return try? record.decode(M.self)
+        }
+    }
+
     public func get<M: SyncableModel>(_: M.Type, id: UUID) -> M? {
         guard let record = records[id], record.type == M.recordType, !record.deleted else { return nil }
         return try? record.decode(M.self)
