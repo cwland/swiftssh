@@ -29,6 +29,13 @@ private final class ReadySession: TerminalSession, Sendable {
     func resize(cols: Int, rows: Int) async {}
     func runCommand(_ command: String) async throws -> String { "Linux\nID=ubuntu\n" }
 
+    /// The connection drops (auto-reconnect starts for a tab that was ready).
+    func drop() {
+        closedFlag.withLock { $0 = true }
+        continuation.yield(.closed(.failed(.connectionFailed("dropped"))))
+        continuation.finish()
+    }
+
     func close() async {
         let first = closedFlag.withLock { closed -> Bool in
             defer { closed = true }
@@ -151,29 +158,29 @@ final class SessionManagerTabsTests: XCTestCase {
         let (a, b, c) = threeTabs()
         manager.moveTab(id: c.id, toIndex: 0) // c a b
         manager.selectedTabID = c.id
-        manager.selectNextTab()
+        manager.selectNextTab(inWindow: nil)
         XCTAssertEqual(manager.selectedTabID, a.id)
-        manager.selectNextTab()
+        manager.selectNextTab(inWindow: nil)
         XCTAssertEqual(manager.selectedTabID, b.id)
-        manager.selectNextTab() // wraps
+        manager.selectNextTab(inWindow: nil) // wraps
         XCTAssertEqual(manager.selectedTabID, c.id)
-        manager.selectPreviousTab() // wraps back
+        manager.selectPreviousTab(inWindow: nil) // wraps back
         XCTAssertEqual(manager.selectedTabID, b.id)
     }
 
     func testNextAndPreviousFromVaults() async {
         let (a, _, c) = threeTabs()
         manager.selectedTabID = nil
-        manager.selectNextTab()
+        manager.selectNextTab(inWindow: nil)
         XCTAssertEqual(manager.selectedTabID, a.id)
         manager.selectedTabID = nil
-        manager.selectPreviousTab()
+        manager.selectPreviousTab(inWindow: nil)
         XCTAssertEqual(manager.selectedTabID, c.id)
     }
 
     func testNextWithNoTabsDoesNothing() async {
-        manager.selectNextTab()
-        manager.selectPreviousTab()
+        manager.selectNextTab(inWindow: nil)
+        manager.selectPreviousTab(inWindow: nil)
         XCTAssertNil(manager.selectedTabID)
     }
 
@@ -267,16 +274,63 @@ final class SessionManagerTabsTests: XCTestCase {
 
     // MARK: Theme
 
-    func testApplyThemeToAHostTabSavesTheHost() async throws {
+    func testApplyThemeToAHostTabSavesTheHostAfterAShortDelay() async throws {
+        manager.themeSaveDelay = .milliseconds(20)
         let saved = host("Web")
         let tab = try manager.open(hostID: saved.id)
         manager.applyTheme("dracula", tabID: tab.id)
-        XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.themeID, "dracula")
+        // The tab (and the panel) show it at once; the host is saved a moment later.
+        XCTAssertEqual(manager.themeChoice(tabID: tab.id), "dracula")
+        XCTAssertEqual(manager.pendingTheme(forHost: saved.id), PendingThemeChoice(themeID: "dracula"))
+        XCTAssertNil(vault.get(SavedHost.self, id: saved.id)?.themeID)
+        await waitUntil("saved") { self.vault.get(SavedHost.self, id: saved.id)?.themeID == "dracula" }
+        XCTAssertNil(manager.pendingTheme(forHost: saved.id))
         XCTAssertNil(tab.themeOverrideID)
         XCTAssertEqual(manager.themeChoice(tabID: tab.id), "dracula")
-        manager.applyTheme(nil, tabID: tab.id)
+    }
+
+    func testRapidThemeClicksSaveOnlyTheLast() async throws {
+        manager.themeSaveDelay = .milliseconds(60)
+        let saved = host("Web")
+        let tab = try manager.open(hostID: saved.id)
+        manager.applyTheme("dracula", tabID: tab.id)
+        manager.applyTheme("nord", tabID: tab.id)
+        manager.applyTheme("solarized-dark", tabID: tab.id)
+        XCTAssertEqual(manager.themeChoice(tabID: tab.id), "solarized-dark")
         XCTAssertNil(vault.get(SavedHost.self, id: saved.id)?.themeID)
+        await waitUntil("saved") { self.manager.pendingTheme(forHost: saved.id) == nil }
+        XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.themeID, "solarized-dark")
+        try? await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.themeID, "solarized-dark")
+    }
+
+    func testChoosingDefaultForAHostIsPendingThenSaved() async throws {
+        manager.themeSaveDelay = .milliseconds(20)
+        let saved = host("Web", themeID: "dracula")
+        let tab = try manager.open(hostID: saved.id)
+        manager.applyTheme(nil, tabID: tab.id)
+        XCTAssertEqual(manager.pendingTheme(forHost: saved.id), PendingThemeChoice(themeID: nil))
         XCTAssertNil(manager.themeChoice(tabID: tab.id))
+        await waitUntil("saved") { self.vault.get(SavedHost.self, id: saved.id)?.themeID == nil }
+    }
+
+    func testFlushPendingThemeSavesSavesAtOnce() async throws {
+        manager.themeSaveDelay = .seconds(60)
+        let saved = host("Web")
+        let tab = try manager.open(hostID: saved.id)
+        manager.applyTheme("dracula", tabID: tab.id)
+        manager.flushPendingThemeSaves()
+        XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.themeID, "dracula")
+        XCTAssertNil(manager.pendingTheme(forHost: saved.id))
+    }
+
+    func testCloseAllSavesAPendingTheme() async throws {
+        manager.themeSaveDelay = .seconds(60)
+        let saved = host("Web")
+        let tab = try manager.open(hostID: saved.id)
+        manager.applyTheme("dracula", tabID: tab.id)
+        await manager.closeAll()
+        XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.themeID, "dracula")
     }
 
     func testApplyThemeToAQuickConnectTabSetsOnlyItsOverride() async {
@@ -291,10 +345,15 @@ final class SessionManagerTabsTests: XCTestCase {
     }
 
     func testApplyingTheSameThemeDoesNotResaveTheHost() async throws {
+        manager.themeSaveDelay = .milliseconds(10)
         let saved = host("Web", themeID: "dracula")
         let tab = try manager.open(hostID: saved.id)
+        // Let the OS probe after connecting save its badge first.
+        await waitUntil("connected") { tab.state == .connected }
+        try? await Task.sleep(for: .milliseconds(100))
         let before = vault.get(SavedHost.self, id: saved.id)?.updatedAt
         manager.applyTheme("dracula", tabID: tab.id)
+        await waitUntil("committed") { self.manager.pendingTheme(forHost: saved.id) == nil }
         XCTAssertEqual(vault.get(SavedHost.self, id: saved.id)?.updatedAt, before)
     }
 
@@ -307,45 +366,29 @@ final class SessionManagerTabsTests: XCTestCase {
         XCTAssertEqual(manager.themeChoice(tabID: tab.id), "dracula")
     }
 
+    /// The panel's ring and the drawing agree: an override wins, as it does when drawing.
+    func testOverrideWinsWhenTheHostComesBack() async throws {
+        var saved = host("Web", themeID: "nord")
+        let tab = try manager.open(hostID: saved.id)
+        try await vault.delete(SavedHost.self, id: saved.id)
+        manager.applyTheme("dracula", tabID: tab.id)
+        saved.deleted = false
+        vault.saveNow(saved) // restored, e.g. by sync
+        XCTAssertNotNil(vault.get(SavedHost.self, id: saved.id))
+        XCTAssertEqual(manager.themeChoice(tabID: tab.id), "dracula")
+        // Choosing again from the panel goes to the host and drops the override.
+        manager.themeSaveDelay = .milliseconds(10)
+        manager.applyTheme("nord", tabID: tab.id)
+        XCTAssertNil(tab.themeOverrideID)
+        XCTAssertEqual(manager.themeChoice(tabID: tab.id), "nord")
+    }
+
     // MARK: Windows
 
-    func testTabsOpenInTheActiveWindow() async {
+    func testTabsOpenInTheMainWindow() async {
         let a = quick("a")
-        let window = UUID()
-        manager.activeWindowID = window
-        let b = quick("b")
         XCTAssertNil(a.windowID)
-        XCTAssertEqual(b.windowID, window)
         XCTAssertEqual(order(nil), [a.id])
-        XCTAssertEqual(order(window), [b.id])
-        XCTAssertEqual(manager.tabs.count, 2)
-    }
-
-    func testSelectionIsPerWindow() async {
-        let a = quick("a")
-        let window = UUID()
-        manager.activeWindowID = window
-        let b = quick("b")
-        XCTAssertEqual(manager.selectedTabID, b.id)
-        XCTAssertEqual(manager.selectedTabID(inWindow: nil), a.id)
-        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
-        manager.activeWindowID = nil
-        XCTAssertEqual(manager.selectedTabID, a.id)
-        manager.selectedTabID = nil
-        XCTAssertNil(manager.selectedTabID(inWindow: nil))
-        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
-    }
-
-    func testSelectingATabOfAnotherWindowIsIgnored() async {
-        let a = quick("a")
-        let window = UUID()
-        manager.activeWindowID = window
-        let b = quick("b")
-        manager.select(tabID: a.id, inWindow: window)
-        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
-        manager.activeWindowID = nil
-        manager.selectedTabID = b.id
-        XCTAssertEqual(manager.selectedTabID, a.id)
     }
 
     func testDuplicateInNewWindowOpensThereAndSelectsIt() async {
@@ -357,16 +400,38 @@ final class SessionManagerTabsTests: XCTestCase {
         XCTAssertEqual(order(nil), [a.id])
         XCTAssertEqual(manager.selectedTabID(inWindow: window), copy?.id)
         XCTAssertEqual(manager.selectedTabID(inWindow: nil), a.id)
+        XCTAssertEqual(manager.selectedTabID, a.id) // the main window's
         await waitUntil("two sessions") { self.factory.sessions.count == 2 }
     }
 
-    func testClosingATabSelectsANeighbourInItsOwnWindow() async {
+    func testDuplicateInAWindowStaysInThatWindow() async throws {
         let a = quick("a")
         let window = UUID()
-        manager.activeWindowID = window
-        let b = quick("b")
-        let c = quick("c")
-        manager.activeWindowID = nil
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        let c = try XCTUnwrap(manager.duplicate(tabID: b.id))
+        XCTAssertEqual(c.windowID, window)
+        XCTAssertEqual(order(window), [b.id, c.id])
+        XCTAssertEqual(manager.selectedTabID(inWindow: window), c.id)
+        XCTAssertEqual(manager.selectedTabID(inWindow: nil), a.id)
+    }
+
+    func testSelectingATabOfAnotherWindowIsIgnored() async throws {
+        let a = quick("a")
+        let window = UUID()
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        manager.select(tabID: a.id, inWindow: window)
+        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
+        manager.selectedTabID = b.id
+        XCTAssertEqual(manager.selectedTabID, a.id)
+        manager.select(tabID: nil, inWindow: nil)
+        XCTAssertNil(manager.selectedTabID)
+    }
+
+    func testClosingATabSelectsANeighbourInItsOwnWindow() async throws {
+        let a = quick("a")
+        let window = UUID()
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        let c = try XCTUnwrap(manager.duplicate(tabID: b.id))
         let d = quick("d")
         // global order a b c d; main window: a d; other: b c
         manager.select(tabID: b.id, inWindow: window)
@@ -380,27 +445,36 @@ final class SessionManagerTabsTests: XCTestCase {
         XCTAssertNil(manager.selectedTabID(inWindow: window))
     }
 
-    func testCloseWindowClosesItsTabsOnly() async {
+    func testCloseWindowClosesItsTabsOnly() async throws {
         let a = hostTab("a")
         let window = UUID()
-        manager.activeWindowID = window
-        _ = hostTab("b")
-        _ = hostTab("c")
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        _ = manager.duplicate(tabID: b.id)
         await waitUntil("sessions") { self.factory.sessions.count == 3 }
         manager.closeWindow(window)
         XCTAssertEqual(manager.tabs.map(\.id), [a.id])
-        XCTAssertNil(manager.activeWindowID)
         XCTAssertEqual(manager.selectedTabID, a.id)
         await waitUntil("closed") { self.factory.sessions[1].closed && self.factory.sessions[2].closed }
         XCTAssertFalse(factory.sessions[0].closed)
     }
 
-    func testMoveTabIsWithinTheTabsWindow() async {
+    func testClosingTheMainWindowClosesItsTabsOnly() async throws {
+        let a = hostTab("a")
+        let window = UUID()
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        await waitUntil("sessions") { self.factory.sessions.count == 2 }
+        manager.closeWindow(nil)
+        XCTAssertEqual(manager.tabs.map(\.id), [b.id])
+        XCTAssertNil(manager.selectedTabID)
+        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
+        await waitUntil("closed") { self.factory.sessions[0].closed }
+        XCTAssertFalse(factory.sessions[1].closed)
+    }
+
+    func testMoveTabIsWithinTheTabsWindow() async throws {
         let a = quick("a")
         let window = UUID()
-        manager.activeWindowID = window
-        let b = quick("b")
-        manager.activeWindowID = nil
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
         let c = quick("c")
         let d = quick("d")
         // main window: a c d
@@ -410,27 +484,43 @@ final class SessionManagerTabsTests: XCTestCase {
         XCTAssertEqual(manager.tabs.count, 4)
     }
 
-    func testNextTabStaysInTheActiveWindow() async {
+    func testNextTabStaysInItsWindow() async throws {
         let a = quick("a")
         let window = UUID()
-        manager.activeWindowID = window
-        _ = quick("b")
-        manager.activeWindowID = nil
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
         let c = quick("c")
         manager.selectedTabID = a.id
-        manager.selectNextTab()
+        manager.selectNextTab(inWindow: nil)
         XCTAssertEqual(manager.selectedTabID, c.id)
-        manager.selectNextTab()
+        manager.selectNextTab(inWindow: nil)
+        XCTAssertEqual(manager.selectedTabID, a.id)
+        manager.selectPreviousTab(inWindow: window)
+        XCTAssertEqual(manager.selectedTabID(inWindow: window), b.id)
         XCTAssertEqual(manager.selectedTabID, a.id)
     }
 
-    func testCloseAllClearsEverySelection() async {
-        _ = quick("a")
+    func testCloseAllClearsEverySelection() async throws {
+        let a = quick("a")
         let window = UUID()
-        manager.activeWindowID = window
-        _ = quick("b")
+        _ = manager.duplicate(tabID: a.id, inWindow: window)
         await manager.closeAll()
         XCTAssertNil(manager.selectedTabID(inWindow: nil))
         XCTAssertNil(manager.selectedTabID(inWindow: window))
+    }
+
+    func testReconnectWaitingIsCountedAndRetriedPerWindow() async throws {
+        let a = hostTab("a")
+        let window = UUID()
+        let b = try XCTUnwrap(manager.duplicate(tabID: a.id, inWindow: window))
+        await waitUntil("connected") { a.state == .connected && b.state == .connected }
+        factory.sessions[0].drop()
+        factory.sessions[1].drop()
+        await waitUntil("waiting") { self.manager.waitingForReconnectCount == 2 }
+        XCTAssertEqual(manager.waitingForReconnectCount(inWindow: nil), 1)
+        XCTAssertEqual(manager.waitingForReconnectCount(inWindow: window), 1)
+        manager.reconnectWaitingNow(inWindow: window)
+        await waitUntil("b reconnected") { b.state == .connected && b.autoReconnect == nil }
+        guard case .waiting = a.autoReconnect else { return XCTFail("a: \(String(describing: a.autoReconnect))") }
+        manager.stopAutoReconnect(tabID: a.id)
     }
 }

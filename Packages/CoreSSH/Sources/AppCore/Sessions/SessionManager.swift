@@ -38,7 +38,8 @@ public final class TerminalTab: Identifiable {
     /// A theme for this tab only (quick connect, or a host that is gone); nil = resolved as usual.
     /// Never saved.
     public fileprivate(set) var themeOverrideID: String?
-    /// The window the tab belongs to; nil = the main window. See `SessionManager.activeWindowID`.
+    /// The window the tab belongs to; nil = the main window. New connections open in the main window;
+    /// "Duplicate in New Window" and duplicates of its tabs open in another.
     public fileprivate(set) var windowID: UUID?
 
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
@@ -184,16 +185,19 @@ fileprivate final class SessionAttempt {
 public final class SessionManager {
     /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
     public private(set) var tabs: [TerminalTab] = []
-    /// The selected tab of the active window; nil = Vaults. Setting a tab of another window is ignored.
+    /// The main window's selected tab; nil = Vaults. Setting a tab of another window is ignored.
+    /// Other windows: `selectedTabID(inWindow:)` / `select(tabID:inWindow:)`.
     public var selectedTabID: UUID? {
-        get { selectedTabID(inWindow: activeWindowID) }
-        set { select(tabID: newValue, inWindow: activeWindowID) }
+        get { selectedTabID(inWindow: nil) }
+        set { select(tabID: newValue, inWindow: nil) }
     }
-    /// The window the user works in (the key window); nil = the main window. New tabs open in it and
-    /// `selectedTabID` is its selection.
-    public var activeWindowID: UUID?
-    /// Each window's selected tab; a window without an entry shows Vaults.
+    /// Each window's selected tab (nil key = the main window); a window without an entry shows Vaults.
     private var selections: [UUID?: UUID] = [:]
+    /// Theme choices for saved hosts waiting for their debounced save (`applyTheme`), by host id.
+    public private(set) var pendingHostThemes: [UUID: PendingThemeChoice] = [:]
+    @ObservationIgnored private var themeSaveTasks: [UUID: Task<Void, Never>] = [:]
+    /// How long a host theme choice waits for another click before it is saved.
+    @ObservationIgnored var themeSaveDelay: Duration = .milliseconds(300)
 
     /// How long `closeAll()` waits for sessions to end.
     @ObservationIgnored var closeAllTimeout: Duration = .seconds(3)
@@ -259,7 +263,6 @@ public final class SessionManager {
     }
 
     private func add(_ tab: TerminalTab, plan: ConnectionPlan) -> TerminalTab {
-        tab.windowID = activeWindowID
         tabs.append(tab)
         selectedTabID = tab.id
         connect(tab, plan: plan)
@@ -289,6 +292,7 @@ public final class SessionManager {
     /// Closes every session concurrently and returns when all have ended, or after 3 s.
     /// Every tab is removed. Used at quit.
     public func closeAll() async {
+        flushPendingThemeSaves()
         let open = tabs
         tabs = []
         selections = [:]
@@ -356,22 +360,22 @@ public final class SessionManager {
         tabs = tabs.map { $0.windowID == tab.windowID ? reordered.next()! : $0 }
     }
 
-    /// Selects the next tab of the active window, wrapping; from Vaults, the first.
-    public func selectNextTab() { selectAdjacentTab(by: 1) }
+    /// Selects the window's next tab, wrapping; from Vaults, the first.
+    public func selectNextTab(inWindow windowID: UUID?) { selectAdjacentTab(by: 1, inWindow: windowID) }
 
-    /// Selects the previous tab of the active window, wrapping; from Vaults, the last.
-    public func selectPreviousTab() { selectAdjacentTab(by: -1) }
+    /// Selects the window's previous tab, wrapping; from Vaults, the last.
+    public func selectPreviousTab(inWindow windowID: UUID?) { selectAdjacentTab(by: -1, inWindow: windowID) }
 
-    private func selectAdjacentTab(by step: Int) {
-        let windowTabs = tabs(inWindow: activeWindowID)
+    private func selectAdjacentTab(by step: Int, inWindow windowID: UUID?) {
+        let windowTabs = tabs(inWindow: windowID)
         guard !windowTabs.isEmpty else { return }
         let next: Int
-        if let current = selectedTabID, let index = windowTabs.firstIndex(where: { $0.id == current }) {
+        if let current = selections[windowID], let index = windowTabs.firstIndex(where: { $0.id == current }) {
             next = (index + step + windowTabs.count) % windowTabs.count
         } else {
             next = step > 0 ? 0 : windowTabs.count - 1
         }
-        selections[activeWindowID] = windowTabs[next].id
+        selections[windowID] = windowTabs[next].id
     }
 
     /// Renames the tab only (the host keeps its label); a blank name goes back to the host's label.
@@ -407,32 +411,80 @@ public final class SessionManager {
         return copy
     }
 
-    /// Closes every tab of the window (its window was closed). The main window (nil) is not affected.
-    public func closeWindow(_ windowID: UUID) {
+    /// Closes every tab of the window (nil = the main window): its window was closed. Other windows'
+    /// tabs keep running.
+    public func closeWindow(_ windowID: UUID?) {
         for tab in tabs(inWindow: windowID) { close(tabID: tab.id) }
         selections[windowID] = nil
-        if activeWindowID == windowID { activeWindowID = nil }
     }
 
-    /// The theme chosen for the tab: its saved host's `themeID`, else its override; nil = Default.
+    /// Tabs of the window counting down to a try or trying now.
+    public func waitingForReconnectCount(inWindow windowID: UUID?) -> Int {
+        tabs(inWindow: windowID).filter { Self.isWaitingForReconnect($0) }.count
+    }
+
+    /// Every tab of the window that is counting down starts its try now.
+    public func reconnectWaitingNow(inWindow windowID: UUID?) {
+        for tab in tabs(inWindow: windowID) {
+            if case .waiting(let attempt, _, _) = tab.autoReconnect { startTry(tab, attempt: attempt) }
+        }
+    }
+
+    private static func isWaitingForReconnect(_ tab: TerminalTab) -> Bool {
+        switch tab.autoReconnect {
+        case .waiting, .reconnecting: true
+        case .gaveUp, nil: false
+        }
+    }
+
+    /// The theme the tab is drawn with, as chosen (nil = Default), the one rule the panel and the
+    /// terminal both follow: the tab's override (quick connect, or set while its host was gone) wins;
+    /// else its saved host's choice, a pending (not yet saved) one first.
     public func themeChoice(tabID: UUID) -> String? {
         guard let tab = tab(tabID) else { return nil }
-        if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { return host.themeID }
-        return tab.themeOverrideID
+        if let overrideID = tab.themeOverrideID { return overrideID }
+        guard let hostID = tab.hostID else { return nil }
+        if let pending = pendingHostThemes[hostID] { return pending.themeID }
+        return vault.get(SavedHost.self, id: hostID)?.themeID
     }
 
-    /// Applies a theme from the tab's theme panel (nil = Default). A saved host's tab saves it to the host
-    /// (all its tabs follow; it syncs); other tabs (quick connect, a deleted host) get a per-tab override.
+    /// A host's theme choice that is shown already but not saved yet; nil = nothing pending.
+    public func pendingTheme(forHost hostID: UUID) -> PendingThemeChoice? {
+        pendingHostThemes[hostID]
+    }
+
+    /// Applies a theme from the tab's theme panel (nil = Default). A saved host's tab shows it at once in
+    /// all the host's tabs (`pendingTheme(forHost:)`) and saves it to the host (it syncs) once no other
+    /// click came for `themeSaveDelay`, so browsing the gallery writes once; the tab's override is
+    /// dropped. Other tabs (quick connect, a deleted host) get a per-tab override.
     public func applyTheme(_ themeID: String?, tabID: UUID) {
         guard let tab = tab(tabID) else { return }
-        if let hostID = tab.hostID, var host = vault.get(SavedHost.self, id: hostID) {
-            tab.themeOverrideID = nil
-            guard host.themeID != themeID else { return }
-            host.themeID = themeID
-            vault.saveNow(host)
-        } else {
+        guard let hostID = tab.hostID, vault.get(SavedHost.self, id: hostID) != nil else {
             tab.themeOverrideID = themeID
+            return
         }
+        tab.themeOverrideID = nil
+        pendingHostThemes[hostID] = PendingThemeChoice(themeID: themeID)
+        themeSaveTasks[hostID]?.cancel()
+        let delay = themeSaveDelay
+        themeSaveTasks[hostID] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.commitPendingTheme(hostID: hostID)
+        }
+    }
+
+    /// Saves every pending host theme now (the panel closed, or the app quits).
+    public func flushPendingThemeSaves() {
+        for hostID in Array(pendingHostThemes.keys) { commitPendingTheme(hostID: hostID) }
+    }
+
+    private func commitPendingTheme(hostID: UUID) {
+        themeSaveTasks.removeValue(forKey: hostID)?.cancel()
+        guard let pending = pendingHostThemes.removeValue(forKey: hostID),
+              var host = vault.get(SavedHost.self, id: hostID), host.themeID != pending.themeID else { return }
+        host.themeID = pending.themeID
+        vault.saveNow(host)
     }
 
     /// After `tab` was removed from `tabs` at `index`: if it was its window's selection, selects the
@@ -446,7 +498,7 @@ public final class SessionManager {
 
     // MARK: Auto-reconnect
 
-    /// Tabs counting down to a try or trying now (`.waiting` or `.reconnecting`).
+    /// Tabs (of every window) counting down to a try or trying now (`.waiting` or `.reconnecting`).
     public var waitingForReconnectCount: Int {
         tabs.filter { tab in
             switch tab.autoReconnect {
@@ -991,5 +1043,14 @@ private final class ResumeOnce: Sendable {
 
     func resume() {
         continuation.withLock { $0.take() }?.resume()
+    }
+}
+
+/// A theme chosen for a saved host that is not saved yet (nil = Default).
+public struct PendingThemeChoice: Equatable, Sendable {
+    public let themeID: String?
+
+    public init(themeID: String?) {
+        self.themeID = themeID
     }
 }
