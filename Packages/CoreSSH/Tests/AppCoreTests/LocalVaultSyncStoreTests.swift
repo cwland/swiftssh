@@ -16,6 +16,35 @@ final class LocalVaultSyncStoreTests: XCTestCase {
         try PlainRecord(model, deviceID: device)
     }
 
+    func testMergeJoinMarkerPersistsIsReusedAndClearedByThePlan() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await open(p)
+        let a = try await vault.save(Host(label: "a", address: "a.lan"))
+        let first = try await vault.syncBeginMergeJoin()
+        XCTAssertEqual(first, [a.id])
+        let pulled = try remote(Host(label: "v", address: "v.lan"))
+        try await LocalVaultSyncStore(vault: vault).apply([pulled])
+
+        let reopened = try await open(p)
+        let again = try await reopened.syncBeginMergeJoin()
+        XCTAssertEqual(again, [a.id], "a retry after a relaunch reuses the pre-join ids")
+        try await reopened.applyJoinPlan(JoinDeduplicator.Plan(removedIDs: [], idMap: [:], updated: []))
+        let marker = await p.contents?.mergeJoinLocalIDs
+        XCTAssertNil(marker)
+        let fresh = try await reopened.syncBeginMergeJoin()
+        XCTAssertEqual(fresh, [a.id, pulled.id])
+    }
+
+    func testVaultFileWithoutMergeJoinMarkerStillDecodes() async throws {
+        let old = VaultFileContents(deviceID: "mac-a")
+        var json = try JSONSerialization.jsonObject(with: CoreJSON.encoder.encode(old)) as! [String: Any]
+        json["mergeJoinLocalIDs"] = nil
+        let decoded = try CoreJSON.decoder.decode(VaultFileContents.self,
+                                                  from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(decoded.mergeJoinLocalIDs)
+        XCTAssertEqual(decoded.deviceID, "mac-a")
+    }
+
     func testDirtyRecordsAreTheLocalChangesInOrder() async throws {
         let vault = try await open()
         let store = LocalVaultSyncStore(vault: vault)

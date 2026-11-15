@@ -130,6 +130,22 @@ final class SyncEngineTests: XCTestCase {
         }
     }
 
+    func testLockForgetsTheVaultKey() async throws {
+        let transport = InMemoryTransport()
+        let a = device("mac-a", transport)
+        _ = try await a.engine.createVault(passphrase: passphrase)
+        try await a.store.insert(host("nas"))
+        await a.engine.lock()
+        do {
+            _ = try await a.engine.sync()
+            XCTFail("expected .locked")
+        } catch {
+            XCTAssertEqual(error as? SyncError, .locked)
+        }
+        let upserts = await transport.upsertCallCount
+        XCTAssertEqual(upserts, 0)
+    }
+
     func testJoinReplaceDiscardsLocalData() async throws {
         let transport = InMemoryTransport()
         let a = device("mac-a", transport)

@@ -175,6 +175,11 @@ public actor SyncEngine {
         vaultKey = key
     }
 
+    /// Forgets the vault key (e.g. after a join that failed half-way); `sync()` then throws `.locked`.
+    public func lock() {
+        vaultKey = nil
+    }
+
     /// Re-wraps the vault key under `new` with a fresh salt. The vault key itself, and so every
     /// stored record, is unchanged.
     public func changePassphrase(old: String, new: String) async throws {

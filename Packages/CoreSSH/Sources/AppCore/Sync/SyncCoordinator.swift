@@ -143,40 +143,59 @@ public final class SyncCoordinator {
     }
 
     /// Creates the vault, saves its key and runs the first sync (uploading this Mac's data).
+    /// When another Mac created a vault meanwhile, throws `.vaultAlreadyExists` and the phase
+    /// becomes `.needsVault(exists: true)` (join it instead).
     public func createVault(passphrase: String) async throws(SyncSetupError) {
         if Self.passphraseProblem(passphrase) != nil { throw .weakPassphrase }
         let engine = try requireEngine()
         let key: VaultKey
         do {
             key = try await engine.createVault(passphrase: passphrase)
+            try saveVaultKey(key)
         } catch {
-            throw SyncSetupError(error)
+            let setupError = SyncSetupError(error)
+            await engine.lock()
+            unlocked = false
+            pendingUnlockKey = nil
+            if setupError == .vaultAlreadyExists { phase = .needsVault(exists: true) }
+            throw setupError
         }
-        try saveVaultKey(key)
         await beginSyncing()
     }
 
     /// Joins the server's vault, saves its key and runs the first sync. `.merge` pulls the vault
     /// first and drops local hosts, identities and keys that match vault ones (`JoinDeduplicator`),
     /// re-pointing references; `.replace` discards this Mac's data.
+    ///
+    /// A merge join remembers (with the vault) which records were local before it started, so a
+    /// retry after a failure or a relaunch still de-duplicates against everything pulled. If the
+    /// join fails, nothing syncs with the new key: the engine is locked again and the phase is
+    /// `.needsVault(exists: true)` (`exists: false` when the server has no vault).
     public func joinVault(passphrase: String, mode: JoinMode) async throws(SyncSetupError) {
         let engine = try requireEngine()
         stopLoop()
-        let localIDs = Set(vault.allRecords.map(\.id))
+        unlocked = false
+        pendingUnlockKey = nil
         let key: VaultKey
         do {
             key = try await engine.join(passphrase: passphrase, mode: mode)
             if case .merge = mode {
+                let localIDs = try await vault.syncBeginMergeJoin()
                 _ = try await engine.pull()
                 let all = vault.allRecords
                 let plan = JoinDeduplicator.plan(local: all.filter { localIDs.contains($0.id) },
                                                  vault: all.filter { !localIDs.contains($0.id) })
                 try await vault.applyJoinPlan(plan)
             }
+            try saveVaultKey(key)
         } catch {
-            throw SyncSetupError(error)
+            let setupError = SyncSetupError(error)
+            await engine.lock()
+            unlocked = false
+            pendingUnlockKey = nil
+            phase = .needsVault(exists: setupError != .noVault)
+            throw setupError
         }
-        try saveVaultKey(key)
         await beginSyncing()
     }
 
