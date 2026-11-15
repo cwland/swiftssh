@@ -326,11 +326,10 @@ private struct HostDetailsContent: View {
     private var startupSnippetField: some View {
         let candidates = details.startupCandidates()
         let selection = details.startupSnippetSelection
-        let unavailableID: UUID? = if case .snippet(let id) = selection, !candidates.contains(where: { $0.id == id }) {
-            id
-        } else {
-            nil
-        }
+        let unavailableID: UUID? = {
+            guard case .snippet(let id) = selection, !candidates.contains(where: { $0.id == id }) else { return nil }
+            return id
+        }()
         let hasHidden = details.hiddenStartupSnippetCount > 0
         return FieldColumn(title: "Startup snippet") {
             Picker("Startup snippet", selection: $details.startupSnippetSelection) {
