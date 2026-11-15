@@ -3,9 +3,10 @@ import AppCore
 import CoreModels
 import SSHCore
 
-/// A terminal tab: the disconnected banner (when the session ended), the terminal, and sheets for
-/// the host key and password prompts. The tab's theme and text size follow the host's and its
-/// groups' themes, Settings → Terminal and the system appearance live (see `resolvedAppearance`).
+/// A terminal tab: the disconnected banner (when the session ended), the terminal (with the Change
+/// Theme or Snippets panel over its right edge), and sheets for the host key and password prompts.
+/// The tab's theme and text size follow the host's and its groups' themes, Settings → Terminal and
+/// the system appearance live (see `resolvedAppearance`).
 struct TerminalTabView: View {
     let tab: TerminalTab
     let sessions: SessionManager
@@ -14,12 +15,15 @@ struct TerminalTabView: View {
     let terminalSettings: TerminalSettings
     /// Closes this tab, the same as Cmd+W.
     let closeTab: () -> Void
-    /// The Change Theme panel is open over the terminal's right edge.
-    var showsThemePanel = false
-    var closeThemePanel: () -> Void = {}
+    /// The side panel open over the terminal's right edge (Change Theme or Snippets), at most one.
+    var sidePanel: TerminalSidePanel.Kind?
+    var closeSidePanel: () -> Void = {}
     /// Opens this tab's host in Host Details; nil hides "Edit host" on the connection screen
     /// (windows without Vaults).
     var editHost: (() -> Void)?
+    /// Opens a snippet in the Snippets screen (Edit, New Snippet in the snippets panel); nil hides
+    /// both (windows without Vaults).
+    var editSnippet: ((UUID) -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -65,14 +69,23 @@ struct TerminalTabView: View {
                 .background(appearance.theme.background.swiftUIColor)
                 // Over the terminal only, below the disconnected banner (its Reconnect stays usable).
                 .overlay(alignment: .trailing) {
-                    if showsThemePanel {
+                    switch sidePanel {
+                    case .theme:
                         ThemeSidePanel(tab: tab, sessions: sessions, vault: vault,
-                                       terminalSettings: terminalSettings, close: closeThemePanel)
+                                       terminalSettings: terminalSettings, close: closeSidePanel)
                             .transition(.move(edge: .trailing))
+                    case .snippets:
+                        SnippetsSidePanel(tab: tab, sessions: sessions, vault: vault,
+                                          editSnippet: editSnippet,
+                                          focusTerminal: { store.focus(tabID: tab.id) },
+                                          close: closeSidePanel)
+                            .transition(.move(edge: .trailing))
+                    case nil:
+                        EmptyView()
                     }
                 }
                 .clipped()
-                .animation(.easeOut(duration: 0.2), value: showsThemePanel)
+                .animation(.easeOut(duration: 0.2), value: sidePanel)
         }
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
@@ -164,6 +177,36 @@ struct TerminalTabView: View {
                 sessions.cancelPasswordPrompt(tabID: tab.id)
             }
         }
+    }
+}
+
+/// A panel over a terminal tab's right edge. One at a time per window: opening Snippets closes
+/// Change Theme and vice versa; switching or closing the tab closes it (`RootView`).
+struct TerminalSidePanel: Equatable {
+    enum Kind: Equatable {
+        case theme
+        case snippets
+    }
+
+    let tabID: UUID
+    let kind: Kind
+}
+
+/// Cmd+. (Session menu): shows or hides the snippets panel of the focused window's selected terminal
+/// tab. Published by every window (`focusedSceneValue`); `toggle` is nil while Vaults is selected.
+struct SnippetsPanelToggle {
+    var isOpen = false
+    var toggle: (@MainActor () -> Void)?
+}
+
+private struct SnippetsPanelToggleKey: FocusedValueKey {
+    typealias Value = SnippetsPanelToggle
+}
+
+extension FocusedValues {
+    var snippetsPanelToggle: SnippetsPanelToggle? {
+        get { self[SnippetsPanelToggleKey.self] }
+        set { self[SnippetsPanelToggleKey.self] = newValue }
     }
 }
 
