@@ -45,7 +45,7 @@ public enum SnippetLibrary {
         e("disk.biggest", "Disk", "Biggest folders", "The largest folders in a directory.", "du -h --max-depth=1 {{path:/var}} 2>/dev/null | sort -rh | head -n 20"),
         e("disk.bigfiles", "Disk", "Files over a size", "Files larger than a size under a directory.", "find {{path:/}} -xdev -type f -size +{{size:500M}} -exec ls -lh {} + 2>/dev/null | sort -k5 -rh | head -n 20"),
         e("disk.blocks", "Disk", "Disks and partitions", "Block devices, sizes and mount points.", "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT"),
-        e("disk.mounts", "Disk", "Mounted filesystems", "What is mounted where.", "findmnt --real"),
+        e("disk.mounts", "Disk", "Mounted filesystems", "What is mounted where.", "findmnt -D"),
 
         // Processes
         e("processes.topcpu", "Processes", "Top CPU processes", "The 15 processes using the most CPU.", "ps aux --sort=-%cpu | head -n 16"),
@@ -60,11 +60,11 @@ public enum SnippetLibrary {
         e("network.routes", "Network", "Routes", "The routing table and default gateway.", "ip route"),
         e("network.listening", "Network", "Listening ports", "TCP and UDP ports open for connections, with their process.", "sudo ss -tulpn"),
         e("network.connections", "Network", "Open connections", "Established TCP connections.", "ss -tnp state established"),
-        e("network.publicip", "Network", "Public IP", "The address this server reaches the internet from.", "curl -s https://ifconfig.me; echo"),
+        e("network.publicip", "Network", "Public IP", "The address this server reaches the internet from (asks ifconfig.me).", "curl -s https://ifconfig.me; echo"),
         e("network.dns", "Network", "DNS lookup", "Looks up a name's addresses.", "getent ahosts {{name:example.com}}"),
         e("network.ping", "Network", "Ping a host", "Five pings to a host.", "ping -c 5 {{host:1.1.1.1}}"),
         e("network.port", "Network", "Test a port", "Checks whether a TCP port answers.", "nc -zv -w 3 {{host}} {{port}}"),
-        e("network.firewall", "Network", "Firewall rules", "ufw status if present, otherwise nftables rules.", "command -v ufw >/dev/null && sudo ufw status verbose || sudo nft list ruleset"),
+        e("network.firewall", "Network", "Firewall rules", "ufw status if present, otherwise nftables rules.", "if command -v ufw >/dev/null; then sudo ufw status verbose; else sudo nft list ruleset; fi"),
 
         // Services
         e("services.failed", "Services", "Failed services", "systemd units that failed.", "systemctl --failed"),
@@ -79,7 +79,7 @@ public enum SnippetLibrary {
         e("logs.errors", "Logs", "Errors since boot", "Error-level messages since the last boot.", "journalctl -p err -b --no-pager | tail -n 50"),
         e("logs.recent", "Logs", "Last hour of logs", "Everything logged in the last hour.", "journalctl --since '1 hour ago' --no-pager"),
         e("logs.kernel", "Logs", "Kernel messages", "The latest kernel messages (hardware, OOM kills).", "sudo dmesg -T | tail -n 50"),
-        e("logs.auth", "Logs", "Login attempts", "Recent SSH logins and failures.", "journalctl -u ssh -u sshd --since today --no-pager | grep -Ei 'accepted|failed' | tail -n 40"),
+        e("logs.auth", "Logs", "Login attempts", "Recent SSH logins and failures.", "sudo journalctl -u ssh -u sshd --since today --no-pager | grep -Ei 'accepted|failed' | tail -n 40"),
         e("logs.size", "Logs", "Journal disk use", "How much space the systemd journal takes.", "journalctl --disk-usage"),
 
         // Docker
@@ -89,8 +89,8 @@ public enum SnippetLibrary {
         e("docker.logs", "Docker", "Follow container logs", "The last 100 lines of a container's log, then new ones.", "docker logs -f --tail 100 {{container}}"),
         e("docker.shell", "Docker", "Shell in a container", "Opens a shell inside a running container.", "docker exec -it {{container}} sh"),
         e("docker.restart", "Docker", "Restart a container", "Restarts one container.", "docker restart {{container}}"),
-        e("docker.composeup", "Docker", "Compose up", "Starts or updates a Compose project in the background.", "cd {{folder}} && docker compose up -d"),
-        e("docker.composepull", "Docker", "Compose pull and update", "Pulls newer images for a Compose project and recreates what changed.", "cd {{folder}} && docker compose pull && docker compose up -d"),
+        e("docker.composeup", "Docker", "Compose up", "Starts or updates a Compose project in the background.", "docker compose --project-directory {{folder}} up -d"),
+        e("docker.composepull", "Docker", "Compose pull and update", "Pulls newer images for a Compose project and recreates what changed.", "docker compose --project-directory {{folder}} pull && docker compose --project-directory {{folder}} up -d"),
         e("docker.disk", "Docker", "Docker disk use", "Space used by images, containers and volumes.", "docker system df"),
         e("docker.images", "Docker", "Images", "Local images and their sizes.", "docker images"),
 
@@ -98,7 +98,7 @@ public enum SnippetLibrary {
         e("packages.aptupdates", "Packages", "Available updates (apt)", "Refreshes the package lists and shows what can be upgraded.", "sudo apt update && apt list --upgradable"),
         e("packages.aptupgrade", "Packages", "Install updates (apt)", "Installs all available updates (asks before installing).", "sudo apt update && sudo apt upgrade"),
         e("packages.dnfupdates", "Packages", "Available updates (dnf)", "Shows what can be upgraded on Fedora, RHEL and similar.", "sudo dnf check-update"),
-        e("packages.installed", "Packages", "Is a package installed?", "Whether a package is installed, on apt or rpm systems.", "dpkg -l {{package}} 2>/dev/null || rpm -q {{package}}"),
+        e("packages.installed", "Packages", "Is a package installed?", "Whether a package is installed, on apt or rpm systems.", "dpkg-query -W -f='${Status}\\n' {{package}} 2>/dev/null || rpm -q {{package}}"),
         e("packages.install", "Packages", "Install a package (apt)", "Installs a package (asks before installing).", "sudo apt install {{package}}"),
 
         // Users & Security
@@ -112,10 +112,10 @@ public enum SnippetLibrary {
 
         // Files
         e("files.recent", "Files", "Recently changed files", "Files changed in the last day under a directory.", "find {{path:/etc}} -xdev -type f -mtime -1 2>/dev/null | head -n 50"),
-        e("files.search", "Files", "Search text in files", "Lines containing some text under a directory.", "grep -rn --color=always '{{text}}' {{path:.}} 2>/dev/null | head -n 50"),
+        e("files.search", "Files", "Search text in files", "Lines containing some text (taken literally) under a directory.", "grep -rnF --color=always -e \"{{text}}\" {{path:.}} 2>/dev/null | head -n 50"),
         e("files.tail", "Files", "Follow a file", "A file's last lines, then new ones.", "tail -n 100 -f {{file}}"),
         e("files.permissions", "Files", "Permissions along a path", "Owner and permissions of every folder down to a file.", "namei -l {{path}}"),
-        e("files.archive", "Files", "Archive a folder", "Packs a folder into a dated .tar.gz next to it.", "tar -czf {{folder}}-$(date +%Y%m%d).tar.gz {{folder}}"),
+        e("files.archive", "Files", "Archive a folder", "Packs a folder into a dated .tar.gz in the current folder.", "tar -czf \"$(basename {{folder}})-$(date +%Y%m%d).tar.gz\" -C \"$(dirname {{folder}})\" \"$(basename {{folder}})\""),
     ]
 }
 
@@ -156,9 +156,20 @@ public final class SnippetLibraryViewModel {
         }
     }
 
+    @ObservationIgnored private var cachedScripts: (revision: Int, scripts: Set<String>)?
+
+    /// The scripts of the vault's snippets, worked out once per vault revision (rows ask per entry).
     private var existingScripts: Set<String> {
-        _ = vault.revision
-        return Set(vault.all(Snippet.self).map(\.script))
+        let revision = vault.revision
+        if let cachedScripts, cachedScripts.revision == revision { return cachedScripts.scripts }
+        let scripts = Set(vault.all(Snippet.self).map(\.script))
+        cachedScripts = (revision, scripts)
+        return scripts
+    }
+
+    /// Whether the category has entries (visible ones) that can still be added.
+    public func hasAddable(in category: String) -> Bool {
+        !addable(in: category).isEmpty
     }
 
     public func isAdded(_ entry: SnippetLibrary.Entry) -> Bool {

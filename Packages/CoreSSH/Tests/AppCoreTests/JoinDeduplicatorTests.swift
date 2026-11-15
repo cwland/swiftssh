@@ -97,4 +97,54 @@ final class JoinDeduplicatorTests: XCTestCase {
         XCTAssertEqual(decoded.updatedAt, date)
         XCTAssertEqual(decoded.label, "pi")
     }
+
+    // Fields a newer app version wrote survive the join's rewrites (forward-compatible sync).
+
+    private func withExtra(_ record: PlainRecord) throws -> PlainRecord {
+        var record = record
+        var json = try JSONSerialization.jsonObject(with: record.payload) as! [String: Any]
+        json["futureColor"] = "teal"
+        record.payload = try JSONSerialization.data(withJSONObject: json)
+        return record
+    }
+
+    private func futureColor(_ payload: Data) throws -> String? {
+        (try JSONSerialization.jsonObject(with: payload) as! [String: Any])["futureColor"] as? String
+    }
+
+    func testRestampKeepsUnknownFields() throws {
+        let host = Host(label: "pi", address: "pi.lan")
+        let payload = try JoinDeduplicator.restamp(try withExtra(record(host, device: "d")).payload,
+                                                   type: .host, updatedAt: Date(timeIntervalSince1970: 1_000))
+        XCTAssertEqual(try futureColor(payload), "teal")
+        XCTAssertEqual(try CoreJSON.decoder.decode(Host.self, from: payload).updatedAt, Date(timeIntervalSince1970: 1_000))
+    }
+
+    func testRepointKeepsUnknownFields() throws {
+        let localKey = SSHKey(label: "k", keyType: .ed25519, publicKey: "ssh-ed25519 AAAA k", privateKey: "x")
+        let vaultKey = SSHKey(label: "k", keyType: .ed25519, publicKey: "ssh-ed25519 AAAA k", privateKey: "x")
+        var host = Host(label: "pi", address: "pi.lan")
+        host.sshKeyID = localKey.id
+        let plan = JoinDeduplicator.plan(
+            local: try records([localKey], device: "mini") + [try withExtra(record(host, device: "mini"))],
+            vault: try records([vaultKey], device: "mbp"))
+        let updated = try XCTUnwrap(plan.updated.first { $0.id == host.id })
+        XCTAssertEqual(try updated.decode(Host.self).sshKeyID, vaultKey.id)
+        XCTAssertEqual(try futureColor(updated.payload), "teal")
+    }
+
+    /// The forward-compatible merge treats a model's stored property names as its JSON keys; a model
+    /// with custom CodingKeys would break that (cleared fields would come back). Guarded here.
+    func testEveryModelsJSONKeysAreItsPropertyNames() throws {
+        func check<M: SyncableModel>(_ model: M) throws {
+            let keys = Set((try JSONSerialization.jsonObject(with: CoreJSON.encoder.encode(model)) as! [String: Any]).keys)
+            let labels = Set(Mirror(reflecting: model).children.compactMap(\.label))
+            XCTAssertTrue(keys.isSubset(of: labels), "\(M.self): \(keys.subtracting(labels))")
+        }
+        try check(Host(label: "a", address: "b"))
+        try check(HostGroup(name: "g"))
+        try check(Identity(label: "i", username: "u"))
+        try check(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "x"))
+        try check(Snippet(name: "s", script: "x"))
+    }
 }

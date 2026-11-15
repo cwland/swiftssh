@@ -13,40 +13,59 @@ public enum ShellHistory {
     /// Lines read from the end of each file (keeps the output well under the exec channel's 1 MB cap).
     static let linesPerFile = 3000
 
+    /// The server ran something else than `command` (a shell that refused it, a restricted account).
+    public struct CommandFailed: LocalizedError, Equatable {
+        /// The first line the server printed instead, if any.
+        public let output: String?
+        public var errorDescription: String? {
+            "The server didn\u{2019}t run the history command" + (output.map { ": \($0)" } ?? ".")
+        }
+    }
+
     /// Prints the login shell, then the last lines of every readable history file, each after a marker.
-    /// Read-only: always exits 0.
+    /// Runs under /bin/sh whatever the login shell is (the exec channel uses the login shell, and fish
+    /// or tcsh can't parse sh syntax; `exec /bin/sh -c '…'` parses in all of them). Read-only.
     public static let command: String = {
         let files = [
-            ("bash", "\"$HOME/.bash_history\""),
-            ("zsh", "\"${ZDOTDIR:-$HOME}/.zsh_history\""),
-            ("fish", "\"${XDG_DATA_HOME:-$HOME/.local/share}/fish/fish_history\""),
+            ("bash", "$HOME/.bash_history"),
+            ("zsh", "${ZDOTDIR:-$HOME}/.zsh_history"),
+            ("zsh", "$HOME/.zhistory"),
+            ("zsh", "$HOME/.histfile"),
+            ("fish", "${XDG_DATA_HOME:-$HOME/.local/share}/fish/fish_history"),
+            ("other", "$HISTFILE"),
         ]
-        var parts = ["printf '%s %s\\n' '\(loginShellMarker)' \"$SHELL\""]
+        var parts = ["printf \"%s %s\\n\" \(loginShellMarker) \"$SHELL\""]
         for (shell, path) in files {
-            parts.append("if [ -r \(path) ]; then printf '\\n%s %s\\n' '\(marker)' '\(shell)'; tail -n \(linesPerFile) \(path); fi")
+            parts.append("if [ -n \"\(path)\" ] && [ -f \"\(path)\" ] && [ -r \"\(path)\" ]; then printf \"\\n%s %s\\n\" \(marker) \(shell); tail -n \(linesPerFile) \"\(path)\"; fi")
         }
         parts.append("true")
-        return parts.joined(separator: "; ")
+        return "exec /bin/sh -c '" + parts.joined(separator: "; ") + "'"
     }()
 
     /// The commands in `output` of `command`: the login shell's newest first, then the other shells'
     /// (each newest first); trimmed, empty ones dropped, each command once (at its newest position).
-    public static func parse(_ output: String, limit: Int = 5000) -> [String] {
+    /// Throws `CommandFailed` when the output isn't the command's.
+    public static func parse(_ output: String, limit: Int = 5000) throws -> [String] {
         var loginShell: String?
         var sections: [(shell: String, lines: [Substring])] = []
         for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix(loginShellMarker + " ") {
                 let path = line.dropFirst(loginShellMarker.count + 1)
-                loginShell = path.split(separator: "/").last.map(String.init)
+                loginShell = path.split(separator: "/").last.map(String.init) ?? ""
             } else if line.hasPrefix(marker + " ") {
                 sections.append((String(line.dropFirst(marker.count + 1)), []))
             } else if !sections.isEmpty {
                 sections[sections.count - 1].lines.append(line)
             }
         }
-        if let loginShell, let index = sections.firstIndex(where: { $0.shell == loginShell }) {
-            sections.insert(sections.remove(at: index), at: 0)
+        guard let loginShell else {
+            let first = output.split(whereSeparator: \.isNewline).first
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .flatMap { $0.isEmpty ? nil : String($0.prefix(200)) }
+            throw CommandFailed(output: first)
         }
+        // The login shell's files first (stable otherwise).
+        sections = sections.filter { $0.shell == loginShell } + sections.filter { $0.shell != loginShell }
         var seen = Set<String>()
         var result: [String] = []
         for section in sections {
@@ -54,7 +73,11 @@ public enum ShellHistory {
             switch section.shell {
             case "zsh": commands = zsh(section.lines)
             case "fish": commands = fish(section.lines)
-            default: commands = bash(section.lines)
+            case "bash": commands = bash(section.lines)
+            default:
+                // $HISTFILE: zsh's extended format or plain lines.
+                let isZsh = section.lines.contains { $0.hasPrefix(": ") && $0.contains(";") }
+                commands = isZsh ? zsh(section.lines) : bash(section.lines)
             }
             for command in commands.reversed() {
                 let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -122,12 +145,14 @@ public enum ShellHistory {
 @Observable
 public final class ShellHistoryViewModel {
     public enum State: Equatable {
+        /// Not read yet (the tab wasn't connected when the panel opened).
+        case idle
         case loading
         case loaded
         case failed(String)
     }
 
-    public private(set) var state: State = .loading
+    public private(set) var state: State = .idle
     public var searchText = ""
     private var all: [String] = []
     @ObservationIgnored private let load: @Sendable () async throws -> String
@@ -146,11 +171,15 @@ public final class ShellHistoryViewModel {
         }
     }
 
+    public var isLoading: Bool { state == .loading }
+
+    /// Reads the history again; a call while one is running does nothing.
     public func reload() async {
+        guard state != .loading else { return }
         state = .loading
         do {
             let output = try await load()
-            all = ShellHistory.parse(output)
+            all = try ShellHistory.parse(output)
             state = .loaded
         } catch {
             all = []

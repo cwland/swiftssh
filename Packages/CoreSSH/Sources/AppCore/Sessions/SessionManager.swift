@@ -971,7 +971,6 @@ public final class SessionManager {
         return typed
     }
 
-    /// The tab's session when the tab is connected and it can take input.
     /// Why `runCommand(_:inTab:)` failed before reaching the server.
     public struct TabNotConnected: LocalizedError {
         public var errorDescription: String? { "This tab is not connected." }
@@ -984,6 +983,7 @@ public final class SessionManager {
         return try await attempt.session.runCommand(command)
     }
 
+    /// The tab's session when the tab is connected and it can take input.
     private static func liveAttempt(of tab: TerminalTab) -> SessionAttempt? {
         guard tab.state == .connected else { return nil }
         return tab.attempt

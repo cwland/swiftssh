@@ -55,7 +55,7 @@ public enum JoinDeduplicator {
         func stamp<M: SyncableModel>(_: M.Type) throws -> Data {
             var model = try CoreJSON.decoder.decode(M.self, from: payload)
             model.updatedAt = updatedAt
-            return try CoreJSON.encoder.encode(model)
+            return try PlainRecord.encode(model, keepingUnknownFieldsOf: payload)
         }
         switch type {
         case .host: return try stamp(CoreModels.Host.self)
@@ -111,7 +111,7 @@ public enum JoinDeduplicator {
             change(&model)
             guard model != original else { return nil }
             var result = record
-            result.payload = try CoreJSON.encoder.encode(model)
+            result.payload = try PlainRecord.encode(model, keepingUnknownFieldsOf: record.payload)
             return result
         }
         switch record.type {

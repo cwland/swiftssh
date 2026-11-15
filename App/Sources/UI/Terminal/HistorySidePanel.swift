@@ -62,6 +62,10 @@ struct HistorySidePanel: View {
             reload()
         }
         .onDisappear { focusTerminal() }
+        // Opened while connecting or reconnecting: read the history once the tab is connected.
+        .onChange(of: isConnected) { _, connected in
+            if connected, model?.state != .loaded { reload() }
+        }
         .alert("Paste \(unsafePasteLineCount) lines?",
                isPresented: Binding(get: { confirmingUnsafePaste != nil },
                                     set: { if !$0 { confirmingUnsafePaste = nil } }),
@@ -86,7 +90,7 @@ struct HistorySidePanel: View {
                 .font(.system(size: 15, weight: .semibold))
             Spacer(minLength: 8)
             circleButton("arrow.clockwise", help: "Read the history again", label: "Refresh history", action: reload)
-                .disabled(!isConnected || model?.state == .loading)
+                .disabled(!isConnected || model?.isLoading == true)
             circleButton("xmark", help: "Close (Esc)", label: "Close history panel", action: close)
                 .keyboardShortcut(.cancelAction)
         }
@@ -142,7 +146,10 @@ struct HistorySidePanel: View {
     @ViewBuilder
     private var content: some View {
         switch model?.state {
-        case .loading, nil:
+        case .idle, nil:
+            message(symbol: "bolt.horizontal.circle", title: "Not connected yet.",
+                    detail: "The history is read from the server once this tab is connected.")
+        case .loading:
             VStack {
                 ProgressView().controlSize(.small)
                 Text("Reading the server\u{2019}s history\u{2026}")

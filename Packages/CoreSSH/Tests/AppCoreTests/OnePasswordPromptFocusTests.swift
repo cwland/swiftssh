@@ -21,11 +21,13 @@ final class OnePasswordPromptFocusTests: XCTestCase {
 
     private var events: [String] = []
     private var enabled = true
+    /// What `handOff` reports (false: this app wasn't active, nothing was handed over).
+    private var handOffSucceeds = true
     private var sleeper = ManualSleeper()
 
     private func coordinator() -> OnePasswordPromptFocus {
         OnePasswordPromptFocus(isEnabled: { [unowned self] in enabled },
-                               handOff: { [unowned self] in events.append("handOff") },
+                               handOff: { [unowned self] in events.append("handOff"); return handOffSucceeds },
                                takeBack: { [unowned self] in events.append("takeBack") },
                                sleep: { [sleeper] in try await sleeper.sleep($0) })
     }
@@ -93,6 +95,64 @@ final class OnePasswordPromptFocusTests: XCTestCase {
         focus.setAgentWaiting(false)
         focus.setAgentWaiting(false)
         XCTAssertEqual(events, ["handOff", "takeBack"])
+    }
+
+    func testRefusedHandOffIsTriedAgainWhileWaiting() async {
+        handOffSucceeds = false
+        let focus = coordinator()
+        focus.beginWait()
+        await settle()
+        sleeper.elapse()
+        await settle()
+        XCTAssertEqual(events, ["handOff"])
+        handOffSucceeds = true
+        sleeper.elapse() // asked again: now the prompt is up
+        await settle()
+        XCTAssertEqual(events, ["handOff", "handOff"])
+        focus.endWait()
+        XCTAssertEqual(events, ["handOff", "handOff", "takeBack"])
+    }
+
+    func testRefusedHandOffNeverTakesFocusBackOnItsOwn() async {
+        handOffSucceeds = false
+        let focus = coordinator()
+        focus.beginWait()
+        await settle()
+        sleeper.elapse()
+        await settle()
+        focus.endWait()
+        sleeper.elapse()
+        await settle()
+        XCTAssertEqual(events, ["handOff"], "nothing was handed over, so nothing is taken back")
+    }
+
+    func testAStuckWaitDoesNotDisableLaterHandOffs() async {
+        let focus = coordinator()
+        focus.beginWait() // never ends
+        await settle()
+        sleeper.elapse() // delay: hand off
+        await settle()
+        sleeper.elapse() // cap: take back
+        await settle()
+        focus.beginWait() // a new prompt while the first wait is still counted
+        await settle()
+        sleeper.elapse()
+        await settle()
+        XCTAssertEqual(events, ["handOff", "takeBack", "handOff"])
+    }
+
+    func testFocusComesBackAfterTheCapEvenIfAWaitNeverEnds() async {
+        let focus = coordinator()
+        focus.beginWait()
+        await settle()
+        sleeper.elapse() // the hand-off delay
+        await settle()
+        XCTAssertEqual(events, ["handOff"])
+        sleeper.elapse() // the cap
+        await settle()
+        XCTAssertEqual(events, ["handOff", "takeBack"])
+        focus.endWait()
+        XCTAssertEqual(events, ["handOff", "takeBack"], "taken back once")
     }
 
     func testIsWaitingForAgentReadsTheLastLogLine() async {

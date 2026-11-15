@@ -91,6 +91,7 @@ struct SnippetLibrarySheet: View {
 
     private func categoryHeader(_ category: String, model: SnippetLibraryViewModel) -> some View {
         let state = model.categoryState(category)
+        let canCheck = model.hasAddable(in: category)
         return HStack(spacing: 8) {
             Button {
                 model.setCategory(category, selected: state != .all)
@@ -101,7 +102,10 @@ struct SnippetLibrarySheet: View {
                     .font(.system(size: 14))
             }
             .buttonStyle(.plain)
-            .help(state == .all ? "Uncheck all in \(category)" : "Check all in \(category)")
+            .disabled(!canCheck)
+            .opacity(canCheck ? 1 : 0.35)
+            .help(!canCheck ? "You already have everything in \(category)."
+                  : state == .all ? "Uncheck all in \(category)" : "Check all in \(category)")
             .accessibilityLabel(state == .all ? "Uncheck all in \(category)" : "Check all in \(category)")
             Text(category)
                 .font(.system(size: 12, weight: .semibold))
@@ -169,7 +173,6 @@ private struct LibraryRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
                     .truncationMode(.tail)
-                    .textSelection(.enabled)
             }
             Spacer(minLength: 0)
         }
