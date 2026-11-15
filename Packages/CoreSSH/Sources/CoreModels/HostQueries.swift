@@ -37,6 +37,36 @@ public struct HostDirectory: Sendable {
         return chain
     }
 
+    /// The tmux session to attach to after login, or nil = don't attach: the host's own `.session` or
+    /// `.off`, else (nil or `.inherit`) `inheritedTmux(for:)`. The name is returned as stored; callers
+    /// check it with `TmuxChoice.isValidSessionName` before using it.
+    public func effectiveTmuxSession(for host: Host) -> String? {
+        switch host.tmuxSession ?? .inherit {
+        case .session(let name): name
+        case .off: nil
+        case .inherit: inheritedTmux(for: host).choice.sessionName
+        }
+    }
+
+    /// What "Default" means for the host's tmux setting: its groups' choice, the host's own left out.
+    public func inheritedTmux(for host: Host) -> InheritedTmux {
+        inheritedTmux(fromGroup: host.groupID)
+    }
+
+    /// The first group from `groupID` up the parent chain whose choice is `.off` or `.session`
+    /// (cycle-safe; the walk ends at a deleted or missing group). `.inherit` with no group = none set.
+    public func inheritedTmux(fromGroup groupID: UUID?) -> InheritedTmux {
+        var visited: Set<UUID> = []
+        var next = groupID
+        while let id = next, visited.insert(id).inserted, let group = groupsByID[id] {
+            switch group.defaultTmuxSession ?? .inherit {
+            case .inherit: next = group.parentID
+            case let choice: return InheritedTmux(choice: choice, groupName: group.name)
+            }
+        }
+        return InheritedTmux(choice: .inherit, groupName: nil)
+    }
+
     /// nil = all hosts; otherwise hosts in the group and all its descendants.
     public func hosts(inGroup groupID: UUID?) -> [Host] {
         guard let groupID else { return hosts }
@@ -74,5 +104,17 @@ public struct HostDirectory: Sendable {
             next = group.parentID
         }
         return nil
+    }
+}
+
+/// A tmux choice inherited from a group: `.off` or `.session` with the deciding group's name, or
+/// `.inherit` with no name when no group sets one (which means off).
+public struct InheritedTmux: Equatable, Sendable {
+    public var choice: TmuxChoice
+    public var groupName: String?
+
+    public init(choice: TmuxChoice, groupName: String?) {
+        self.choice = choice
+        self.groupName = groupName
     }
 }
