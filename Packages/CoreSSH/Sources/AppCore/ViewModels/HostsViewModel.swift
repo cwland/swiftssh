@@ -89,6 +89,13 @@ public final class HostsViewModel {
         editingGroupID = nil
     }
 
+    /// Nothing selected (another kind of card, e.g. a workspace tile, was clicked); an open panel stays.
+    public func clearSelection() {
+        selectedHostIDs = []
+        selectedGroupID = nil
+        selectionAnchor = nil
+    }
+
     /// A click on a group card: highlights it (double-click opens it, `openGroup`).
     public func select(groupID: UUID) {
         selectedGroupID = groupID

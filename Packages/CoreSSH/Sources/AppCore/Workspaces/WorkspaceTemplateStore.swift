@@ -56,6 +56,48 @@ public indirect enum TemplateNode: Codable, Equatable, Sendable {
     }
 }
 
+extension WorkspaceTemplate {
+    /// The tile's subtitle: "3 terminals · Split view".
+    public var summary: String {
+        let count = layout.panes.count
+        let terminals = count == 1 ? "1 terminal" : "\(count) terminals"
+        return "\(terminals) \u{00B7} \(viewMode == .split ? "Split view" : "Focus mode")"
+    }
+}
+
+extension TemplateNode {
+    /// The panes in reading order (first before second, depth first).
+    public var panes: [TemplatePane] {
+        switch self {
+        case .pane(let pane): [pane]
+        case .split(_, _, let first, let second): first.panes + second.panes
+        }
+    }
+
+    /// The layout without the pane at `index` (reading order): its split is replaced by the other
+    /// side. nil when that was the only pane; unchanged for an index out of range.
+    func removingPane(at index: Int) -> TemplateNode? {
+        var remaining = index
+        return removing(&remaining)
+    }
+
+    private func removing(_ index: inout Int) -> TemplateNode? {
+        switch self {
+        case .pane:
+            defer { index -= 1 }
+            return index == 0 ? nil : self
+        case .split(let axis, let ratio, let first, let second):
+            let newFirst = first.removing(&index)
+            let newSecond = index >= 0 ? second.removing(&index) : second
+            switch (newFirst, newSecond) {
+            case (nil, let other?), (let other?, nil): return other
+            case (let a?, let b?): return .split(axis, ratio: ratio, a, b)
+            case (nil, nil): return nil
+            }
+        }
+    }
+}
+
 /// A saved pane: a saved host, or a quick connect target as `user@host:port` (`QuickConnect.parse`
 /// reads it back), and its tab title (the custom title; nil = the host's label).
 public struct TemplatePane: Codable, Equatable, Sendable {
@@ -164,6 +206,58 @@ public final class WorkspaceTemplateStore {
 
     public func template(_ id: UUID) -> WorkspaceTemplate? {
         templates.first { $0.id == id }
+    }
+
+    /// Why an edit of a saved workspace was refused.
+    public enum EditError: Error, Equatable, LocalizedError {
+        case needsTwoPanes
+
+        public var errorDescription: String? {
+            "A workspace needs at least two terminals."
+        }
+    }
+
+    /// Adds a template as it is (a new id is not made); returns it.
+    @discardableResult
+    public func add(_ template: WorkspaceTemplate) throws -> WorkspaceTemplate {
+        try write(templates + [template])
+        return template
+    }
+
+    /// A copy named "<name> copy", saved after the original's place in the list.
+    @discardableResult
+    public func duplicate(_ id: UUID) throws -> WorkspaceTemplate {
+        guard let index = templates.firstIndex(where: { $0.id == id }) else { throw CocoaError(.fileNoSuchFile) }
+        var copy = templates[index]
+        copy.id = UUID()
+        copy.name += " copy"
+        copy.savedAt = Date()
+        var updated = templates
+        updated.insert(copy, at: index + 1)
+        try write(updated)
+        return copy
+    }
+
+    /// Changes the view mode it opens in. Unknown ids are ignored.
+    public func setViewMode(_ mode: Workspace.ViewMode, for id: UUID) throws {
+        guard let index = templates.firstIndex(where: { $0.id == id }), templates[index].viewMode != mode else { return }
+        var updated = templates
+        updated[index].viewMode = mode
+        try write(updated)
+    }
+
+    /// Removes the pane at `index` (reading order). Throws `.needsTwoPanes` when fewer than two would
+    /// remain. Unknown ids and indexes are ignored.
+    public func removePane(at index: Int, from id: UUID) throws {
+        guard let place = templates.firstIndex(where: { $0.id == id }) else { return }
+        let layout = templates[place].layout
+        guard layout.panes.indices.contains(index) else { return }
+        guard layout.panes.count > 2, let remaining = layout.removingPane(at: index) else {
+            throw EditError.needsTwoPanes
+        }
+        var updated = templates
+        updated[place].layout = remaining
+        try write(updated)
     }
 
     private func write(_ updated: [WorkspaceTemplate]) throws {

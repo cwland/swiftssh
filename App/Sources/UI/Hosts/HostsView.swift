@@ -9,20 +9,22 @@ import CoreModels
 /// Cards: click selects (⌘-click adds or removes a host, ⇧-click selects a range), double-click
 /// connects or opens the group, the pencil (or E for one selected host) edits. Right-click shows
 /// the card's actions; with several hosts selected they act on all of them. Host cards can be
-/// dragged onto a terminal to open the host beside it. The toolbar's Workspaces menu opens saved
-/// workspaces.
+/// dragged onto a terminal to open the host beside it. Saved workspaces are tiles in their own
+/// section (top level): click selects, double-click opens, the pencil opens the Workspace panel.
 struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
     let sessions: SessionManager
     /// Per-Mac terminal settings, for the inherited "Default (…)" theme labels.
     let terminalSettings: TerminalSettings
-    /// Saved workspaces for the toolbar's Workspaces menu; nil hides the menu.
+    /// Saved workspaces, shown as the Workspaces section; nil hides it.
     var workspaceTemplates: WorkspaceTemplateStore? = nil
     /// Open in Workspace: one new connection per host, as one workspace (shown).
     var openWorkspace: ([UUID]) throws -> Void = { _ in }
     /// Opens a saved workspace (each pane connects).
     var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
+    /// Opens a saved workspace in a new window.
+    var openTemplateInNewWindow: (WorkspaceTemplate) -> Void = { _ in }
     /// Connect in a New Window: a new window with one tab for the host.
     var connectInNewWindow: (UUID) throws -> Void = { _ in }
 
@@ -43,6 +45,10 @@ struct HostsView: View {
     @State private var errorTitle = "Something went wrong"
     @State private var templateToRename: WorkspaceTemplate?
     @State private var templateToDelete: WorkspaceTemplate?
+    /// The highlighted workspace tile (a click).
+    @State private var selectedTemplateID: UUID?
+    /// The workspace whose panel is open (its pencil or Edit). One panel at a time with hosts/groups.
+    @State private var editingTemplateID: UUID?
     /// Hosts waiting for the Remove confirmation.
     @State private var hostsToRemove: [UUID] = []
     @State private var showRemoveHosts = false
@@ -61,6 +67,15 @@ struct HostsView: View {
                 })
                 .id(host.id)
                 .transition(.move(edge: .trailing))
+            } else if let template = editingTemplate, let workspaceTemplates {
+                Divider()
+                WorkspaceDetailsPanel(store: workspaceTemplates, vault: vault, template: template,
+                                      onClose: { editingTemplateID = nil },
+                                      onOpen: { open(template) },
+                                      onDelete: { templateToDelete = $0 },
+                                      onError: { present($0) })
+                    .id(template.id)
+                    .transition(.move(edge: .trailing))
             } else if let group = model.editingGroup {
                 Divider()
                 GroupDetailsPanel(model: model, group: group, terminalSettings: terminalSettings,
@@ -73,6 +88,12 @@ struct HostsView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: model.editingHostID)
         .animation(.easeInOut(duration: 0.2), value: model.editingGroupID)
+        .animation(.easeInOut(duration: 0.2), value: editingTemplateID)
+        // One panel at a time; selecting a host or group clears the workspace tile's highlight.
+        .onChange(of: model.editingHostID) { if model.editingHostID != nil { editingTemplateID = nil } }
+        .onChange(of: model.editingGroupID) { if model.editingGroupID != nil { editingTemplateID = nil } }
+        .onChange(of: model.selectedHostIDs) { if !model.selectedHostIDs.isEmpty { selectedTemplateID = nil } }
+        .onChange(of: model.selectedGroupID) { if model.selectedGroupID != nil { selectedTemplateID = nil } }
         .background(Theme.contentBackground)
         .alert("New group", isPresented: $showNewGroup) {
             TextField("Name", text: $newGroupName)
@@ -133,11 +154,14 @@ struct HostsView: View {
             if !model.breadcrumbs.isEmpty {
                 breadcrumbBar
             }
-            if model.visibleGroups.isEmpty && model.visibleHosts.isEmpty {
+            if model.visibleGroups.isEmpty && model.visibleHosts.isEmpty && visibleTemplates.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
+                        if !visibleTemplates.isEmpty {
+                            workspacesSection
+                        }
                         if !model.visibleGroups.isEmpty {
                             groupsSection
                         }
@@ -191,26 +215,14 @@ struct HostsView: View {
             }
             .fixedSize()
 
-            if let workspaceTemplates {
-                Menu {
-                    let selected = model.selectedVisibleHostIDs
-                    Button(selected.count >= 2 ? "Open \(selected.count) Selected Hosts in Workspace"
-                                               : "Open Selected Hosts in Workspace") {
-                        openInWorkspace(selected)
-                    }
-                    .disabled(selected.count < 2)
-                    Divider()
-                    Section("Saved Workspaces") {
-                        SavedWorkspacesMenuItems(store: workspaceTemplates,
-                                                 open: { open($0) },
-                                                 rename: { templateToRename = $0 },
-                                                 delete: { templateToDelete = $0 })
-                    }
+            if model.selectedVisibleHostIDs.count >= 2 {
+                Button {
+                    openInWorkspace(model.selectedVisibleHostIDs)
                 } label: {
-                    Label("Workspaces", systemImage: "square.grid.2x2")
+                    Label("Open \(model.selectedVisibleHostIDs.count) in Workspace", systemImage: "rectangle.split.2x2")
                 }
                 .fixedSize()
-                .help("Saved workspaces; \u{2318}-click hosts to open several in one workspace")
+                .help("Open the selected hosts side by side in one workspace")
             }
 
             Spacer(minLength: 0)
@@ -268,6 +280,69 @@ struct HostsView: View {
             Theme.cardGridColumns
         case .list:
             [GridItem(.flexible())]
+        }
+    }
+
+    /// Saved workspaces, at the top level only, matching the search text by name.
+    private var visibleTemplates: [WorkspaceTemplate] {
+        guard let workspaceTemplates, model.breadcrumbs.isEmpty else { return [] }
+        let query = model.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return workspaceTemplates.templates }
+        return workspaceTemplates.templates.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var editingTemplate: WorkspaceTemplate? {
+        editingTemplateID.flatMap { id in workspaceTemplates?.templates.first { $0.id == id } }
+    }
+
+    private var workspacesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionTitle("Workspaces")
+            LazyVGrid(columns: columns, spacing: Theme.cardSpacing) {
+                ForEach(visibleTemplates) { template in
+                    WorkspaceTileView(template: template, isSelected: selectedTemplateID == template.id,
+                                      onEdit: { editTemplate(template.id) })
+                        .onTapGesture(count: 2) {
+                            open(template)
+                        }
+                        .simultaneousGesture(TapGesture().onEnded {
+                            selectTemplate(template.id)
+                        })
+                        .contextMenu {
+                            Button("Open") { open(template) }
+                            Button("Open in a New Window") { openTemplateInNewWindow(template) }
+                            Divider()
+                            Button("Edit") { editTemplate(template.id) }
+                            Button("Rename\u{2026}") { templateToRename = template }
+                            Button("Duplicate") { duplicateTemplate(template.id) }
+                            Divider()
+                            Button("Remove", role: .destructive) { templateToDelete = template }
+                        }
+                        .help("Double-click to open")
+                }
+            }
+        }
+    }
+
+    /// Highlights the tile (hosts and groups are deselected).
+    private func selectTemplate(_ id: UUID) {
+        model.clearSelection()
+        selectedTemplateID = id
+    }
+
+    /// Opens the Workspace panel (closing Host Details or the Group panel).
+    private func editTemplate(_ id: UUID) {
+        model.closeEditor()
+        selectTemplate(id)
+        editingTemplateID = id
+    }
+
+    private func duplicateTemplate(_ id: UUID) {
+        do {
+            let copy = try workspaceTemplates?.duplicate(id)
+            selectedTemplateID = copy?.id
+        } catch {
+            present(error)
         }
     }
 

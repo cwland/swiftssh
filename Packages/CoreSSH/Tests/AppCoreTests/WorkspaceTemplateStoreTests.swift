@@ -225,6 +225,52 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertEqual(store.templates.first?.name, "Prod 2")
     }
 
+    // MARK: Hosts screen tiles and the Workspace panel (v0.10)
+
+    private func threePaneTemplate() -> WorkspaceTemplate {
+        WorkspaceTemplate(id: UUID(), name: "Lab",
+                          layout: .split(.horizontal, ratio: 0.3,
+                                         .split(.vertical, ratio: 0.5, .pane(TemplatePane(title: "a")),
+                                                .pane(TemplatePane(title: "b"))),
+                                         .pane(TemplatePane(title: "c"))),
+                          viewMode: .split, savedAt: Date(timeIntervalSince1970: 0))
+    }
+
+    func testPanesAreInReadingOrderAndTheSummaryCountsThem() async throws {
+        let template = threePaneTemplate()
+        XCTAssertEqual(template.layout.panes.map(\.title), ["a", "b", "c"])
+        XCTAssertEqual(template.summary, "3 terminals \u{00B7} Split view")
+        var focus = template
+        focus.viewMode = .focus
+        XCTAssertEqual(focus.summary, "3 terminals \u{00B7} Focus mode")
+    }
+
+    func testRemovingAPaneCollapsesItsSplitAndKeepsTwo() async throws {
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        let saved = try store.add(threePaneTemplate())
+        try store.removePane(at: 1, from: saved.id)
+        let after = try XCTUnwrap(store.templates.first)
+        XCTAssertEqual(after.layout.panes.map(\.title), ["a", "c"])
+        guard case .split(.horizontal, 0.3, .pane, .pane) = after.layout else { return XCTFail("\(after.layout)") }
+        XCTAssertThrowsError(try store.removePane(at: 0, from: saved.id)) { error in
+            XCTAssertEqual(error as? WorkspaceTemplateStore.EditError, .needsTwoPanes)
+        }
+        XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates.first?.layout.panes.count, 2, "written")
+    }
+
+    func testDuplicateAndViewMode() async throws {
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        let saved = try store.add(threePaneTemplate())
+        let copy = try store.duplicate(saved.id)
+        XCTAssertNotEqual(copy.id, saved.id)
+        XCTAssertEqual(copy.name, "Lab copy")
+        XCTAssertEqual(copy.layout, saved.layout)
+        XCTAssertEqual(store.templates.map(\.id), [saved.id, copy.id])
+        try store.setViewMode(.focus, for: saved.id)
+        XCTAssertEqual(store.templates.first?.viewMode, .focus)
+        XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates.first?.viewMode, .focus)
+    }
+
     func testHasSavedCopyOnlyWhileItsTemplateExists() async throws {
         let (ws, _, _) = try sampleWorkspace()
         let store = WorkspaceTemplateStore(fileURL: fileURL)

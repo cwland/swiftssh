@@ -465,13 +465,3 @@ extension SessionManager {
         if count > Workspace.paneLimit.upperBound { throw WorkspaceError.tooManyPanes }
     }
 }
-
-extension TemplateNode {
-    /// The saved panes in reading order.
-    var panes: [TemplatePane] {
-        switch self {
-        case .pane(let pane): [pane]
-        case .split(_, _, let first, let second): first.panes + second.panes
-        }
-    }
-}

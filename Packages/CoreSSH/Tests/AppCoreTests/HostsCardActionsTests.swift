@@ -77,6 +77,19 @@ final class HostsCardActionsTests: XCTestCase {
         XCTAssertNil(vm.selectedGroupID)
     }
 
+    func testClearSelectionDeselectsHostsAndGroupsButKeepsAnOpenPanel() async throws {
+        let vm = try await makeModel()
+        let g = try await vault.save(HostGroup(name: "G"))
+        let a = try await host("a")
+        vm.edit(hostID: a.id)
+        vm.clearSelection()
+        XCTAssertTrue(vm.selectedHostIDs.isEmpty)
+        XCTAssertEqual(vm.editingHostID, a.id)
+        vm.select(groupID: g.id)
+        vm.clearSelection()
+        XCTAssertNil(vm.selectedGroupID)
+    }
+
     func testADeletedHostClosesItsPanel() async throws {
         let vm = try await makeModel()
         let a = try await host("a")

@@ -3,14 +3,16 @@ import AppKit
 import AppCore
 
 /// Opens a terminal window: its own id (its tabs' `windowID`) and what to show once it appears, a
-/// copy of the tab `sourceTabID` ("Duplicate in New Window") or a new tab for the saved host `hostID`
-/// (Hosts → "Connect in a New Window"). Shown by the app's `WindowGroup(id: sceneID, for:)`.
+/// copy of the tab `sourceTabID` ("Duplicate in New Window"), a new tab for the saved host `hostID`
+/// (Hosts → "Connect in a New Window"), or the saved workspace `templateID` (its "Open in a New
+/// Window"). Shown by the app's `WindowGroup(id: sceneID, for:)`.
 struct TerminalWindowRequest: Codable, Hashable {
     static let sceneID = "terminal"
 
     var windowID = UUID()
     var sourceTabID: UUID?
     var hostID: UUID?
+    var templateID: UUID?
 }
 
 /// Which window's tabs menu commands act on: the focused scene's (`focusedSceneValue`).
@@ -130,6 +132,9 @@ struct RootView: View {
                 opened = sessions.duplicate(tabID: sourceTabID, inWindow: request.windowID) != nil
             } else if let request = windowRequest, let hostID = request.hostID {
                 opened = (try? sessions.open(hostID: hostID, inWindow: request.windowID)) != nil
+            } else if let request = windowRequest, let templateID = request.templateID,
+                      let template = environment.workspaceTemplates.templates.first(where: { $0.id == templateID }) {
+                opened = (try? sessions.openTemplate(template, inWindow: request.windowID)) != nil
             } else {
                 opened = false
             }
@@ -439,6 +444,10 @@ private struct MainArea: View {
                           workspaceTemplates: environment.workspaceTemplates,
                           openWorkspace: { try environment.openWorkspace(hostIDs: $0) },
                           openTemplate: { try environment.openWorkspaceTemplate($0) },
+                          openTemplateInNewWindow: { template in
+                              openWindow(id: TerminalWindowRequest.sceneID,
+                                         value: TerminalWindowRequest(templateID: template.id))
+                          },
                           connectInNewWindow: { hostID in
                               // Checked here so a host that can't connect shows why instead of an empty window.
                               _ = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
