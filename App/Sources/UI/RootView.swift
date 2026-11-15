@@ -217,7 +217,8 @@ private struct ReadyArea: View {
                                 vault: vault, terminalSettings: environment.terminalSettings,
                                 closeTab: { environment.closeTab(tabID: tab.id) },
                                 showsThemePanel: themePanelTabID == tab.id,
-                                closeThemePanel: { themePanelTabID = nil })
+                                closeThemePanel: { themePanelTabID = nil },
+                                editHost: isTerminalWindow ? nil : { editHost(of: tab) })
                     .id(tab.id)
             } else if isTerminalWindow {
                 // Only while the window opens or closes.
@@ -254,6 +255,15 @@ private struct ReadyArea: View {
         .onChange(of: selectedTab?.id) { _, id in
             if themePanelTabID != id { themePanelTabID = nil }
         }
+    }
+
+    /// "Edit host" on the connection screen: Vaults → Hosts with the tab's host selected (its Host
+    /// Details panel opens). The tab stays open. Main window only.
+    private func editHost(of tab: TerminalTab) {
+        guard let hostID = tab.savedHostID else { return }
+        environment.navigation.sidebar = .hosts
+        hostsModel?.selectedHostID = hostID
+        environment.showVaults()
     }
 
     /// This window's selected tab; nil while Vaults is selected.

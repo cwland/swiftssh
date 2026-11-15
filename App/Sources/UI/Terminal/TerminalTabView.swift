@@ -17,13 +17,16 @@ struct TerminalTabView: View {
     /// The Change Theme panel is open over the terminal's right edge.
     var showsThemePanel = false
     var closeThemePanel: () -> Void = {}
+    /// Opens this tab's host in Host Details; nil hides "Edit host" on the connection screen
+    /// (windows without Vaults).
+    var editHost: (() -> Void)?
 
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let appearance = resolvedAppearance
         VStack(spacing: 0) {
-            if case .disconnected(let message) = tab.state, !isAutoReconnecting {
+            if case .disconnected(let message) = tab.state, !isAutoReconnecting, !showsConnectionScreen {
                 DisconnectedBanner(message: bannerMessage(message),
                                    showsOnePasswordSetup: tab.suggestedAction == .openOnePasswordSetup) {
                     sessions.reconnect(tabID: tab.id)
@@ -32,12 +35,18 @@ struct TerminalTabView: View {
             SwiftTermView(tab: tab, sessions: sessions, store: store, appearance: appearance)
                 .padding(.leading, 8)
                 .padding(.top, 4)
-                .overlay(alignment: .top) {
-                    if tab.state == .connecting, !isAutoReconnecting {
-                        ConnectingBadge(title: tab.displayTitle)
-                            .padding(.top, 12)
+                // Over the terminal (which stays in place: its size starts the session) until the
+                // session is up; fades away on .connected.
+                .overlay {
+                    if showsConnectionScreen {
+                        ConnectionScreen(tab: tab, vault: vault, appearance: appearance,
+                                         editHost: tab.savedHostID == nil ? nil : editHost,
+                                         startOver: { sessions.reconnect(tabID: tab.id) },
+                                         close: closeTab)
+                            .transition(.opacity)
                     }
                 }
+                .animation(.easeOut(duration: 0.25), value: showsConnectionScreen)
                 .overlay(alignment: .topLeading) {
                     if let state = tab.autoReconnect, isAutoReconnecting {
                         ReconnectPopup(
@@ -98,6 +107,20 @@ struct TerminalTabView: View {
             prefersDark: colorScheme == .dark
         )
         return terminalSettings.appearance(theme: theme)
+    }
+
+    // MARK: Connection screen
+
+    /// While connecting (host key and password sheets come over it), and after a failure of an
+    /// attempt that never connected. A tab that connected and then dropped keeps the banner; the
+    /// auto-reconnect popup keeps the terminal visible as before.
+    private var showsConnectionScreen: Bool {
+        if isAutoReconnecting { return false }
+        switch tab.state {
+        case .connecting, .awaitingHostKey, .awaitingPassword: return true
+        case .disconnected: return !tab.hasEverConnected
+        case .connected: return false
+        }
     }
 
     // MARK: Auto-reconnect
@@ -167,23 +190,5 @@ enum TerminalPrompt: Identifiable {
         case .password(let prompt):
             "password|\(prompt)"
         }
-    }
-}
-
-/// "Connecting to <host>…" over the top of a terminal that has no session yet.
-private struct ConnectingBadge: View {
-    let title: String
-
-    var body: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text("Connecting to \(title.isEmpty ? "host" : title)…")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
     }
 }
