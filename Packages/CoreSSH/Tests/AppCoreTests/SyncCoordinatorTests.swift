@@ -12,6 +12,8 @@ actor ScriptedTransport: SyncTransport {
     let server: InMemoryTransport
     private var failures: [Error] = []
     private var failForever: Error?
+    private var pageLimit = Int.max
+    private var fetchFailure: (remainingSuccesses: Int, error: Error)?
     private(set) var syncAttempts = 0
 
     init(server: InMemoryTransport = InMemoryTransport()) {
@@ -27,7 +29,25 @@ actor ScriptedTransport: SyncTransport {
         failForever = error
     }
 
+    /// Every `fetch` returns at most `limit` records per page.
+    func limitPages(to limit: Int) {
+        pageLimit = limit
+    }
+
+    /// After `count` more successful `fetch` calls, the next one throws `error` (once).
+    func failFetch(afterSuccessfulCalls count: Int, with error: Error) {
+        fetchFailure = (count, error)
+    }
+
+    private var healthFailure: Error?
+
+    /// `health()` throws `error` (nil: it follows `failAlways`).
+    func failHealth(_ error: Error?) {
+        healthFailure = error
+    }
+
     func health() async throws {
+        if let healthFailure { throw healthFailure }
         if let failForever { throw failForever }
     }
 
@@ -40,7 +60,16 @@ actor ScriptedTransport: SyncTransport {
 
     func putVault(_ metadata: VaultMetadata) async throws { try await server.putVault(metadata) }
     func rewrap(_ request: RewrapRequest) async throws -> VaultMetadata { try await server.rewrap(request) }
-    func fetch(since: Int64, limit: Int) async throws -> RecordsPage { try await server.fetch(since: since, limit: limit) }
+    func fetch(since: Int64, limit: Int) async throws -> RecordsPage {
+        if let failure = fetchFailure {
+            if failure.remainingSuccesses == 0 {
+                fetchFailure = nil
+                throw failure.error
+            }
+            fetchFailure = (failure.remainingSuccesses - 1, failure.error)
+        }
+        return try await server.fetch(since: since, limit: min(limit, pageLimit))
+    }
     func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord] { try await server.upsert(records) }
 }
 
@@ -144,6 +173,16 @@ final class SyncCoordinatorTests: XCTestCase {
                                      .weakPassphrase, .vaultChanged, .tampered, .other("x")]
         for error in all { XCTAssertFalse(error.message.isEmpty) }
         XCTAssertTrue(SyncSetupError.unreachable("the connection was refused").message.contains("refused"))
+    }
+
+    func testRedirectAndATSErrorsHaveActionableMessages() async {
+        let redirect = "The sync server redirected the request. Use the final address (check your proxy) in Settings → Sync."
+        XCTAssertEqual(SyncSetupError(SyncTransportError.redirected), .redirected)
+        XCTAssertEqual(SyncSetupError.redirected.message, redirect)
+        let ats = "macOS blocked a plain http:// connection. Use your https:// proxy address."
+        XCTAssertEqual(SyncSetupError(SyncTransportError.insecureConnectionBlocked), .insecureConnectionBlocked)
+        XCTAssertEqual(SyncSetupError(URLError(.appTransportSecurityRequiresSecureConnection)), .insecureConnectionBlocked)
+        XCTAssertEqual(SyncSetupError.insecureConnectionBlocked.message, ats)
     }
 
     // MARK: Connecting
@@ -293,6 +332,154 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(b.coordinator.phase, .idle)
         XCTAssertNotNil(try b.secrets.loadVaultKey())
         b.coordinator.stop()
+    }
+
+    func testCreateVaultWhenAnotherMacCreatedOneMeanwhileOffersJoin() async throws {
+        let transport = ScriptedTransport()
+        let a = try await mac("mbp", transport: transport)
+        try await a.coordinator.connect(serverURL: url, apiKey: apiKey)
+        XCTAssertEqual(a.coordinator.phase, .needsVault(exists: false))
+        let b = try await mac("mini", transport: transport)
+        try await b.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await b.coordinator.createVault(passphrase: passphrase)
+        b.coordinator.stop()
+        do {
+            try await a.coordinator.createVault(passphrase: passphrase)
+            XCTFail("expected vaultAlreadyExists")
+        } catch {
+            XCTAssertEqual(error, .vaultAlreadyExists)
+        }
+        XCTAssertEqual(a.coordinator.phase, .needsVault(exists: true))
+    }
+
+    func testJoinWhenTheVaultIsGoneOffersCreate() async throws {
+        let transport = ScriptedTransport()
+        let a = try await mac("mbp", transport: transport)
+        try await a.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await a.coordinator.createVault(passphrase: passphrase)
+        a.coordinator.stop()
+        let b = try await mac("mini", transport: transport)
+        try await b.coordinator.connect(serverURL: url, apiKey: apiKey)
+        XCTAssertEqual(b.coordinator.phase, .needsVault(exists: true))
+        await transport.server.replaceVault(nil)
+        do {
+            try await b.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTFail("expected noVault")
+        } catch {
+            XCTAssertEqual(error, .noVault)
+        }
+        XCTAssertEqual(b.coordinator.phase, .needsVault(exists: false))
+    }
+
+    // MARK: Retried merge join
+
+    private func storedHostIDs(_ transport: ScriptedTransport) async -> Set<UUID> {
+        Set(await transport.server.storedRecords.filter { $0.type == .host && !$0.deleted }.map(\.id))
+    }
+
+    /// The MacBook's vault holds nas + pi; returns their ids. Pages are then one record long.
+    private func macBookVault(_ transport: ScriptedTransport) async throws -> (nas: UUID, pi: UUID) {
+        let a = try await mac("MacBook", transport: transport)
+        let nas = try await a.vault.save(Host(label: "NAS", address: "nas.lan", username: "cory"))
+        let pi = try await a.vault.save(Host(label: "pi", address: "pi.lan", username: "pi"))
+        try await a.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await a.coordinator.createVault(passphrase: passphrase)
+        a.coordinator.stop()
+        await transport.limitPages(to: 1)
+        return (nas.id, pi.id)
+    }
+
+    private func saveDuplicates(in vault: LocalVault) async throws {
+        try await vault.save(Host(label: "nas (mini)", address: "NAS.lan", username: "cory"))
+        try await vault.save(Host(label: "pi (mini)", address: "pi.lan", port: 22, username: "pi"))
+    }
+
+    func testRetriedMergeJoinAfterAFailedPullUploadsNoDuplicates() async throws {
+        let transport = ScriptedTransport()
+        let vaultHosts = try await macBookVault(transport)
+        let persistence = InMemoryVaultPersistence()
+        let mini = try await mac("Mac mini", transport: transport, persistence: persistence)
+        try await saveDuplicates(in: mini.vault)
+        try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+
+        await transport.failFetch(afterSuccessfulCalls: 1, with: SyncTransportError.unreachable("the connection was lost"))
+        do {
+            try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTFail("expected the join to fail on page 2")
+        } catch {
+            XCTAssertEqual(error, .unreachable("the connection was lost"))
+        }
+        XCTAssertEqual(mini.coordinator.phase, .needsVault(exists: true))
+        XCTAssertNil(try mini.secrets.loadVaultKey())
+
+        try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        let stored = await storedHostIDs(transport)
+        XCTAssertEqual(stored, [vaultHosts.nas, vaultHosts.pi])
+        XCTAssertEqual(Set(mini.vault.all(Host.self).map(\.id)), [vaultHosts.nas, vaultHosts.pi])
+        await mini.vault.flush()
+        let marker = await persistence.contents?.mergeJoinLocalIDs
+        XCTAssertNil(marker, "the pending-join marker is cleared once the plan is applied")
+        mini.coordinator.stop()
+    }
+
+    func testMergeJoinInterruptedByQuitThenRetriedUploadsNoDuplicates() async throws {
+        let transport = ScriptedTransport()
+        let vaultHosts = try await macBookVault(transport)
+        let persistence = InMemoryVaultPersistence()
+        let mini = try await mac("Mac mini", transport: transport, persistence: persistence)
+        try await saveDuplicates(in: mini.vault)
+        try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+        await transport.failFetch(afterSuccessfulCalls: 1, with: SyncTransportError.unreachable("the connection was lost"))
+        do {
+            try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTFail("expected the join to fail on page 2")
+        } catch {}
+        mini.coordinator.stop()
+        await mini.vault.flush()
+
+        // The app quits and relaunches: the vault is reopened from its file.
+        let relaunched = try await mac("Mac mini", transport: transport, persistence: persistence,
+                                       secrets: mini.secrets, defaults: mini.defaults)
+        relaunched.coordinator.start()
+        XCTAssertEqual(relaunched.coordinator.phase, .locked)
+        try await relaunched.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        let stored = await storedHostIDs(transport)
+        XCTAssertEqual(stored, [vaultHosts.nas, vaultHosts.pi])
+        XCTAssertEqual(Set(relaunched.vault.all(Host.self).map(\.id)), [vaultHosts.nas, vaultHosts.pi])
+        relaunched.coordinator.stop()
+    }
+
+    /// A Mac that was syncing (unlocked) re-joins a replaced vault and the join fails half-way:
+    /// nothing may sync with the half-joined key until the join is retried.
+    func testFailedJoinLeavesNothingSyncingWithTheNewKey() async throws {
+        let transport = ScriptedTransport()
+        let mini = try await mac("Mac mini", transport: transport)
+        try await saveDuplicates(in: mini.vault)
+        try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await mini.coordinator.createVault(passphrase: passphrase)
+        XCTAssertEqual(mini.coordinator.phase, .idle)
+
+        await transport.server.replaceVault(nil)
+        let vaultHosts = try await macBookVault(transport)
+        await mini.coordinator.syncNow()
+        XCTAssertEqual(mini.coordinator.phase, .failed(SyncSetupError.vaultChanged.message))
+
+        await transport.failFetch(afterSuccessfulCalls: 1, with: SyncTransportError.unreachable("the connection was lost"))
+        do {
+            try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTFail("expected the join to fail on page 2")
+        } catch {}
+        XCTAssertEqual(mini.coordinator.phase, .needsVault(exists: true))
+        await mini.coordinator.syncNow()
+        XCTAssertEqual(mini.coordinator.phase, .needsVault(exists: true))
+        var stored = await storedHostIDs(transport)
+        XCTAssertEqual(stored, [vaultHosts.nas, vaultHosts.pi], "nothing uploaded with the half-joined key")
+
+        try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        stored = await storedHostIDs(transport)
+        XCTAssertEqual(stored, [vaultHosts.nas, vaultHosts.pi])
+        XCTAssertEqual(mini.coordinator.phase, .idle)
+        mini.coordinator.stop()
     }
 
     // MARK: start / stop
@@ -549,6 +736,196 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertNil(a.coordinator.lastReport)
     }
 
+    // MARK: Keychain failures
+
+    private func flakyMac(_ device: String, transport: ScriptedTransport, persistence: InMemoryVaultPersistence,
+                          secrets: FlakySecrets, defaults: UserDefaults) async throws -> SyncCoordinator {
+        let vault = try await LocalVault.open(persistence: persistence, newDeviceID: { device })
+        let sleeps = SleepRecorder()
+        return SyncCoordinator(vault: vault, secrets: secrets, defaults: defaults,
+                               makeTransport: { _, _ in transport }, iterations: 1_000,
+                               sleep: { try await sleeps.sleep($0) }, now: { Date(timeIntervalSince1970: 5_000) })
+    }
+
+    func testKeychainReadFailureAtStartFailsWithARetryPath() async throws {
+        let transport = ScriptedTransport()
+        let persistence = InMemoryVaultPersistence()
+        let secrets = FlakySecrets()
+        let defaults = defaults()
+        let first = try await flakyMac("mbp", transport: transport, persistence: persistence, secrets: secrets,
+                                       defaults: defaults)
+        try await first.connect(serverURL: url, apiKey: apiKey)
+        try await first.createVault(passphrase: passphrase)
+        first.stop()
+
+        secrets.failReads = true
+        let relaunched = try await flakyMac("mbp", transport: transport, persistence: persistence, secrets: secrets,
+                                            defaults: defaults)
+        relaunched.start()
+        let message = "Couldn't read the sync keys from the Keychain. Open Settings → Sync and try again."
+        XCTAssertEqual(relaunched.phase, .failed(message))
+        XCTAssertEqual(SyncSetupError.keychainUnreadable.message, message)
+        await relaunched.syncNow()
+        XCTAssertEqual(relaunched.phase, .failed(message), "still unreadable")
+
+        secrets.failReads = false
+        await relaunched.syncNow()
+        XCTAssertEqual(relaunched.phase, .idle, "Sync now retries reading the keys, no passphrase needed")
+        relaunched.stop()
+
+        secrets.failReads = true
+        let again = try await flakyMac("mbp", transport: transport, persistence: persistence, secrets: secrets,
+                                       defaults: defaults)
+        again.start()
+        XCTAssertEqual(again.phase, .failed(message))
+        secrets.failReads = false
+        again.start()
+        await eventually("start() retries too") { again.phase == .idle }
+        again.stop()
+    }
+
+    func testDisconnectSurfacesAKeychainDeleteFailure() async throws {
+        let transport = ScriptedTransport()
+        let secrets = FlakySecrets()
+        let coordinator = try await flakyMac("mbp", transport: transport, persistence: InMemoryVaultPersistence(),
+                                             secrets: secrets, defaults: defaults())
+        try await coordinator.connect(serverURL: url, apiKey: apiKey)
+        XCTAssertNil(coordinator.lastError)
+        secrets.failDelete = true
+        coordinator.disconnect()
+        XCTAssertEqual(coordinator.lastError, .keychainCleanupFailed)
+        XCTAssertFalse(SyncSetupError.keychainCleanupFailed.message.isEmpty)
+        XCTAssertEqual(coordinator.phase, .notConfigured)
+
+        secrets.failDelete = false
+        try await coordinator.connect(serverURL: url, apiKey: apiKey)
+        XCTAssertNil(coordinator.lastError, "a later successful action clears it")
+        coordinator.disconnect()
+        XCTAssertNil(coordinator.lastError)
+        XCTAssertNil(try secrets.base.loadAPIKey())
+    }
+
+    // MARK: Vault missing during a normal sync
+
+    private func syncingMac(_ transport: ScriptedTransport) async throws -> Mac {
+        let m = try await mac("mbp", transport: transport)
+        try await m.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await m.coordinator.createVault(passphrase: passphrase)
+        XCTAssertEqual(m.coordinator.phase, .idle)
+        return m
+    }
+
+    func testVaultNotFoundWithHealthyServerFailsWithAddressHint() async throws {
+        let transport = ScriptedTransport()
+        let m = try await syncingMac(transport)
+        await transport.server.replaceVault(nil)
+        await m.coordinator.syncNow()
+        let message = "The sync server answered but has no vault at this address. Check the server address "
+            + "(proxy path) — or, if the server was reset, disconnect and set up sync again."
+        XCTAssertEqual(SyncSetupError.noVaultAtAddress.message, message)
+        XCTAssertEqual(m.coordinator.phase, .failed(message))
+        m.coordinator.stop()
+    }
+
+    func testVaultNotFoundWithFailingHealthIsOffline() async throws {
+        let transport = ScriptedTransport()
+        let m = try await syncingMac(transport)
+        await transport.server.replaceVault(nil)
+        await transport.failHealth(SyncTransportError.http(status: 502, message: ""))
+        await m.coordinator.syncNow()
+        guard case .offline = m.coordinator.phase else {
+            return XCTFail("expected offline, got \(m.coordinator.phase)")
+        }
+        m.coordinator.stop()
+    }
+
+    func testReplacedVaultStillSaysReplaced() async throws {
+        let transport = ScriptedTransport()
+        let m = try await syncingMac(transport)
+        await transport.server.replaceVault(VaultMetadata(vaultID: UUID(), salt: Data(count: 16), iterations: 1_000,
+                                                          wrappedKey: Data(count: 60)))
+        await m.coordinator.syncNow()
+        XCTAssertEqual(m.coordinator.phase, .failed(SyncSetupError.vaultChanged.message))
+        m.coordinator.stop()
+    }
+
+    // MARK: Updating the API key
+
+    private func rotatingMac(_ transport: ScriptedTransport, valid: ValidKeys, sleeps: SleepRecorder = SleepRecorder())
+        async throws -> (coordinator: SyncCoordinator, vault: LocalVault, secrets: InMemorySyncSecretsStore) {
+        let vault = try await LocalVault.open(persistence: InMemoryVaultPersistence(), newDeviceID: { "mbp" })
+        let secrets = InMemorySyncSecretsStore()
+        let coordinator = SyncCoordinator(vault: vault, secrets: secrets, defaults: defaults(),
+                                          makeTransport: { _, key in KeyCheckingTransport(base: transport, apiKey: key, valid: valid) },
+                                          iterations: 1_000, sleep: { try await sleeps.sleep($0) },
+                                          now: { Date(timeIntervalSince1970: 5_000) })
+        return (coordinator, vault, secrets)
+    }
+
+    func testUpdateAPIKeyResumesSyncingWithoutThePassphrase() async throws {
+        let transport = ScriptedTransport()
+        let valid = ValidKeys([apiKey])
+        let sleeps = SleepRecorder()
+        let m = try await rotatingMac(transport, valid: valid, sleeps: sleeps)
+        try await m.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await m.coordinator.createVault(passphrase: passphrase)
+
+        valid.set(["rotated-key-7890"])
+        let host = try await m.vault.save(Host(label: "nas", address: "nas.lan"))
+        await m.coordinator.syncNow()
+        XCTAssertEqual(m.coordinator.phase, .failed(SyncSetupError.unauthorized.message))
+
+        do {
+            try await m.coordinator.updateAPIKey("still-wrong-key")
+            XCTFail("expected unauthorized")
+        } catch {
+            XCTAssertEqual(error, .unauthorized)
+        }
+        XCTAssertEqual(try m.secrets.loadAPIKey(), apiKey, "a rejected key isn't saved")
+
+        try await m.coordinator.updateAPIKey("rotated-key-7890")
+        XCTAssertEqual(try m.secrets.loadAPIKey(), "rotated-key-7890")
+        XCTAssertEqual(m.coordinator.phase, .idle)
+        let stored = await transport.server.storedRecords.map(\.id)
+        XCTAssertTrue(stored.contains(host.id), "the pending edit was pushed with the new key")
+        await eventually("loop resumed") { sleeps.durations.contains(.seconds(60)) }
+        m.coordinator.stop()
+    }
+
+    func testUpdateAPIKeyWithoutAVaultKeyKeepsAskingForTheVault() async throws {
+        let transport = ScriptedTransport()
+        let valid = ValidKeys([apiKey, "new-key-123456"])
+        let m = try await rotatingMac(transport, valid: valid)
+        do {
+            try await m.coordinator.updateAPIKey("new-key-123456")
+            XCTFail("expected an error before connecting")
+        } catch {
+            XCTAssertEqual(error, .other("Connect to a sync server first."))
+        }
+        try await m.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await m.coordinator.updateAPIKey("new-key-123456")
+        XCTAssertEqual(m.coordinator.phase, .needsVault(exists: false))
+        XCTAssertEqual(try m.secrets.loadAPIKey(), "new-key-123456")
+        try await m.coordinator.createVault(passphrase: passphrase)
+        XCTAssertEqual(m.coordinator.phase, .idle)
+        m.coordinator.stop()
+    }
+
+    // MARK: lastSyncedAt
+
+    func testLastSyncedAtIsPersistedAndRestoredAtInit() async throws {
+        let transport = ScriptedTransport()
+        let m = try await syncingMac(transport)
+        m.coordinator.stop()
+        XCTAssertEqual(m.coordinator.lastSyncedAt, Date(timeIntervalSince1970: 5_000))
+        let relaunched = try await mac("mbp", transport: transport, secrets: m.secrets, defaults: m.defaults)
+        XCTAssertEqual(relaunched.coordinator.lastSyncedAt, Date(timeIntervalSince1970: 5_000))
+        relaunched.coordinator.disconnect()
+        XCTAssertNil(m.defaults.object(forKey: "sync.lastSyncedAt"))
+        let afterDisconnect = try await mac("mbp", transport: transport, defaults: m.defaults)
+        XCTAssertNil(afterDisconnect.coordinator.lastSyncedAt)
+    }
+
     // MARK: End to end: MacBook creates, Mac mini merges
 
     func testMacBookCreatesMacMiniMergesWithoutDuplicates() async throws {
@@ -630,4 +1007,69 @@ private final class SeenBox: @unchecked Sendable {
     private var _value: (URL, String)?
     var value: (URL, String)? { lock.withLock { _value } }
     func set(_ url: URL, _ key: String) { lock.withLock { _value = (url, key) } }
+}
+
+/// An `InMemorySyncSecretsStore` whose reads or deleteAll can be made to fail (a locked Keychain).
+private final class FlakySecrets: SyncSecretsStore, @unchecked Sendable {
+    struct KeychainError: Error {}
+    let base = InMemorySyncSecretsStore()
+    private let lock = NSLock()
+    private var _failReads = false
+    private var _failDelete = false
+    var failReads: Bool {
+        get { lock.withLock { _failReads } }
+        set { lock.withLock { _failReads = newValue } }
+    }
+    var failDelete: Bool {
+        get { lock.withLock { _failDelete } }
+        set { lock.withLock { _failDelete = newValue } }
+    }
+
+    func loadVaultKey() throws -> VaultKey? {
+        if failReads { throw KeychainError() }
+        return try base.loadVaultKey()
+    }
+    func saveVaultKey(_ key: VaultKey) throws { try base.saveVaultKey(key) }
+    func loadAPIKey() throws -> String? {
+        if failReads { throw KeychainError() }
+        return try base.loadAPIKey()
+    }
+    func saveAPIKey(_ key: String) throws { try base.saveAPIKey(key) }
+    func deleteAll() throws {
+        if failDelete { throw KeychainError() }
+        try base.deleteAll()
+    }
+}
+
+/// The server's API keys, changeable at runtime (key rotation).
+private final class ValidKeys: @unchecked Sendable {
+    private let lock = NSLock()
+    private var keys: Set<String>
+    init(_ keys: Set<String>) { self.keys = keys }
+    func set(_ keys: Set<String>) { lock.withLock { self.keys = keys } }
+    func accepts(_ key: String) -> Bool { lock.withLock { keys.contains(key) } }
+}
+
+/// Forwards to `ScriptedTransport` while `apiKey` is valid; otherwise every authenticated call is
+/// `.unauthorized` (health needs no key).
+private struct KeyCheckingTransport: SyncTransport {
+    let base: ScriptedTransport
+    let apiKey: String
+    let valid: ValidKeys
+
+    private func check() throws {
+        if !valid.accepts(apiKey) { throw SyncTransportError.unauthorized }
+    }
+    func health() async throws { try await base.health() }
+    func getVault() async throws -> VaultMetadata? { try check(); return try await base.getVault() }
+    func putVault(_ metadata: VaultMetadata) async throws { try check(); try await base.putVault(metadata) }
+    func rewrap(_ request: RewrapRequest) async throws -> VaultMetadata { try check(); return try await base.rewrap(request) }
+    func fetch(since: Int64, limit: Int) async throws -> RecordsPage {
+        try check()
+        return try await base.fetch(since: since, limit: limit)
+    }
+    func upsert(_ records: [EncryptedRecord]) async throws -> [EncryptedRecord] {
+        try check()
+        return try await base.upsert(records)
+    }
 }

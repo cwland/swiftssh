@@ -20,6 +20,16 @@ public enum SyncSetupError: Error, Equatable, Sendable {
     /// A pulled record failed its integrity check.
     case tampered
     case other(String)
+    /// The server or a proxy answered with a redirect, which sync never follows.
+    case redirected
+    /// macOS (App Transport Security) refused a plain http:// connection.
+    case insecureConnectionBlocked
+    /// The Keychain refused to hand out the saved API key or vault key (e.g. it is locked).
+    case keychainUnreadable
+    /// Disconnect couldn't delete the saved keys from the Keychain.
+    case keychainCleanupFailed
+    /// `GET /v1/vault` answered 404 while `/health` answered: wrong proxy path, or the server was reset.
+    case noVaultAtAddress
 
     /// Short, user-facing.
     public var message: String {
@@ -35,6 +45,16 @@ public enum SyncSetupError: Error, Equatable, Sendable {
         case .vaultChanged: "The vault on the server was replaced. Disconnect and set up sync again."
         case .tampered: "A record on the server failed its integrity check, so syncing stopped."
         case .other(let message): message
+        case .redirected:
+            "The sync server redirected the request. Use the final address (check your proxy) in Settings → Sync."
+        case .insecureConnectionBlocked: "macOS blocked a plain http:// connection. Use your https:// proxy address."
+        case .keychainUnreadable:
+            "Couldn't read the sync keys from the Keychain. Open Settings → Sync and try again."
+        case .keychainCleanupFailed:
+            "Disconnected, but the sync keys couldn't be removed from the Keychain. Setting up sync again replaces them."
+        case .noVaultAtAddress:
+            "The sync server answered but has no vault at this address. Check the server address (proxy path) "
+                + "— or, if the server was reset, disconnect and set up sync again."
         }
     }
 
@@ -48,6 +68,8 @@ public enum SyncSetupError: Error, Equatable, Sendable {
             case .unreachable(let reason): self = .unreachable(reason)
             case .http(let status, _): self = .server(status)
             case .invalidResponse: self = .other("The sync server's answer wasn't understood.")
+            case .redirected: self = .redirected
+            case .insecureConnectionBlocked: self = .insecureConnectionBlocked
             }
         case let error as SyncError:
             switch error {
@@ -60,6 +82,8 @@ public enum SyncSetupError: Error, Equatable, Sendable {
             case .invalidVaultMetadata: self = .other("The vault settings on the server are invalid.")
             case .invalidServerResponse: self = .other("The sync server sent an inconsistent answer.")
             }
+        case let error as URLError where error.code == .appTransportSecurityRequiresSecureConnection:
+            self = .insecureConnectionBlocked
         case let error as URLError:
             self = .unreachable(error.code == .timedOut ? "the request timed out" : "network error \(error.code.rawValue)")
         case is DecodingError: self = .other("The sync server's answer wasn't understood.")

@@ -35,6 +35,8 @@ public final class LocalVault {
     @ObservationIgnored private var queuedPersists: [Int: Task<Void, Error>] = [:]
     @ObservationIgnored private var persistCounter = 0
     @ObservationIgnored private var syncState = SyncState(vaultID: nil, lastSeq: 0)
+    /// While a merge join is pending: the ids this Mac had before it started (persisted).
+    @ObservationIgnored private var mergeJoinLocalIDs: Set<UUID>?
     /// Hosts the user set back to "Automatic" OS; the next connection probes them once more.
     /// In memory only: it is an app-session hint, not synced data.
     @ObservationIgnored private var osProbeRequests: Set<UUID> = []
@@ -60,6 +62,7 @@ public final class LocalVault {
             let vault = LocalVault(persistence: persistence, deviceID: contents.deviceID)
             vault.syncState = contents.syncState
             vault.dirty = contents.dirty
+            vault.mergeJoinLocalIDs = contents.mergeJoinLocalIDs
             for record in contents.records where vault.records[record.id] == nil {
                 vault.records[record.id] = record
                 vault.order.append(record.id)
@@ -184,7 +187,8 @@ public final class LocalVault {
             }
         }
         let contents = VaultFileContents(deviceID: deviceID, syncState: syncState,
-                                         records: order.compactMap { records[$0] }, dirty: dirty)
+                                         records: order.compactMap { records[$0] }, dirty: dirty,
+                                         mergeJoinLocalIDs: mergeJoinLocalIDs)
         do {
             try await persistence.save(contents)
             lastSaveError = nil
@@ -240,6 +244,7 @@ extension LocalVault {
         records = [:]
         order = []
         dirty = []
+        mergeJoinLocalIDs = nil
         revision += 1
         try await enqueuePersist().value
     }
@@ -249,6 +254,7 @@ extension LocalVault {
     /// Forgets the vault this Mac synced with (disconnect); the write is queued, `flush()` waits for it.
     func syncResetState() {
         syncState = SyncState(vaultID: nil, lastSeq: 0)
+        mergeJoinLocalIDs = nil
         enqueuePersist()
     }
 
@@ -260,10 +266,29 @@ extension LocalVault {
     /// Every stored record (tombstones included), in insertion order.
     var allRecords: [PlainRecord] { order.compactMap { records[$0] } }
 
+    /// The ids of the records this Mac had before the pending merge join started. The first call
+    /// of a join records (and persists) the current ids; later calls, including after a relaunch,
+    /// return the same set until `applyJoinPlan` (or a replace join / disconnect) clears it, so
+    /// records pulled by an interrupted attempt are never mistaken for local ones.
+    func syncBeginMergeJoin() async throws -> Set<UUID> {
+        if let ids = mergeJoinLocalIDs { return ids }
+        let ids = Set(order)
+        mergeJoinLocalIDs = ids
+        try await enqueuePersist().value
+        return ids
+    }
+
     /// Applies a join de-duplication plan: drops `plan.removedIDs` without tombstones and stores
     /// `plan.updated` as local, dirty edits (new `updatedAt`). Doesn't call `localChangeHandler`.
+    /// Ends the pending merge join (clears the `syncBeginMergeJoin` marker) in the same write.
     func applyJoinPlan(_ plan: JoinDeduplicator.Plan) async throws {
-        guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty else { return }
+        guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty else {
+            if mergeJoinLocalIDs != nil {
+                mergeJoinLocalIDs = nil
+                try await enqueuePersist().value
+            }
+            return
+        }
         for id in plan.removedIDs {
             records[id] = nil
             dirty.remove(id)
@@ -276,6 +301,7 @@ extension LocalVault {
                                                           updatedAt: record.updatedAt)
             store(record)
         }
+        mergeJoinLocalIDs = nil
         revision += 1
         try await enqueuePersist().value
     }
