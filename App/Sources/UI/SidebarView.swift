@@ -7,9 +7,11 @@ struct SidebarView: View {
     let vault: LocalVault
 
     var body: some View {
+        // Counted once per render (one pass over the vault), not once per row.
+        let counts = SidebarCounts(vault: vault)
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SidebarItem.allCases, id: \.self) { item in
-                SidebarRow(item: item, count: SidebarCounts(vault: vault).count(for: item),
+                SidebarRow(item: item, count: counts.count(for: item),
                            isSelected: navigation.sidebar == item) {
                     navigation.sidebar = item
                 }
@@ -32,7 +34,8 @@ struct SidebarView: View {
 
 private struct SidebarRow: View {
     let item: SidebarItem
-    let count: Int
+    /// nil: no number (a section whose screen isn't built yet).
+    let count: Int?
     let isSelected: Bool
     let action: () -> Void
 
@@ -43,10 +46,12 @@ private struct SidebarRow: View {
                     .frame(width: 24)
                 Text(item.title)
                 Spacer(minLength: 4)
-                Text("\(count)")
-                    .font(.system(size: 12))
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
+                if let count {
+                    Text("\(count)")
+                        .font(.system(size: 12))
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
             }
             .font(.system(size: Theme.sidebarFontSize))
             .foregroundStyle(Color.primary)
@@ -60,7 +65,7 @@ private struct SidebarRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(item.title), \(count)")
+        .accessibilityLabel(count.map { "\(item.title), \($0)" } ?? item.title)
     }
 }
 

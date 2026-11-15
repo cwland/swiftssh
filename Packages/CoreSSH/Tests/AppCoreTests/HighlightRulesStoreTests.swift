@@ -137,6 +137,77 @@ final class HighlightRulesStoreTests: XCTestCase {
         XCTAssertEqual(plan, JoinDeduplicator.Plan())
     }
 
+    // MARK: Two lists meeting (merge join, edits on two Macs before they sync)
+
+    private func remoteRecord(_ rules: [HighlightRule], updatedAt: Date) throws -> PlainRecord {
+        try PlainRecord(TerminalHighlightRules(rules: rules, updatedAt: updatedAt), deviceID: "dev-2")
+    }
+
+    func testPulledListIsUnitedWithAnUnsyncedLocalList() async throws {
+        let local = rule("staging")
+        store.add(local)
+        let remote = [rule("prod"), rule("db")]
+        // Older and newer than the local edit: either way neither Mac's rules are lost.
+        for updatedAt in [Date(timeIntervalSince1970: 1_000), Date().addingTimeInterval(3_600)] {
+            try await vault.syncApply([try remoteRecord(remote, updatedAt: updatedAt)])
+            XCTAssertEqual(store.rules.map(\.pattern), ["prod", "db", "staging"], "vault order, then local-only rules")
+            let stored = try XCTUnwrap(vault.syncDirtyRecords().first { $0.id == TerminalHighlightRules.singletonID },
+                                       "the union is a local edit, uploaded by the next sync")
+            XCTAssertEqual(stored.deviceID, "dev-1")
+            XCTAssertGreaterThan(stored.updatedAt, updatedAt)
+        }
+    }
+
+    func testPulledListReplacesACleanLocalList() async throws {
+        store.add(rule("staging"))
+        let local = try XCTUnwrap(vault.syncDirtyRecords().first)
+        try await vault.syncMarkClean([local.id: local.updatedAt])
+        try await vault.syncApply([try remoteRecord([rule("prod")], updatedAt: Date().addingTimeInterval(60))])
+        XCTAssertEqual(store.rules.map(\.pattern), ["prod"], "a synced list is replaced as before (deletes stick)")
+        XCTAssertTrue(vault.syncDirtyRecords().isEmpty)
+    }
+
+    func testOwnEchoIsNotUnited() async throws {
+        let prod = rule("prod")
+        store.add(prod)
+        let pushed = try XCTUnwrap(vault.syncDirtyRecords().first)
+        store.delete(id: prod.id)
+        store.add(rule("db"))
+        // The pull returns this Mac's own earlier upload: the newer local list stays as it is.
+        try await vault.syncApply([pushed])
+        XCTAssertEqual(store.rules.map(\.pattern), ["db"])
+    }
+
+    func testPulledSupersetIsTakenClean() async throws {
+        let prod = rule("prod")
+        store.add(prod)
+        try await vault.syncApply([try remoteRecord([prod, rule("db")], updatedAt: Date().addingTimeInterval(60))])
+        XCTAssertEqual(store.rules.map(\.pattern), ["prod", "db"])
+        XCTAssertTrue(vault.syncDirtyRecords().isEmpty, "nothing of this Mac's is missing, so nothing to upload")
+    }
+
+    // MARK: A list this version can't read
+
+    func testUnreadableListIsReadOnlyAndNeverOverwritten() async throws {
+        let json = #"{"id":"6C1B2E1A-0B5D-4E0C-9D6A-48494C495445","updatedAt":1793000000000,"deleted":false,"rules":{"v":2}}"#
+        let record = PlainRecord(id: TerminalHighlightRules.singletonID, type: .aiSettings,
+                                 updatedAt: Date(timeIntervalSince1970: 1_793_000_000), deleted: false,
+                                 deviceID: "dev-2", payload: Data(json.utf8))
+        try await vault.syncApply([record])
+        XCTAssertTrue(store.isReadOnly)
+        XCTAssertEqual(store.rules, [])
+        store.add(rule("prod"))
+        XCTAssertEqual(vault.allRecords.first { $0.id == TerminalHighlightRules.singletonID }?.payload, Data(json.utf8),
+                       "the newer version's list is kept")
+        XCTAssertTrue(vault.syncDirtyRecords().isEmpty)
+    }
+
+    func testReadableListIsNotReadOnly() async {
+        XCTAssertFalse(store.isReadOnly)
+        store.add(rule("prod"))
+        XCTAssertFalse(store.isReadOnly)
+    }
+
     /// End to end through the sync engine: rules made on one Mac arrive, decrypted, on the other,
     /// and an edit there comes back.
     func testRulesSyncBetweenTwoMacs() async throws {

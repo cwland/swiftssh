@@ -7,6 +7,7 @@ import CoreModels
 ///
 /// The store exists before the vault is open (terminal views and Settings hold it from launch);
 /// `attach(_:)` connects it once the vault is ready. Until then it has no rules and ignores edits.
+/// It also ignores edits while `isReadOnly` (a list this version can't read).
 /// Reading `rules` or `compiled` in an observation scope tracks the vault, so rules pulled from
 /// another Mac reach observers (open terminals, the Settings pane) like local edits do.
 @MainActor @Observable
@@ -31,6 +32,16 @@ public final class HighlightRulesStore {
     public var isAvailable: Bool {
         _ = vaultGeneration
         return vault != nil
+    }
+
+    /// True when the vault holds a rules list this app version can't read (a newer version
+    /// changed its shape): `rules` is empty and every edit is refused, so the list is never
+    /// overwritten. Settings shows the pane read-only with a note to update the app.
+    public var isReadOnly: Bool {
+        _ = vaultGeneration
+        guard let vault else { return false }
+        return vault.hasLiveRecord(TerminalHighlightRules.recordType, id: TerminalHighlightRules.singletonID)
+            && vault.get(TerminalHighlightRules.self, id: TerminalHighlightRules.singletonID) == nil
     }
 
     /// The rules in priority order (earlier wins where matches overlap).
@@ -116,7 +127,7 @@ public final class HighlightRulesStore {
     }
 
     private func save(_ list: [HighlightRule]) {
-        guard let vault else { return }
+        guard let vault, !isReadOnly else { return }
         let existing = vault.get(TerminalHighlightRules.self, id: TerminalHighlightRules.singletonID)
         if let existing {
             guard existing.rules != list else { return }

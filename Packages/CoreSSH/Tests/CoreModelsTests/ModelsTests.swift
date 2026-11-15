@@ -59,6 +59,37 @@ final class ModelsTests: XCTestCase {
         XCTAssertThrowsError(try CoreJSON.decoder.decode(HighlightRule.self, from: Data(##"{"color":"#FFFFFF"}"##.utf8)))
     }
 
+    /// A rule a newer version wrote that this one can't read is skipped, not the whole list.
+    func testHighlightRulesSkipRulesThatDoNotDecode() throws {
+        let json = #"""
+        {"id":"6C1B2E1A-0B5D-4E0C-9D6A-48494C495445","updatedAt":1793000000000,"deleted":false,
+         "rules":[{"pattern":"prod","color":"#E5484D"},{"color":"#FFFFFF"},7,{"pattern":"db"}]}
+        """#
+        let record = try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: Data(json.utf8))
+        XCTAssertEqual(record.rules.map(\.pattern), ["prod", "db"])
+        let shapeChanged = #"{"id":"6C1B2E1A-0B5D-4E0C-9D6A-48494C495445","updatedAt":1793000000000,"deleted":false,"rules":{"v":2}}"#
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: Data(shapeChanged.utf8)),
+                             "a list that changed shape doesn't decode (the store then shows it read-only)")
+    }
+
+    func testHighlightRulesUnionKeepsVaultOrderThenLocalOnlyRules() {
+        let shared = UUID()
+        let vaultShared = HighlightRule(id: shared, pattern: "prod", color: "#E5484D")
+        var localShared = vaultShared
+        localShared.isBold = true
+        let v1 = HighlightRule(pattern: "db", color: "#E5484D")
+        let l1 = HighlightRule(pattern: "staging", color: "#E5484D")
+        let l2 = HighlightRule(pattern: "error", color: "#E5484D")
+
+        let preferVault = TerminalHighlightRules.union(vault: [v1, vaultShared], local: [l1, localShared, l2],
+                                                       preferLocalVersions: false)
+        XCTAssertEqual(preferVault, [v1, vaultShared, l1, l2])
+        let preferLocal = TerminalHighlightRules.union(vault: [v1, vaultShared], local: [l1, localShared, l2],
+                                                       preferLocalVersions: true)
+        XCTAssertEqual(preferLocal, [v1, localShared, l1, l2], "a rule in both lists keeps the newer copy's version")
+        XCTAssertEqual(TerminalHighlightRules.union(vault: [], local: [l1], preferLocalVersions: false), [l1])
+    }
+
     func testHighlightRulesAndAISettingsNeverDecodeAsEachOther() throws {
         let rules = try CoreJSON.encoder.encode(TerminalHighlightRules(rules: [HighlightRule(pattern: "x", color: "#000000")]))
         XCTAssertThrowsError(try CoreJSON.decoder.decode(AISettings.self, from: rules))

@@ -72,13 +72,26 @@ public final class LocalVault {
         return LocalVault(persistence: persistence, deviceID: newDeviceID())
     }
 
-    /// Non-deleted records of type `M`, in insertion order.
-    /// How many records of `types` are not deleted (sidebar counts). Observed through `revision`.
-    public func liveCount(of types: Set<SyncRecordType>) -> Int {
+    /// How many records of each type are not deleted (sidebar counts), in one pass over the
+    /// records without decoding them. Types with none are missing. Observed through `revision`.
+    public func liveCounts() -> [SyncRecordType: Int] {
         _ = revision
-        return records.values.reduce(0) { $0 + (types.contains($1.type) && !$1.deleted ? 1 : 0) }
+        var counts: [SyncRecordType: Int] = [:]
+        for record in records.values where !record.deleted {
+            counts[record.type, default: 0] += 1
+        }
+        return counts
     }
 
+    /// True when a record with `id` and `type` exists and isn't deleted, whether or not this
+    /// app version can decode it (`get(_:id:)` returns nil for one it can't).
+    public func hasLiveRecord(_ type: SyncRecordType, id: UUID) -> Bool {
+        _ = revision
+        guard let record = records[id] else { return false }
+        return record.type == type && !record.deleted
+    }
+
+    /// Non-deleted records of type `M`, in insertion order.
     public func all<M: SyncableModel>(_: M.Type) -> [M] {
         order.compactMap { id in
             guard let record = records[id], record.type == M.recordType, !record.deleted else { return nil }
@@ -234,10 +247,26 @@ extension LocalVault {
     }
 
     /// Stores each pulled record that wins `MergeRule` against the local copy, clean.
+    ///
+    /// The one exception is the highlight rules list (`TerminalHighlightRules`): when another
+    /// Mac's list arrives while this Mac's copy has unsynced edits (a merge join marks everything
+    /// dirty; or both Macs edited before syncing), the two lists are united instead of one
+    /// replacing the other (`unitedHighlightRules`).
     func syncApply(_ incoming: [PlainRecord]) async throws {
         var changed = false
         for record in incoming {
-            if let existing = records[record.id],
+            if let united = unitedHighlightRules(record) {
+                switch united {
+                case .keepLocal:
+                    continue
+                case .store(let local):
+                    store(local)
+                    changed = true
+                    continue
+                case .applyIncoming:
+                    break
+                }
+            } else if let existing = records[record.id],
                !MergeRule.incomingWins((record.updatedAt, record.deviceID),
                                        over: (existing.updatedAt, existing.deviceID)) {
                 continue
@@ -250,6 +279,41 @@ extension LocalVault {
         guard changed else { return }
         revision += 1
         try await enqueuePersist().value
+    }
+
+    private enum UnitedRules {
+        /// The local copy already holds the union and is the newer edit: nothing to do.
+        case keepLocal
+        /// Store this union as a local, dirty edit (uploaded by the next sync).
+        case store(PlainRecord)
+        /// The pulled list already holds everything: store it clean, as any pulled record.
+        case applyIncoming
+    }
+
+    /// For a pulled highlight rules list meeting an unsynced local copy: how to keep both lists.
+    /// nil for every other record, and when the local copy is synced (clean), missing, deleted or
+    /// unreadable, when the pulled one is deleted or unreadable, or when it is this Mac's own
+    /// upload coming back (a newer local edit, such as a delete, must not be undone by it).
+    private func unitedHighlightRules(_ incoming: PlainRecord) -> UnitedRules? {
+        guard incoming.id == TerminalHighlightRules.singletonID, incoming.type == TerminalHighlightRules.recordType,
+              !incoming.deleted, incoming.deviceID != deviceID, dirty.contains(incoming.id),
+              let existing = records[incoming.id], existing.type == incoming.type, !existing.deleted,
+              let local = try? existing.decode(TerminalHighlightRules.self),
+              let pulled = try? incoming.decode(TerminalHighlightRules.self)
+        else { return nil }
+        let localIsNewer = !MergeRule.incomingWins((incoming.updatedAt, incoming.deviceID),
+                                                   over: (existing.updatedAt, existing.deviceID))
+        let rules = TerminalHighlightRules.union(vault: pulled.rules, local: local.rules,
+                                                 preferLocalVersions: localIsNewer)
+        if rules == pulled.rules { return .applyIncoming }
+        if rules == local.rules, localIsNewer { return .keepLocal }
+        var united = pulled
+        united.rules = rules
+        united.updatedAt = Timestamps.nextUpdate(previous: max(incoming.updatedAt, existing.updatedAt))
+        guard let record = try? PlainRecord(united, deviceID: deviceID, keepingUnknownFieldsOf: incoming) else {
+            return nil
+        }
+        return .store(record)
     }
 
     func syncMarkAllDirty() async throws {

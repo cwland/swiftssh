@@ -22,10 +22,15 @@ final class SidebarCountsTests: XCTestCase {
         XCTAssertEqual(counts.count(for: .hosts), 1, "deleted hosts don't count")
         XCTAssertEqual(counts.count(for: .keychain), 2, "identities and keys")
         XCTAssertEqual(counts.count(for: .snippets), 2)
-        XCTAssertEqual(counts.count(for: .knownHosts), 1)
+        XCTAssertNil(counts.count(for: .knownHosts), "no number beside the placeholder screen")
         XCTAssertEqual(counts.count(for: .logs), 0)
 
+        XCTAssertEqual(counts.count(for: .logs), LogsViewModel(vault: vault).rows.count, "matches the Logs screen")
+        vault.saveNow(ConnectionLog(hostLabel: "a", username: "u", deviceName: "mini"))
         vault.saveNow(Host(label: "c", address: "c"))
-        XCTAssertEqual(counts.count(for: .hosts), 2, "follows the vault")
+        let after = SidebarCounts(vault: vault)
+        XCTAssertEqual(after.count(for: .hosts), 2, "follows the vault")
+        XCTAssertEqual(after.count(for: .logs), 1)
+        XCTAssertEqual(after.count(for: .logs), LogsViewModel(vault: vault).rows.count)
     }
 }
