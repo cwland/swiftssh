@@ -120,7 +120,7 @@ final class BadgeImageRulesTests: XCTestCase {
     }
 
     func testSettingsPanes() {
-        XCTAssertEqual(SettingsPane.allCases, [.connection, .terminal, .sync, .onePassword, .osIcons, .recentlyDeleted])
+        XCTAssertEqual(SettingsPane.allCases, [.connection, .terminal, .highlighting, .sync, .onePassword, .osIcons, .recentlyDeleted])
         XCTAssertEqual(SettingsPane.recentlyDeleted.title, "Recently Deleted")
         XCTAssertEqual(SettingsPane.recentlyDeleted.systemImage, "trash")
         XCTAssertEqual(SettingsPane.terminal.title, "Terminal")

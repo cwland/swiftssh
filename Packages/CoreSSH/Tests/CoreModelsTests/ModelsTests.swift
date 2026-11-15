@@ -24,6 +24,10 @@ final class ModelsTests: XCTestCase {
         try roundTrip(ConnectionLog(id: id, hostID: other, hostLabel: "Docker", username: "root", deviceName: "mini", startedAt: date, endedAt: date, saved: true, updatedAt: date, deleted: true))
         try roundTrip(ShellHistoryEntry(id: id, command: "ls", hostID: other, executedAt: date, updatedAt: date, deleted: true))
         try roundTrip(AISettings(id: id, provider: .anthropic, baseURL: "https://x", model: "m", apiKey: "k", updatedAt: date, deleted: true))
+        try roundTrip(TerminalHighlightRules(id: id, rules: [
+            HighlightRule(id: other, pattern: "prod\\d+", isRegularExpression: true, matchCase: true, color: "#E5484D",
+                          isBold: true, isEnabled: false),
+        ], updatedAt: date, deleted: true))
     }
 
     func testRecordTypesAreUniquePerModel() {
@@ -33,6 +37,33 @@ final class ModelsTests: XCTestCase {
             ShellHistoryEntry.recordType, AISettings.recordType,
         ]
         XCTAssertEqual(Set(types).count, SyncRecordType.allCases.count)
+        // The one deliberate exception: the highlight rules share the settings slot, so app versions
+        // before v0.11 never see an unknown record type (see `TerminalHighlightRules`).
+        XCTAssertEqual(TerminalHighlightRules.recordType, .aiSettings)
+    }
+
+    func testHighlightRulesRecordIsASingleton() {
+        XCTAssertEqual(TerminalHighlightRules(rules: []).id, TerminalHighlightRules.singletonID)
+        XCTAssertEqual(TerminalHighlightRules.singletonID.uuidString, "6C1B2E1A-0B5D-4E0C-9D6A-48494C495445")
+    }
+
+    func testHighlightRuleDecodesLeniently() throws {
+        let json = #"{"pattern":"prod","isBold":"yes","future":1}"#
+        let rule = try CoreJSON.decoder.decode(HighlightRule.self, from: Data(json.utf8))
+        XCTAssertEqual(rule.pattern, "prod")
+        XCTAssertFalse(rule.isRegularExpression)
+        XCTAssertFalse(rule.matchCase)
+        XCTAssertFalse(rule.isBold)
+        XCTAssertTrue(rule.isEnabled)
+        XCTAssertEqual(rule.color, "")
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(HighlightRule.self, from: Data(##"{"color":"#FFFFFF"}"##.utf8)))
+    }
+
+    func testHighlightRulesAndAISettingsNeverDecodeAsEachOther() throws {
+        let rules = try CoreJSON.encoder.encode(TerminalHighlightRules(rules: [HighlightRule(pattern: "x", color: "#000000")]))
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(AISettings.self, from: rules))
+        let ai = try CoreJSON.encoder.encode(AISettings(baseURL: "https://x", model: "m"))
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: ai))
     }
 
     func testHostDefaults() {

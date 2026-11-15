@@ -146,5 +146,6 @@ final class JoinDeduplicatorTests: XCTestCase {
         try check(Identity(label: "i", username: "u"))
         try check(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "x"))
         try check(Snippet(name: "s", script: "x"))
+        try check(TerminalHighlightRules(rules: [HighlightRule(pattern: "p", color: "#000000")]))
     }
 }
