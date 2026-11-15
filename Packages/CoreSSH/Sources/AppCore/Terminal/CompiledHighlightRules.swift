@@ -65,6 +65,16 @@ extension HighlightRule {
 ///   listed in `errors`); nothing here throws or traps.
 /// - Overlaps: the earlier rule in the list wins; a later rule's match that overlaps text an
 ///   earlier rule already claimed is dropped whole (not trimmed).
+/// - Text cut by a chunk boundary (`openStart`/`openEnd` in `matches(in:budget:openStart:openEnd:)`):
+///   a word or phrase match whose whole-word guard touches the cut is dropped, because the word
+///   may go on in the other chunk (`prod|uction`). A missed highlight, never a wrong one (as
+///   `KeywordHighlighter` does). Regular expressions aren't affected.
+///
+/// Speed: the enabled word or phrase rules that share a case mode are compiled into one
+/// alternation (`(rule1)|(rule2)|…`), so a line is scanned once for all of them, not once per rule;
+/// the capture group says which rule matched. Where a scan hits, the later rules are tried at that
+/// position too and the scan goes on from the next position, so every place each rule matches is
+/// found and the result is exactly that of matching the rules one by one, in priority order.
 ///
 /// Guarding against slow regular expressions (catastrophic backtracking), in three layers:
 /// 1. Regular-expression rules skip lines longer than `maxRegexLineLength` UTF-8 bytes (literal
@@ -105,13 +115,31 @@ public final class CompiledHighlightRules: @unchecked Sendable, Equatable {
         var isRegularExpression: Bool
         var style: HighlightStyle
         var ruleIndex: Int
+        /// A word or phrase rule whose first (last) character is a word character: its match needs
+        /// a non-word character, or the line's edge, before (after) it.
+        var guardsStart = false
+        var guardsEnd = false
+        /// Matched through `literalGroups[group]` instead of on its own.
+        var group: Int?
     }
+
+    /// Enabled word or phrase rules of one case mode, as one alternation: capture group `k + 1`
+    /// is `members[k]` (entry indices, in priority order).
+    struct LiteralGroup {
+        var regex: NSRegularExpression
+        var members: [Int]
+    }
+
+    /// At most this many hits are examined per literal group and line (a line of 2,000 one-letter
+    /// matches); `maxMatchesPerLine` caps what is kept anyway.
+    static let maxLiteralHitsPerLine = 4 * maxMatchesPerLine
 
     /// The list this was compiled from (all rules, enabled or not).
     public let rules: [HighlightRule]
     /// Rule id → why it is skipped (empty pattern, invalid regular expression). Disabled rules included.
     public let errors: [UUID: String]
     let entries: [Entry]
+    let literalGroups: [LiteralGroup]
 
     public static let empty = CompiledHighlightRules(rules: [])
 
@@ -123,11 +151,31 @@ public final class CompiledHighlightRules: @unchecked Sendable, Equatable {
             let compiled = Self.compile(rule)
             if let error = compiled.error { errors[rule.id] = error }
             guard rule.isEnabled, let regex = compiled.regex else { continue }
-            entries.append(Entry(regex: regex, isRegularExpression: rule.isRegularExpression,
-                                 style: HighlightStyle(color: rule.rgbColor, isBold: rule.isBold), ruleIndex: index))
+            var entry = Entry(regex: regex, isRegularExpression: rule.isRegularExpression,
+                              style: HighlightStyle(color: rule.rgbColor, isBold: rule.isBold), ruleIndex: index)
+            if !rule.isRegularExpression {
+                entry.guardsStart = rule.pattern.first.map(Self.isWordCharacter) ?? false
+                entry.guardsEnd = rule.pattern.last.map(Self.isWordCharacter) ?? false
+            }
+            entries.append(entry)
+        }
+        var groups: [LiteralGroup] = []
+        for matchCase in [false, true] {
+            let members = entries.indices.filter {
+                !entries[$0].isRegularExpression && rules[entries[$0].ruleIndex].matchCase == matchCase
+            }
+            guard !members.isEmpty else { continue }
+            let source = members.map { "(\(Self.literalPattern(rules[entries[$0].ruleIndex].pattern)))" }
+                .joined(separator: "|")
+            // Can't fail (each part compiled on its own); if it did, those rules match one by one.
+            guard let regex = try? NSRegularExpression(pattern: source, options: matchCase ? [] : [.caseInsensitive])
+            else { continue }
+            for member in members { entries[member].group = groups.count }
+            groups.append(LiteralGroup(regex: regex, members: members))
         }
         self.errors = errors
         self.entries = entries
+        self.literalGroups = groups
     }
 
     /// No enabled, valid rule: matching finds nothing.
@@ -180,18 +228,31 @@ public final class CompiledHighlightRules: @unchecked Sendable, Equatable {
 
     /// Matches in one line of text (no line breaks expected), sorted by position and never
     /// overlapping. `budget` (optional) bounds regex time across calls; see the type's notes.
-    public func matches(in line: String, budget: MatchBudget? = nil) -> [Match] {
+    /// `openStart` (`openEnd`): the text may go on before (after) the line, in another chunk of
+    /// output; word or phrase matches whose whole-word guard touches that edge are dropped.
+    public func matches(in line: String, budget: MatchBudget? = nil, openStart: Bool = false,
+                        openEnd: Bool = false) -> [Match] {
         guard !entries.isEmpty, !line.isEmpty, !(budget?.isSpent ?? false) else { return [] }
         let utf8Count = line.utf8.count
         let utf16 = line.utf16
         let fullRange = NSRange(location: 0, length: utf16.count)
         let regexAllowed = utf8Count <= Self.maxRegexLineLength
         var claimed: [(range: NSRange, entry: Int)] = []
+        let literalMatches = literalGroups.map { ownMatches(of: $0, in: line, length: fullRange.length) }
 
         for (entryIndex, entry) in entries.enumerated() {
             if claimed.count >= Self.maxMatchesPerLine { break }
             if entry.isRegularExpression, !regexAllowed { continue }
             if budget?.isSpent ?? false { break }
+            if let group = entry.group {
+                let member = literalGroups[group].members.firstIndex(of: entryIndex) ?? 0
+                for range in literalMatches[group][member] {
+                    if claimed.count >= Self.maxMatchesPerLine { break }
+                    let overlaps = claimed.contains { NSIntersectionRange($0.range, range).length > 0 }
+                    if !overlaps { claimed.append((range, entryIndex)) }
+                }
+                continue
+            }
             let start = ContinuousClock.now
             let limit = entry.isRegularExpression ? Self.regexTimeLimit : nil
             entry.regex.enumerateMatches(in: line, options: limit == nil ? [] : [.reportProgress],
@@ -232,8 +293,49 @@ public final class CompiledHighlightRules: @unchecked Sendable, Equatable {
             let upper = advance(toUTF16: item.range.location + item.range.length)
             guard upper > lower else { continue }
             let entry = entries[item.entry]
+            // Claimed first, dropped after: the text stays plain rather than going to a later rule.
+            if openStart, entry.guardsStart, lower == 0 { continue }
+            if openEnd, entry.guardsEnd, upper == utf8Count { continue }
             result.append(Match(range: lower..<upper, style: entry.style, ruleIndex: entry.ruleIndex))
         }
         return result
+    }
+
+    /// Each member's own matches in `line` (UTF-16 ranges), as matching that rule alone would find
+    /// them: leftmost first, not overlapping each other. One scan of the group's alternation; at
+    /// each hit the later members are tried at the same position (the alternation reports only
+    /// the first that matches there), and the scan goes on from the next position so matches
+    /// hidden inside a hit are found too.
+    private func ownMatches(of group: LiteralGroup, in line: String, length: Int) -> [[NSRange]] {
+        let count = group.members.count
+        var hits = Array(repeating: [NSRange](), count: count)
+        var location = 0
+        var examined = 0
+        while location < length, examined < Self.maxLiteralHitsPerLine,
+              let hit = group.regex.firstMatch(in: line, options: [.withTransparentBounds],
+                                               range: NSRange(location: location, length: length - location)) {
+            examined += 1
+            let position = hit.range.location
+            guard let first = (0..<count).first(where: { hit.range(at: $0 + 1).location != NSNotFound }) else { break }
+            if hit.range.length > 0 { hits[first].append(hit.range) }
+            for later in (first + 1)..<count {
+                let regex = entries[group.members[later]].regex
+                if let other = regex.firstMatch(in: line, options: [.anchored, .withTransparentBounds],
+                                                range: NSRange(location: position, length: length - position)),
+                   other.range.length > 0 {
+                    hits[later].append(other.range)
+                }
+            }
+            location = position + 1
+        }
+        return hits.map { ranges in
+            var own: [NSRange] = []
+            var end = 0
+            for range in ranges where range.location >= end {
+                own.append(range)
+                end = range.location + range.length
+            }
+            return own
+        }
     }
 }

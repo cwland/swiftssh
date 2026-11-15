@@ -140,6 +140,95 @@ final class CompiledHighlightRulesTests: XCTestCase {
                        ["disk full", "now", "full"])
     }
 
+    // MARK: Word and phrase rules matched together (one alternation per case mode)
+
+    func testLiteralRulesShareOneScanPerCaseMode() {
+        let compiled = CompiledHighlightRules(rules: [rule("prod"), rule("DB", matchCase: true), rule("db\\d", regex: true),
+                                                      rule("staging"), rule("Error", matchCase: true)])
+        XCTAssertEqual(compiled.literalGroups.map(\.members.count), [2, 2], "case-insensitive, then match case")
+        XCTAssertEqual(matched(compiled.rules, in: "PROD DB db1 Staging error Error"),
+                       ["PROD", "DB", "db1", "Staging", "Error"])
+    }
+
+    func testPriorityHoldsWhenALaterRuleMatchesFurtherLeft() {
+        // The alternation alone would take "a-" (it starts first); the earlier rule "-x" must win.
+        XCTAssertEqual(matched([rule("-x"), rule("a-")], in: "a-x"), ["-x"])
+        XCTAssertEqual(matched([rule("a-"), rule("-x")], in: "a-x"), ["a-"])
+    }
+
+    func testPriorityHoldsAtTheSamePosition() {
+        XCTAssertEqual(matched([rule("prod"), rule("prod-db")], in: "prod-db up"), ["prod"])
+        XCTAssertEqual(matched([rule("prod-db"), rule("prod")], in: "prod-db up"), ["prod-db"])
+    }
+
+    func testAMatchHiddenInsideAnotherRulesHitIsFound() {
+        // "on prod" is hidden inside the first hit of "run on" in the scan; it is still found and,
+        // being the earlier rule, wins.
+        XCTAssertEqual(matched([rule("on prod"), rule("run on")], in: "run on prod, run on"),
+                       ["on prod", "run on"])
+    }
+
+    func testARulesOwnMatchesDoNotOverlap() {
+        XCTAssertEqual(matched([rule("--")], in: "-----"), ["--", "--"])
+        // "--" alone matches at 2 and 4 (not 3); the one at 2 overlaps "-x-" and is dropped whole.
+        XCTAssertEqual(matched([rule("-x-"), rule("--")], in: "-x----"), ["-x-", "--"])
+        XCTAssertEqual(matched([rule("-x-"), rule("--")], in: "-x---"), ["-x-"])
+    }
+
+    /// Against matching the rules one by one in priority order (the plain definition), on many
+    /// lines and rule sets with heavy overlaps.
+    func testCombinedMatchingEqualsMatchingRuleByRule() {
+        var generator = SplitMix(seed: 42)
+        let alphabet = ["a", "b", "-", " ", "A", "é", "_"]
+        func text(_ length: Int) -> String {
+            (0..<length).map { _ in alphabet[Int(generator.next() % UInt64(alphabet.count))] }.joined()
+        }
+        for _ in 0..<400 {
+            let rules = (0..<(1 + Int(generator.next() % 5))).map { _ in
+                rule(text(1 + Int(generator.next() % 3)), regex: generator.next() % 5 == 0,
+                     matchCase: generator.next() % 2 == 0)
+            }
+            let line = text(Int(generator.next() % 30))
+            let compiled = CompiledHighlightRules(rules: rules)
+            XCTAssertEqual(compiled.matches(in: line), referenceMatches(compiled, in: line),
+                           "rules \(rules.map { ($0.pattern, $0.matchCase, $0.isRegularExpression) }) line \"\(line)\"")
+        }
+    }
+
+    /// The rule-by-rule definition (each rule's own matches, then claims in priority order).
+    private func referenceMatches(_ compiled: CompiledHighlightRules, in line: String) -> [CompiledHighlightRules.Match] {
+        let full = NSRange(location: 0, length: line.utf16.count)
+        var claimed: [(NSRange, CompiledHighlightRules.Entry)] = []
+        for entry in compiled.entries {
+            for result in entry.regex.matches(in: line, range: full) where result.range.length > 0 {
+                if claimed.count >= CompiledHighlightRules.maxMatchesPerLine { break }
+                if !claimed.contains(where: { NSIntersectionRange($0.0, result.range).length > 0 }) {
+                    claimed.append((result.range, entry))
+                }
+            }
+        }
+        return claimed.sorted { $0.0.location < $1.0.location }.map { range, entry in
+            let lower = String(line.utf16.prefix(range.location))!.utf8.count
+            let upper = String(line.utf16.prefix(range.location + range.length))!.utf8.count
+            return CompiledHighlightRules.Match(range: lower..<upper, style: entry.style, ruleIndex: entry.ruleIndex)
+        }
+    }
+
+    // MARK: Cut by a chunk boundary
+
+    func testGuardedEdgeMatchesAreDroppedWhenTheTextIsOpen() {
+        let compiled = CompiledHighlightRules(rules: [rule("prod"), rule("-x"), rule("db", regex: true)])
+        let line = "prod -x db prod"
+        XCTAssertEqual(compiled.matches(in: line).count, 4)
+        XCTAssertEqual(compiled.matches(in: line, openStart: true).map(\.range.lowerBound), [5, 8, 11])
+        XCTAssertEqual(compiled.matches(in: line, openEnd: true).map(\.range.lowerBound), [0, 5, 8])
+        // "-x" has no guard at its start (it begins with "-"), and regex rules have none at all.
+        XCTAssertEqual(CompiledHighlightRules(rules: [rule("-x"), rule("db", regex: true)])
+            .matches(in: "-x db", openStart: true, openEnd: true).count, 2)
+        XCTAssertEqual(CompiledHighlightRules(rules: [rule("-x")]).matches(in: "a -x", openEnd: true), [],
+                       "its end is a word character, so it is guarded there")
+    }
+
     func testMatchesAreSortedByPosition() {
         let compiled = CompiledHighlightRules(rules: [rule("zeta"), rule("alpha")])
         XCTAssertEqual(compiled.matches(in: "alpha zeta alpha").map(\.range.lowerBound), [0, 6, 11])
@@ -208,5 +297,18 @@ final class CompiledHighlightRulesTests: XCTestCase {
         }
         XCTAssertEqual(HighlightPalette.entry(for: HighlightPalette.colors[3].color)?.name, "Green")
         XCTAssertNil(HighlightPalette.entry(for: RGBColor(red: 1, green: 2, blue: 3)))
+    }
+}
+
+/// A small seeded generator, so the randomized test is the same on every run.
+private struct SplitMix: RandomNumberGenerator {
+    var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
     }
 }

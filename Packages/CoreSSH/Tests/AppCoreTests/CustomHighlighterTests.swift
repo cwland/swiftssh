@@ -46,31 +46,31 @@ final class CustomHighlighterTests: XCTestCase {
     }
 
     func testMultipleRulesAndMatchesOnALine() {
-        XCTAssertEqual(run("prod db prod", [rule("prod"), rule("db", color: blue)]),
-                       "\(open(red))prod\(close) \(open(blue))db\(close) \(open(red))prod\(close)")
+        XCTAssertEqual(run("prod db prod\r\n", [rule("prod"), rule("db", color: blue)]),
+                       "\(open(red))prod\(close) \(open(blue))db\(close) \(open(red))prod\(close)\r\n")
     }
 
     func testBold() {
-        XCTAssertEqual(run("a prod", [rule("prod", bold: true)]), "a \(open(red, bold: true))prod\(closeBold)")
+        XCTAssertEqual(run("a prod\r\n", [rule("prod", bold: true)]), "a \(open(red, bold: true))prod\(closeBold)\r\n")
     }
 
     func testBoldNotAddedWhereTextIsAlreadyBoldOrFaint() {
         XCTAssertEqual(run("\u{1B}[1mprod\u{1B}[0m", [rule("prod", bold: true)]),
                        "\u{1B}[1m\(open(red))prod\(close)\u{1B}[0m")
-        XCTAssertEqual(run("\u{1B}[2mprod\u{1B}[22m prod", [rule("prod", bold: true)]),
-                       "\u{1B}[2m\(open(red))prod\(close)\u{1B}[22m \(open(red, bold: true))prod\(closeBold)")
+        XCTAssertEqual(run("\u{1B}[2mprod\u{1B}[22m prod ", [rule("prod", bold: true)]),
+                       "\u{1B}[2m\(open(red))prod\(close)\u{1B}[22m \(open(red, bold: true))prod\(closeBold) ")
     }
 
     func testProgramColoursAreNotOverridden() {
-        let text = "\u{1B}[32mprod\u{1B}[39m prod"
-        XCTAssertEqual(run(text, [rule("prod")]), "\u{1B}[32mprod\u{1B}[39m \(open(red))prod\(close)")
+        let text = "\u{1B}[32mprod\u{1B}[39m prod\r\n"
+        XCTAssertEqual(run(text, [rule("prod")]), "\u{1B}[32mprod\u{1B}[39m \(open(red))prod\(close)\r\n")
         let inverse = "\u{1B}[7mprod\u{1B}[27m"
         XCTAssertEqual(run(inverse, [rule("prod")]), inverse)
     }
 
     func testOffOnTheAlternateScreen() {
-        let text = "\u{1B}[?1049hprod\u{1B}[?1049lprod"
-        XCTAssertEqual(run(text, [rule("prod")]), "\u{1B}[?1049hprod\u{1B}[?1049l\(open(red))prod\(close)")
+        let text = "\u{1B}[?1049hprod\u{1B}[?1049lprod\r\n"
+        XCTAssertEqual(run(text, [rule("prod")]), "\u{1B}[?1049hprod\u{1B}[?1049l\(open(red))prod\(close)\r\n")
     }
 
     func testNeverInsertsInsideEscapeSequences() {
@@ -85,15 +85,87 @@ final class CustomHighlighterTests: XCTestCase {
     }
 
     func testTabIsPartOfARun() {
-        XCTAssertEqual(run("a\tb", [rule("a\tb")]), "\(open(red))a\tb\(close)")
+        XCTAssertEqual(run("a\tb\r\n", [rule("a\tb")]), "\(open(red))a\tb\(close)\r\n")
     }
 
     func testChunkBoundaryMissesButNeverHolds() {
         let rules = [rule("prod")]
         let h = CustomHighlighter(rules: CompiledHighlightRules(rules: rules))
         XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("pr".utf8))), as: UTF8.self), "pr")
-        XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("od prod".utf8))), as: UTF8.self),
-                       "od \(open(red))prod\(close)")
+        XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("od prod\r\n".utf8))), as: UTF8.self),
+                       "od \(open(red))prod\(close)\r\n")
+    }
+
+    // A word touching a chunk edge may go on in the other chunk: a missed highlight, never a wrong one.
+
+    private func chunks(_ parts: [String], _ rules: [HighlightRule]) -> [String] {
+        let h = CustomHighlighter(rules: CompiledHighlightRules(rules: rules))
+        return parts.map { String(decoding: h.process(ArraySlice(Array($0.utf8))), as: UTF8.self) }
+    }
+
+    func testWordAtTheEndOfAChunkIsNotHighlighted() {
+        // "production" split as "prod" | "uction": "prod" must not be coloured inside it.
+        XCTAssertEqual(chunks(["deploy prod", "uction\r\n"], [rule("prod")]), ["deploy prod", "uction\r\n"])
+        // A phrase whose last character isn't a word character has no guard there: still coloured.
+        XCTAssertEqual(chunks(["a prod:"], [rule("prod:")]), ["a \(open(red))prod:\(close)"])
+    }
+
+    func testWordAtTheStartOfAChunkAfterAWordIsNotHighlighted() {
+        // A rule "uction" must not match the tail of "production" split as "prod" | "uction".
+        XCTAssertEqual(chunks(["prod", "uction now\r\n"], [rule("uction")]), ["prod", "uction now\r\n"])
+        // After a space, a line break or an escape sequence the start is a real word start.
+        XCTAssertEqual(chunks(["go ", "prod now\r\n"], [rule("prod")]), ["go ", "\(open(red))prod\(close) now\r\n"])
+        XCTAssertEqual(chunks(["x\r\n", "prod now\r\n"], [rule("prod")]),
+                       ["x\r\n", "\(open(red))prod\(close) now\r\n"])
+        XCTAssertEqual(chunks(["x\u{1B}[0m", "prod now\r\n"], [rule("prod")]),
+                       ["x\u{1B}[0m", "\(open(red))prod\(close) now\r\n"])
+        // After a cut non-ASCII character (could be a letter), too.
+        let e = Array("é".utf8)
+        let h = CustomHighlighter(rules: CompiledHighlightRules(rules: [rule("prod")]))
+        _ = h.process(ArraySlice([e[0]]))
+        XCTAssertEqual(h.process(ArraySlice([e[1]] + Array("prod now\r\n".utf8))), [e[1]] + Array("prod now\r\n".utf8))
+    }
+
+    func testRegexRulesAreNotAffectedByChunkEdges() {
+        XCTAssertEqual(chunks(["deploy prod"], [rule("prod", regex: true)]), ["deploy \(open(red))prod\(close)"])
+    }
+
+    func testEdgeMatchStaysPlainRatherThanGoingToALaterRule() {
+        XCTAssertEqual(chunks(["a prod"], [rule("prod"), rule("prod", regex: true, color: blue)]), ["a prod"])
+    }
+
+    // MARK: Floods
+
+    func testLargeChunksInQuickSuccessionPassThroughPlain() {
+        var clock = ContinuousClock.now
+        let h = CustomHighlighter(rules: CompiledHighlightRules(rules: [rule("prod")]), now: { clock })
+        let big = String(repeating: "prod ok\r\n", count: 2_000) // 18 KB
+        let small = "prod ok\r\n"
+        let coloured = "\(open(red))prod\(close) ok\r\n"
+        func feed(_ text: String) -> String { String(decoding: h.process(ArraySlice(Array(text.utf8))), as: UTF8.self) }
+
+        XCTAssertTrue(feed(big).hasPrefix(coloured), "the first big chunk isn't a flood yet")
+        clock += .milliseconds(2)
+        XCTAssertEqual(feed(big), big, "a big chunk right after another: plain")
+        clock += .milliseconds(2)
+        XCTAssertEqual(feed(small), coloured, "small chunks are always matched")
+        clock += .milliseconds(50)
+        XCTAssertTrue(feed(big).hasPrefix(coloured), "output slowed down: matched again")
+        clock += .milliseconds(9)
+        XCTAssertEqual(feed(big), big)
+    }
+
+    func testFloodSkipKeepsTrackingTheTerminalState() {
+        var clock = ContinuousClock.now
+        let h = CustomHighlighter(rules: CompiledHighlightRules(rules: [rule("prod")]), now: { clock })
+        _ = h.process(ArraySlice(Array("x\r\n".utf8)))
+        clock += .milliseconds(1)
+        // A flood chunk that switches to the alternate screen (vim) at its end.
+        let flood = Array(String(repeating: "prod ok\r\n", count: 2_000).utf8) + Array("\u{1B}[?1049h".utf8)
+        XCTAssertEqual(h.process(ArraySlice(flood)), flood)
+        clock += .seconds(1)
+        XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("prod\r\n".utf8))), as: UTF8.self), "prod\r\n",
+                       "still knows it is on the alternate screen")
     }
 
     func testEveryByteIsKeptForAllSplits() {
@@ -111,8 +183,8 @@ final class CustomHighlighterTests: XCTestCase {
     }
 
     func testUnicodeMatches() {
-        XCTAssertEqual(run("Ünïcödé ÉCOLE école", [rule("école")]),
-                       "Ünïcödé \(open(red))ÉCOLE\(close) \(open(red))école\(close)")
+        XCTAssertEqual(run("Ünïcödé ÉCOLE école\r\n", [rule("école")]),
+                       "Ünïcödé \(open(red))ÉCOLE\(close) \(open(red))école\(close)\r\n")
     }
 
     func testInvalidUTF8RunIsPassedThrough() {
@@ -122,15 +194,15 @@ final class CustomHighlighterTests: XCTestCase {
     }
 
     func testInvalidRegexNeverCrashes() {
-        XCTAssertEqual(run("(x prod", [rule("(x", regex: true), rule("prod")]), "(x \(open(red))prod\(close)")
+        XCTAssertEqual(run("(x prod\r\n", [rule("(x", regex: true), rule("prod")]), "(x \(open(red))prod\(close)\r\n")
     }
 
     func testUpdateAppliesLive() {
         let h = CustomHighlighter()
         XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("prod ".utf8))), as: UTF8.self), "prod ")
         h.update(rules: CompiledHighlightRules(rules: [rule("prod")]))
-        XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("prod".utf8))), as: UTF8.self),
-                       "\(open(red))prod\(close)")
+        XCTAssertEqual(String(decoding: h.process(ArraySlice(Array("prod\r\n".utf8))), as: UTF8.self),
+                       "\(open(red))prod\(close)\r\n")
     }
 
     func testStateIsTrackedWhileThereAreNoRules() {
@@ -167,8 +239,8 @@ final class CustomHighlighterTests: XCTestCase {
     }
 
     func testCustomRulesWinOverBuiltInKeywords() {
-        XCTAssertEqual(pipeline("error on prod: error", [rule("on prod: error")]),
-                       "\(keyword("error", .error)) \(open(red))on prod: error\(close)")
+        XCTAssertEqual(pipeline("error on prod: error\r\n", [rule("on prod: error")]),
+                       "\(keyword("error", .error)) \(open(red))on prod: error\(close)\r\n")
         XCTAssertEqual(pipeline("failed ok\r\n", [rule("failed", color: blue)]),
                        "\(open(blue))failed\(close) \(keyword("ok", .ok))\r\n")
     }
