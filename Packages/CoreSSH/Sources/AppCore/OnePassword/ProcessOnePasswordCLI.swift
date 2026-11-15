@@ -359,7 +359,10 @@ final class ChildProcess: Sendable {
             }
             let notLaunched = !state.launching && state.stop != nil
             let drained = state.stdoutEOF && state.stderrEOF
-            guard notLaunched || (state.exited && (drained || state.stop != nil || force)) else { return nil }
+            // After a stop (timeout, cancel, overflow) still wait for the pipes to drain, so stderr
+            // written before the kill is kept; `force` (drainGrace after exit) covers a grandchild
+            // that holds a pipe open.
+            guard notLaunched || (state.exited && (drained || force)) else { return nil }
             state.finished = true
             state.stdout = Data()
             return (continuation, result, state.timer)
