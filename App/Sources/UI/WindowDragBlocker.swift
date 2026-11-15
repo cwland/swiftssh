@@ -6,7 +6,7 @@ import AppKit
 /// The top bar sits in the hidden title bar, where AppKit starts a window drag for a mouse-down on any
 /// spot SwiftUI doesn't claim (for example the see-through parts of an unselected tab), so a tab drag
 /// sometimes moved the whole window. Behind a tab, this watches mouse-downs before AppKit handles them
-/// and makes the window unmovable for that one click; the tab's own drag (reorder, drop on a terminal)
+/// and makes the window unmovable until the button is released; the tab's own drag (reorder, drop on a terminal)
 /// is unaffected. Empty parts of the bar still move the window.
 struct WindowDragBlocker: NSViewRepresentable {
     func makeNSView(context: Context) -> BlockerView { BlockerView() }
@@ -36,11 +36,15 @@ struct WindowDragBlocker: NSViewRepresentable {
                           !self.isHiddenOrHasHiddenAncestor else { return }
                     let point = self.convert(event.locationInWindow, from: nil)
                     guard self.bounds.contains(point) else { return }
-                    // The title bar decides whether to move the window while it handles this
-                    // mouse-down; it is movable again right after.
+                    // macOS starts moving the window once the mouse moves, not on the mouse-down, so
+                    // the window stays unmovable until every button is released (the tab's drag runs
+                    // its own loop, so a mouse-up event can't be relied on to arrive here).
                     window.isMovable = false
-                    DispatchQueue.main.async { [weak window] in
-                        MainActor.assumeIsolated { window?.isMovable = true }
+                    Task { @MainActor [weak window] in
+                        while NSEvent.pressedMouseButtons != 0 {
+                            try? await Task.sleep(for: .milliseconds(50))
+                        }
+                        window?.isMovable = true
                     }
                 }
                 return event

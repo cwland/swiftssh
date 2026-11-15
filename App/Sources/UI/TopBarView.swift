@@ -467,7 +467,7 @@ private struct TopTabPill: View {
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
-                .fill(isSelected ? Theme.tabBackground : Color.clear)
+                .fill(isSelected ? Theme.tabBackground : Theme.tabInactiveBackground)
         )
     }
 }
@@ -506,7 +506,7 @@ private struct SessionTabPill: View {
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
-                .fill(isSelected ? Theme.tabBackground : Color.clear)
+                .fill(isSelected ? Theme.tabBackground : Theme.tabInactiveBackground)
         )
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         // Dragging the pill moves the tab, never the window.
@@ -607,7 +607,7 @@ private struct WorkspaceTabPill: View {
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
-                .fill(isSelected ? Theme.tabBackground : Color.clear)
+                .fill(isSelected ? Theme.tabBackground : Theme.tabInactiveBackground)
         )
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
         // Dragging the pill moves the tab, never the window.

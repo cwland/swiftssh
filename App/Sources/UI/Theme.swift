@@ -7,7 +7,10 @@ import AppCore
 enum Theme {
     // Top bar
     static let topBarBackground = Color(hex: "#23263A")
-    static let tabBackground = Color(hex: "#2F3348")
+    /// The selected tab.
+    static let tabBackground = Color(hex: "#41455E")
+    /// Every other tab: its own box, so you can see where one tab ends and the next begins.
+    static let tabInactiveBackground = Color(hex: "#2D3046")
     static let topBarForeground = Color.white
     static let topBarHeight: CGFloat = 52
     static let tabCornerRadius: CGFloat = 10
