@@ -8,7 +8,7 @@ struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
     let sessions: SessionManager
-    /// Task 4 passes environment.terminalSettings (RootView); Task 5 resolves the one-line merge.
+    /// Per-Mac terminal settings, for the inherited "Default (…)" theme labels.
     let terminalSettings: TerminalSettings
 
     @State private var showTagFilter = false

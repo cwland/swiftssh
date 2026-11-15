@@ -8,6 +8,10 @@ A native macOS SSH client and terminal emulator inspired by the design and workf
 
 See the full [project specification](docs/SPEC.md).
 
+**Terminal themes:** Settings → Terminal has a theme gallery (Automatic, Reimagined Light/Dark and 18 bundled themes) and the text size (⌘= / ⌘− / ⌘0). Hosts and groups can have their own theme, which syncs to every Mac; open tabs update live.
+
+**Third-party themes:** Bundled terminal themes are MIT-licensed by their authors; see `Packages/CoreSSH/Sources/AppCore/Resources/terminal-themes-notices.txt` (also in Settings → Terminal → Theme credits).
+
 ## Building the Mac app
 
 The Xcode project is generated from `App/project.yml` with XcodeGen (it is not committed):
