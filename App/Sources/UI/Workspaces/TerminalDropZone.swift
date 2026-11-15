@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 import AppCore
 
@@ -99,6 +100,21 @@ struct TerminalDropZoneModifier: ViewModifier {
                 }
             }
             .animation(.easeOut(duration: 0.12), value: hoverEdge)
+            // SwiftUI can skip `dropExited` (the panes rearrange mid-drag, or the dragged pane is the
+            // one under the cursor), which would leave the overlay up. Once no mouse button is held
+            // (two readings in a row, so a drop on mouse-up finishes first), the drag is over.
+            .task(id: hoverEdge != nil) {
+                guard hoverEdge != nil else { return }
+                var upTicks = 0
+                while upTicks < 2 {
+                    try? await Task.sleep(for: .milliseconds(150))
+                    if Task.isCancelled { return }
+                    upTicks = NSEvent.pressedMouseButtons == 0 ? upTicks + 1 : 0
+                }
+                hoverEdge = nil
+            }
+            .onChange(of: isDragSource) { hoverEdge = nil }
+            .onChange(of: isEnabled) { hoverEdge = nil }
             .onDrop(of: [.text], delegate: TerminalDropDelegate(
                 isEnabled: isEnabled && !isDragSource,
                 size: size,
