@@ -5,7 +5,7 @@ import SSHCore
 
 /// A terminal tab: the disconnected banner (when the session ended), the terminal, and sheets for
 /// the host key and password prompts. The tab's theme and text size follow the host's and its
-/// groups' themes, Settings → Terminal and the system appearance live (see `appearance`).
+/// groups' themes, Settings → Terminal and the system appearance live (see `resolvedAppearance`).
 struct TerminalTabView: View {
     let tab: TerminalTab
     let sessions: SessionManager
@@ -18,6 +18,7 @@ struct TerminalTabView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
+        let appearance = resolvedAppearance
         VStack(spacing: 0) {
             if case .disconnected(let message) = tab.state, !isAutoReconnecting {
                 DisconnectedBanner(message: bannerMessage(message),
@@ -46,8 +47,10 @@ struct TerminalTabView: View {
                         .padding(12)
                     }
                 }
+                // Only behind the terminal: the disconnected banner keeps the system look, so its
+                // text stays readable when the theme and Light/Dark Mode differ.
+                .background(appearance.theme.background.swiftUIColor)
         }
-        .background(appearance.theme.background.swiftUIColor)
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
                 .interactiveDismissDisabled()
@@ -62,7 +65,7 @@ struct TerminalTabView: View {
     /// click, a Host Details edit, a group menu choice, a sync from another Mac, or Light/Dark.
     /// Only the tab's own host is decoded (not every saved host); a deleted host reads as nil and
     /// gets the app default, as does quick connect.
-    private var appearance: TerminalAppearance {
+    private var resolvedAppearance: TerminalAppearance {
         _ = vault.revision
         let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
         let theme = TerminalThemeResolver.theme(

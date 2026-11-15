@@ -27,13 +27,4 @@ extension TerminalTheme {
         ansi.map(\.swiftTermColor)
     }
 
-    /// Automatic's background (Reimagined Light in Aqua, Reimagined Dark in Dark Aqua) as a color
-    /// that follows the appearance it's drawn in, for the area around the terminal.
-    static func dynamicAutomaticBackground(catalog: TerminalThemeCatalog = .shared) -> SwiftUI.Color {
-        let light = catalog.automatic(prefersDark: false).background
-        let dark = catalog.automatic(prefersDark: true).background
-        return SwiftUI.Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark.nsColor : light.nsColor
-        })
-    }
 }
