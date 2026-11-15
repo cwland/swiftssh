@@ -19,6 +19,8 @@ struct HostsView: View {
     @State private var renameText = ""
     @State private var groupToDelete: HostGroup?
     @State private var showDeleteGroup = false
+    /// The group whose "Theme…" gallery popover is open.
+    @State private var themeGroupID: UUID?
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var errorTitle = "Something went wrong"
@@ -205,11 +207,12 @@ struct HostsView: View {
                         .onTapGesture(count: 2) {
                             model.openGroup(group.id)
                         }
+                        .popover(isPresented: themeGalleryBinding(for: group.id), arrowEdge: .bottom) {
+                            groupThemeGallery(group)
+                        }
                         .contextMenu {
-                            Menu("Theme") {
-                                GroupThemeMenu(currentThemeID: model.themeID(ofGroup: group.id)) { id in
-                                    Task { try? await model.setTheme(id, forGroup: group.id) }
-                                }
+                            Button("Theme\u{2026}") {
+                                themeGroupID = group.id
                             }
                             Button("Rename") {
                                 groupToRename = group
@@ -223,6 +226,29 @@ struct HostsView: View {
                         }
                 }
             }
+        }
+    }
+
+    /// Open while `themeGroupID` is this group; closing it (Esc, a click outside) clears it.
+    private func themeGalleryBinding(for groupID: UUID) -> Binding<Bool> {
+        Binding(get: { themeGroupID == groupID },
+                set: { isOpen in
+                    if !isOpen && themeGroupID == groupID { themeGroupID = nil }
+                })
+    }
+
+    /// The gallery for the group's default theme ("Default" = no group theme: its parents', then
+    /// the app default). Each click saves at once and the popover stays open for comparing.
+    private func groupThemeGallery(_ group: HostGroup) -> some View {
+        let themeID = model.themeID(ofGroup: group.id)
+        let name = group.name.isEmpty ? "Untitled group" : group.name
+        return ThemeGalleryPopover(
+            title: "Theme for group \u{201C}\(name)\u{201D}",
+            selectedThemeID: themeID,
+            inheritedTheme: model.defaultTheme(ofGroup: group.id, appDefaultThemeID: terminalSettings.defaultThemeID),
+            unknownThemeID: themeID.flatMap { TerminalThemeCatalog.shared.contains($0) ? nil : $0 }
+        ) { id in
+            setTheme(id, forGroup: group.id)
         }
     }
 
@@ -321,6 +347,18 @@ struct HostsView: View {
             do {
                 try await model.renameGroup(id: groupID, name: name)
             } catch {
+                present(error)
+            }
+        }
+    }
+
+    /// Saves the group's theme; a failure closes the gallery and shows the error alert.
+    private func setTheme(_ themeID: String?, forGroup groupID: UUID) {
+        Task {
+            do {
+                try await model.setTheme(themeID, forGroup: groupID)
+            } catch {
+                themeGroupID = nil
                 present(error)
             }
         }
