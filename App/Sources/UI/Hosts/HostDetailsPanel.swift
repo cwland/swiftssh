@@ -44,7 +44,7 @@ private struct HostDetailsContent: View {
     @FocusState private var tagsFieldFocused: Bool
     @State private var showBadgePicker = false
     @State private var showOSPicker = false
-    @State private var showsMore = false
+    @State private var showThemeGallery = false
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -63,14 +63,6 @@ private struct HostDetailsContent: View {
                     credentialsCard
                     if let hint = details.reuseHint {
                         reuseHintCard(hint)
-                    }
-                    Button(showsMore ? "Show less" : "Show more") {
-                        showsMore.toggle()
-                    }
-                    .buttonStyle(.link)
-                    .padding(.horizontal, 4)
-                    if showsMore {
-                        terminalCard
                     }
                 }
                 .padding(16)
@@ -205,6 +197,7 @@ private struct HostDetailsContent: View {
                 TextField("Label", text: $details.label, prompt: Text("Name shown on the card"))
                     .textFieldStyle(.roundedBorder)
             }
+            themeField
             FieldColumn(title: "Parent group") {
                 Picker("Parent group", selection: $details.groupID) {
                     Text("None").tag(UUID?.none)
@@ -275,28 +268,37 @@ private struct HostDetailsContent: View {
         }
     }
 
-    private var terminalCard: some View {
-        DetailsCard {
-            Text("Terminal")
-                .font(.system(size: 13, weight: .semibold))
-            FieldColumn(title: "Theme") {
-                ThemePicker(themeID: $details.themeID, defaultLabel: themeDefaultLabel,
-                            unknownThemeID: details.unknownThemeID)
+    /// The host's terminal theme, near the top so it is easy to find: a swatch and the current
+    /// choice; clicking opens the gallery popover. Each click there saves at once (all the host's
+    /// tabs follow) and the popover stays open for comparing.
+    private var themeField: some View {
+        FieldColumn(title: "Theme") {
+            ThemeRowButton(title: details.themeSummary(appDefaultThemeID: terminalSettings.defaultThemeID),
+                           swatchTheme: rowSwatchTheme) {
+                showThemeGallery = true
+            }
+            .popover(isPresented: $showThemeGallery, arrowEdge: .leading) {
+                ThemeGalleryPopover(title: themeGalleryTitle,
+                                    selectedThemeID: details.themeID,
+                                    inheritedTheme: details.defaultTheme(appDefaultThemeID: terminalSettings.defaultThemeID),
+                                    unknownThemeID: details.unknownThemeID) { id in
+                    details.themeID = id
+                }
             }
         }
     }
 
-    /// What "Default" means for this host: the group's theme ("Nord — from group"), else the app
-    /// default theme's name, else "Automatic".
-    private var themeDefaultLabel: String {
-        let catalog = TerminalThemeCatalog.shared
-        if let id = details.inheritedThemeID, let theme = catalog.theme(id: id) {
-            return "\(theme.name) — from group"
-        }
-        if let id = terminalSettings.defaultThemeID, let theme = catalog.theme(id: id) {
-            return theme.name
-        }
-        return "Automatic"
+    /// The host's own theme when this build knows it, else what Default resolves to (which is
+    /// also what its tabs draw with for an unknown id); nil = Automatic.
+    private var rowSwatchTheme: TerminalTheme? {
+        if let id = details.themeID, let theme = TerminalThemeCatalog.shared.theme(id: id) { return theme }
+        return details.defaultTheme(appDefaultThemeID: terminalSettings.defaultThemeID)
+    }
+
+    private var themeGalleryTitle: String {
+        let name = details.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = name.isEmpty ? details.address : name
+        return shown.isEmpty ? "Theme" : "Theme for \u{201C}\(shown)\u{201D}"
     }
 
     private var credentialsCard: some View {

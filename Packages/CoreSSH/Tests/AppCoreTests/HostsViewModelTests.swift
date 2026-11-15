@@ -294,6 +294,17 @@ extension HostsViewModelTests {
         XCTAssertEqual(vm.inheritedThemeID(ofGroup: mid.id), "nord")
         XCTAssertNil(vm.inheritedThemeID(ofGroup: root.id))
     }
+
+    @MainActor func testDefaultThemeOfGroupIsParentThemeThenAppDefaultThenAutomatic() async throws {
+        let vault = try await makeVault()
+        let root = try await vault.save(HostGroup(name: "R", defaultThemeID: "nord"))
+        let leaf = try await vault.save(HostGroup(name: "L", parentID: root.id, defaultThemeID: "dracula"))
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.defaultTheme(ofGroup: leaf.id, appDefaultThemeID: "flexoki-dark")?.id, "nord")
+        XCTAssertEqual(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: "flexoki-dark")?.id, "flexoki-dark")
+        XCTAssertNil(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: nil))
+        XCTAssertNil(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: "from-the-future"))
+    }
 }
 
 private final class Fired: @unchecked Sendable { var value = false }

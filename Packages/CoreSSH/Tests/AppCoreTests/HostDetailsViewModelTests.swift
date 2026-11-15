@@ -930,4 +930,56 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertNil(vm.unknownThemeID)
         XCTAssertNil(vault.get(SavedHost.self, id: host.id))
     }
+
+    // MARK: Theme row and gallery (v0.6.1)
+
+    func testDefaultThemeIsGroupThemeThenAppDefaultThenAutomatic() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let grouped = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "nord"))
+        let loose = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        let groupedVM = HostDetailsViewModel(vault: vault, hostID: grouped.id)
+        let looseVM = HostDetailsViewModel(vault: vault, hostID: loose.id)
+        XCTAssertEqual(groupedVM.defaultTheme(appDefaultThemeID: "nord")?.id, "dracula")
+        XCTAssertEqual(looseVM.defaultTheme(appDefaultThemeID: "nord")?.id, "nord")
+        XCTAssertNil(looseVM.defaultTheme(appDefaultThemeID: nil))
+        XCTAssertNil(looseVM.defaultTheme(appDefaultThemeID: "from-the-future"))
+    }
+
+    func testDefaultThemeLabel() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let grouped = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id))
+        let loose = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: grouped.id).defaultThemeLabel(appDefaultThemeID: "nord"),
+                       "Dracula \u{2014} from group")
+        let looseVM = HostDetailsViewModel(vault: vault, hostID: loose.id)
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: "nord"), "Nord")
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: nil), "Automatic")
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: "from-the-future"), "Automatic")
+    }
+
+    func testThemeSummaryNamesOwnThemeDefaultOrUnknown() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "nord"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Nord")
+        vm.themeID = nil
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Default (Dracula \u{2014} from group)")
+        vm.groupID = nil
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Default (Automatic)")
+        vm.themeID = "from-the-future"
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Unknown theme (from-the-future)")
+    }
+
+    func testInheritedThemeIDIgnoresOtherHosts() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        _ = try await vault.save(SavedHost(label: "other", address: "o.example", groupID: group.id, themeID: "nord"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "flexoki-dark"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.inheritedThemeID, "dracula")
+        XCTAssertEqual(vm.themeID, "flexoki-dark")
+    }
 }
