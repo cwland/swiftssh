@@ -28,7 +28,7 @@ final class LocalVaultSyncStoreTests: XCTestCase {
         let reopened = try await open(p)
         let again = try await reopened.syncBeginMergeJoin()
         XCTAssertEqual(again, [a.id], "a retry after a relaunch reuses the pre-join ids")
-        try await reopened.applyJoinPlan(JoinDeduplicator.Plan(removedIDs: [], idMap: [:], updated: []))
+        try await reopened.applyJoinPlan(JoinDeduplicator.Plan(removedIDs: [], idMap: [:], updated: []), localIDs: [])
         let marker = await p.contents?.mergeJoinLocalIDs
         XCTAssertNil(marker)
         let fresh = try await reopened.syncBeginMergeJoin()

@@ -45,8 +45,9 @@ public final class SyncCoordinator {
     public private(set) var lastReport: SyncReport?
     /// Persisted in `UserDefaults` under "sync.serverURL".
     public private(set) var serverURL: URL?
-    /// The last failure of an action that doesn't throw (`disconnect()`); cleared by the next
-    /// successful `connect`, `disconnect` or `updateAPIKey`.
+    /// The last failure that the phase alone can't show: a `disconnect()` Keychain cleanup failure,
+    /// or a create/join error that moved the phase to the other form. Cleared by the next
+    /// successful `connect`, `createVault`, `joinVault`, `disconnect` or `updateAPIKey`.
     public private(set) var lastError: SyncSetupError?
 
     @ObservationIgnored private let vault: LocalVault

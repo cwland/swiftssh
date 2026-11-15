@@ -293,7 +293,7 @@ extension LocalVault {
     /// Records outside `localIDs` that came from other devices are vault records pulled by this or
     /// an earlier, interrupted attempt; the join's `markAllDirty` flagged them, so they are marked
     /// clean again here and not re-uploaded. (Records this Mac wrote stay dirty.)
-    func applyJoinPlan(_ plan: JoinDeduplicator.Plan, localIDs: Set<UUID> = []) async throws {
+    func applyJoinPlan(_ plan: JoinDeduplicator.Plan, localIDs: Set<UUID>) async throws {
         let pulled = dirty.filter { !localIDs.contains($0) && records[$0].map { $0.deviceID != deviceID } == true }
         guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty || !pulled.isEmpty else {
             if mergeJoinLocalIDs != nil {
