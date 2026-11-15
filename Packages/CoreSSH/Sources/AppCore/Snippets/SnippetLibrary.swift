@@ -3,7 +3,7 @@ import Observation
 import CoreModels
 
 /// Ready-made snippets for common server admin jobs ("New Snippet from Library…"). Adding one makes an
-/// ordinary snippet in a package named after its category; from then on it is the user's to edit.
+/// ordinary snippet in a package (a "group" in the UI) named after its category; from then on it is the user's to edit.
 ///
 /// Rules for entries: one line; mostly read-only; anything that changes the server (restart, stop,
 /// kill, install) asks for its target with a `{{placeholder}}`; nothing that wipes data. Docker's own

@@ -116,7 +116,7 @@ struct HostsView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
-            Text("Its hosts and subgroups move up one level. No hosts are deleted.")
+            Text("Its hosts and subgroups move up one level. No hosts are deleted. You can restore the group from Settings \u{2192} Recently Deleted.")
         }
         .alert(errorTitle, isPresented: $showError) {
             Button("OK", role: .cancel) {}

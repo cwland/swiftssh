@@ -6,13 +6,16 @@ import CoreModels
 /// and edits that save at once through `LocalVault.saveNow` (they sync). Every read comes from the
 /// vault. Names and package names are trimmed; a blank package means none. Every change is
 /// idempotent: writing what is stored saves nothing. Missing or deleted ids are ignored.
+///
+/// The UI calls a package a "group" (or "snippet group" where host groups could be meant); the
+/// identifiers and the stored `Snippet.package` field keep the old name, so sync is unchanged.
 @MainActor @Observable
 public final class SnippetsViewModel {
     /// Filters `sections` by name or script (case-insensitive, surrounding spaces ignored).
     public var searchText = ""
 
     @ObservationIgnored private let vault: LocalVault
-    /// Packages made with "New snippet package" that no snippet uses yet. Kept for this view model's
+    /// Packages made with "New group…" ("New snippet group") that no snippet uses yet. Kept for this view model's
     /// life only: a package exists in the vault only through its snippets.
     private var addedPackages: Set<String> = []
 
@@ -67,7 +70,7 @@ public final class SnippetsViewModel {
         return vault.get(Snippet.self, id: id)
     }
 
-    /// "New snippet package": shows an empty package (until snippets move into it). Returns the
+    /// "New group…": shows an empty package (until snippets move into it). Returns the
     /// trimmed name, or nil when it is blank.
     @discardableResult
     public func addPackage(_ name: String) -> String? {

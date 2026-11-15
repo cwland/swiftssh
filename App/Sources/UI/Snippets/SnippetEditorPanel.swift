@@ -15,7 +15,7 @@ struct SnippetEditorPanel: View {
     let onRun: () -> Void
     let onDuplicate: () -> Void
     let onDelete: () -> Void
-    /// "New package…" in the picker: ask for a name, then move this snippet there.
+    /// "New group…" in the picker: ask for a name, then move this snippet there.
     let onNewPackage: () -> Void
 
     @State private var name = ""
@@ -40,7 +40,7 @@ struct SnippetEditorPanel: View {
                             TextField("Name", text: $name, prompt: Text("Name shown on the card"))
                                 .textFieldStyle(.roundedBorder)
                         }
-                        FieldColumn(title: "Package") {
+                        FieldColumn(title: "Group") {
                             packagePicker
                         }
                     }
@@ -189,7 +189,7 @@ struct SnippetEditorPanel: View {
     }
 
     private var packagePicker: some View {
-        Picker("Package", selection: packageSelection) {
+        Picker("Group", selection: packageSelection) {
             Text("None").tag(PackageChoice.noPackage)
             if !packageOptions.isEmpty {
                 Divider()
@@ -198,7 +198,7 @@ struct SnippetEditorPanel: View {
                 }
             }
             Divider()
-            Text("New package\u{2026}").tag(PackageChoice.new)
+            Text("New group\u{2026}").tag(PackageChoice.new)
         }
         .labelsHidden()
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -214,7 +214,7 @@ struct SnippetEditorPanel: View {
         return options
     }
 
-    /// Reads the saved package; choosing one saves at once; "New package…" asks for a name instead.
+    /// Reads the saved package (shown as "Group"); choosing one saves at once; "New group…" asks for a name instead.
     private var packageSelection: Binding<PackageChoice> {
         Binding(
             get: { snippet.package.map(PackageChoice.package) ?? .noPackage },

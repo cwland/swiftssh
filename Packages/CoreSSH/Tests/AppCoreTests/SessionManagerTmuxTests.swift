@@ -224,4 +224,12 @@ final class SessionManagerTmuxTests: XCTestCase {
         await settle()
         XCTAssertEqual(sessions[1].sends, [])
     }
+
+    func testGroupStartupSnippetRunsForAHostWithoutItsOwnThenAttach() async throws {
+        let snippet = vault.saveNow(Snippet(name: "g", script: "cd /srv"))
+        let group = vault.saveNow(HostGroup(name: "Ops", defaultTmuxSession: .session("main"),
+                                            startupSnippetID: snippet.id))
+        _ = try manager.open(hostID: host(groupID: group.id).id)
+        await waitUntil("script and attach") { self.sessions.first?.sends == ["cd /srv\n", Self.attachMain] }
+    }
 }

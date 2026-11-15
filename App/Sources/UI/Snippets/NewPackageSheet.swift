@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// Asks for a package name. Packages exist only through their snippets, so the caller either moves
+/// Asks for a snippet group name. Groups exist only through their snippets, so the caller either moves
 /// snippets into it or creates a new snippet there (`explanation` says which).
+///
+/// The UI says "group" (or "snippet group"); the code and the stored field still say `package`.
 struct NewPackageSheet: View {
     let explanation: String
     let existingPackages: [String]
@@ -15,18 +17,18 @@ struct NewPackageSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("New package")
+            Text("New snippet group")
                 .font(.system(size: 15, weight: .semibold))
             Text(explanation)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("Name", text: $name, prompt: Text("Package name"))
+            TextField("Name", text: $name, prompt: Text("Group name"))
                 .textFieldStyle(.roundedBorder)
                 .focused($fieldFocused)
                 .onSubmit(submit)
             if existingPackages.contains(trimmed) {
-                Text("A package with this name already exists.")
+                Text("A group with this name already exists.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }

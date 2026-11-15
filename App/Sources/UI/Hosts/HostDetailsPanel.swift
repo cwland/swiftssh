@@ -319,26 +319,27 @@ private struct HostDetailsContent: View {
         }
     }
 
-    /// "Startup snippet": runs after sign-in, before tmux attach. Only snippets without
-    /// `{{placeholders}}` can be chosen. A saved choice that is now deleted or has placeholders
-    /// stays visible as "(unavailable)" so the user can see it and pick another.
+    /// "Startup snippet": runs after sign-in, before tmux attach. Default uses the nearest group's
+    /// ("Default (from group “Ops”: …)"); None runs nothing, not even a group's. Only snippets without
+    /// `{{placeholders}}` can be chosen. A saved choice that now has placeholders stays visible as
+    /// "(unavailable)" so the user can see it and pick another.
     private var startupSnippetField: some View {
         let candidates = details.startupCandidates()
-        let selected = details.startupSnippetID
-        let isUnavailable = selected.map { id in !candidates.contains { $0.id == id } } ?? false
+        let selection = details.startupSnippetSelection
+        let unavailableID: UUID? = {
+            guard case .snippet(let id) = selection, !candidates.contains(where: { $0.id == id }) else { return nil }
+            return id
+        }()
         let hasHidden = details.hiddenStartupSnippetCount > 0
         return FieldColumn(title: "Startup snippet") {
-            Picker("Startup snippet", selection: $details.startupSnippetID) {
-                Text("None").tag(UUID?.none)
-                if isUnavailable, let selected {
-                    Text("(unavailable)").tag(UUID?.some(selected))
+            Picker("Startup snippet", selection: $details.startupSnippetSelection) {
+                Text(details.inheritedStartupSnippetSummary).tag(StartupSnippetSelection.inherit)
+                Text("None").tag(StartupSnippetSelection.none)
+                if let unavailableID {
+                    Text("(unavailable)").tag(StartupSnippetSelection.snippet(unavailableID))
                 }
                 ForEach(candidates) { snippet in
-                    if let package = snippet.package, !package.isEmpty {
-                        Text("\(snippet.name) \u{2013} \(package)").tag(UUID?.some(snippet.id))
-                    } else {
-                        Text(snippet.name).tag(UUID?.some(snippet.id))
-                    }
+                    Text(startupSnippetPickerTitle(snippet)).tag(StartupSnippetSelection.snippet(snippet.id))
                 }
             }
             .labelsHidden()
@@ -545,6 +546,14 @@ private struct HostDetailsContent: View {
 }
 
 /// A white rounded card holding a column of fields.
+/// A snippet as the startup snippet pickers list it: "Name – Snippet group" when it is in a snippet
+/// group, else "Name".
+func startupSnippetPickerTitle(_ snippet: Snippet) -> String {
+    let name = snippet.name.isEmpty ? "Untitled snippet" : snippet.name
+    guard let group = snippet.package, !group.isEmpty else { return name }
+    return "\(name) \u{2013} \(group)"
+}
+
 struct DetailsCard<Content: View>: View {
     @ViewBuilder let content: Content
 

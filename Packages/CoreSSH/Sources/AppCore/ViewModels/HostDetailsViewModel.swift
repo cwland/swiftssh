@@ -27,6 +27,26 @@ public enum TmuxLabels {
     public static let invalidNameMessage = "Use 1\u{2013}64 letters, digits, underscores or hyphens"
 }
 
+/// The "Startup snippet" picker on a host: Default (the nearest group's), None, or one snippet.
+public enum StartupSnippetSelection: Hashable, Sendable {
+    /// Stored as no snippet and no None flag.
+    case inherit
+    /// Stored as `startupSnippetOff = true`: no snippet, not even a group's.
+    case none
+    case snippet(UUID)
+}
+
+public enum StartupSnippetLabels {
+    /// "Default (from group “Ops”: Go to app)", or "Default (none)" when no group sets one.
+    /// `snippetName` is the inherited snippet's name ("Untitled snippet" when blank).
+    public static func defaultSummary(_ inherited: InheritedStartupSnippet?, snippetName: String?) -> String {
+        guard let inherited else { return "Default (none)" }
+        let group = inherited.groupName.isEmpty ? "Untitled group" : inherited.groupName
+        let name = (snippetName ?? "").isEmpty ? "Untitled snippet" : snippetName!
+        return "Default (from group \u{201C}\(group)\u{201D}: \(name))"
+    }
+}
+
 public enum HostDetailsError: Error, Equatable, Sendable {
     case noReusedCredentials
 }
@@ -156,6 +176,38 @@ public final class HostDetailsViewModel {
             return id
         }
         set { update { $0.startupSnippetID = newValue } }
+    }
+
+    /// Default / None / a snippet. `.snippet` while the host's own snippet exists; else `.none` for the
+    /// None flag; else `.inherit`. Saves at once; choosing a snippet or Default clears the None flag.
+    public var startupSnippetSelection: StartupSnippetSelection {
+        get {
+            if let id = startupSnippetID { return .snippet(id) }
+            return host?.startupSnippetOff == true ? .none : .inherit
+        }
+        set {
+            update { host in
+                switch newValue {
+                case .inherit: host.startupSnippetID = nil; host.startupSnippetOff = nil
+                case .none: host.startupSnippetID = nil; host.startupSnippetOff = true
+                case .snippet(let id): host.startupSnippetID = id; host.startupSnippetOff = nil
+                }
+            }
+        }
+    }
+
+    /// The snippet typed after login (the host's own, else its groups'), or nil = none.
+    public var effectiveStartupSnippetID: UUID? {
+        guard let host else { return nil }
+        return directory.effectiveStartupSnippetID(for: host) { vault.get(Snippet.self, id: $0) != nil }
+    }
+
+    /// What "Default" means for this host, e.g. "Default (from group “Ops”: Go to app)".
+    public var inheritedStartupSnippetSummary: String {
+        guard let host else { return StartupSnippetLabels.defaultSummary(nil, snippetName: nil) }
+        let inherited = directory.inheritedStartupSnippet(for: host) { vault.get(Snippet.self, id: $0) != nil }
+        return StartupSnippetLabels.defaultSummary(
+            inherited, snippetName: inherited.flatMap { vault.get(Snippet.self, id: $0.snippetID)?.name })
     }
 
     /// Snippets that can be a startup snippet: those without placeholders, A–Z (as
