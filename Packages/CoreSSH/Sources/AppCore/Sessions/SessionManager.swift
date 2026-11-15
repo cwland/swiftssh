@@ -40,7 +40,7 @@ public final class TerminalTab: Identifiable {
     public fileprivate(set) var themeOverrideID: String?
     /// The window the tab belongs to; nil = the main window. New connections open in the main window;
     /// "Duplicate in New Window" and duplicates of its tabs open in another.
-    public fileprivate(set) var windowID: UUID?
+    public internal(set) var windowID: UUID?
 
     /// The connection log of the current attempt (the connection screen's steps); reset when an attempt
     /// starts (open, Reconnect / Start over, an automatic try, a typed password).
@@ -191,6 +191,12 @@ public final class TerminalTab: Identifiable {
     /// The saved host this tab connects to; nil for quick connect.
     public var savedHostID: UUID? { hostID }
 
+    /// The quick connect target this tab connects to; nil for a saved host.
+    var quickConnectTarget: QuickConnectTarget? {
+        if case .quickConnect(let quick) = target { return quick }
+        return nil
+    }
+
     /// Whether a typed password can be saved: only a saved host has somewhere to keep it.
     public var canSavePassword: Bool { hostID != nil }
 
@@ -266,6 +272,12 @@ fileprivate final class SessionAttempt {
     }
 }
 
+/// Workspaces (`SessionManager+Workspaces.swift`): a workspace's panes are ordinary tabs of `tabs` (so
+/// `tabs(inWindow:)` lists every session of the window, panes included, each workspace's panes together
+/// at its place in reading order); the tab bar shows `strip(inWindow:)`, where a workspace is one item.
+/// A window's selection is a strip item; `selectedTabID(inWindow:)` gives a selected workspace's focused
+/// pane, so commands acting on "the selected tab" act on that pane.
+///
 /// Drives terminal sessions for the UI: host key and password prompts, connection logs, OS
 /// detection, startup scripts, reconnect, auto-reconnect and close-all at quit.
 ///
@@ -289,15 +301,18 @@ fileprivate final class SessionAttempt {
 @MainActor @Observable
 public final class SessionManager {
     /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
-    public private(set) var tabs: [TerminalTab] = []
+    public internal(set) var tabs: [TerminalTab] = []
     /// The main window's selected tab; nil = Vaults. Setting a tab of another window is ignored.
     /// Other windows: `selectedTabID(inWindow:)` / `select(tabID:inWindow:)`.
     public var selectedTabID: UUID? {
         get { selectedTabID(inWindow: nil) }
         set { select(tabID: newValue, inWindow: nil) }
     }
-    /// Each window's selected tab (nil key = the main window); a window without an entry shows Vaults.
-    private var selections: [UUID?: UUID] = [:]
+    /// Each window's selected strip item, a plain tab's or a workspace's id (nil key = the main window);
+    /// a window without an entry shows Vaults.
+    var selections: [UUID?: UUID] = [:]
+    /// Every open workspace, by id.
+    var workspacesByID: [UUID: Workspace] = [:]
     /// Theme choices for saved hosts waiting for their debounced save (`applyTheme`), by host id.
     public private(set) var pendingHostThemes: [UUID: PendingThemeChoice] = [:]
     @ObservationIgnored private var themeSaveTasks: [UUID: Task<Void, Never>] = [:]
@@ -377,12 +392,23 @@ public final class SessionManager {
         return tab
     }
 
-    /// Ends the tab's session (if any) and removes the tab.
+    /// Ends the tab's session (if any) and removes the tab. A workspace pane is closed as `closePane` does.
     public func close(tabID: UUID) {
-        guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
-        let tab = tabs.remove(at: index)
+        guard let tab = tab(tabID) else { return }
+        if let workspace = workspace(containing: tabID) {
+            removeClosedPane(tab, from: workspace)
+            return
+        }
+        let window = tab.windowID
+        let place = strip(inWindow: window).firstIndex(of: .tab(tabID))
+        tabs.removeAll { $0 === tab }
+        endSession(of: tab)
+        reselect(afterRemoving: tabID, at: place, inWindow: window)
+    }
+
+    /// Ends auto-reconnect and the session of a tab that was removed.
+    func endSession(of tab: TerminalTab) {
         endAutoReconnect(of: tab)
-        reselect(afterRemoving: tab, at: index)
         if let attempt = detachAttempt(of: tab) {
             let session = attempt.session
             Task { await session.close() }
@@ -405,6 +431,7 @@ public final class SessionManager {
         let open = tabs
         tabs = []
         selections = [:]
+        workspacesByID = [:]
         for tab in open {
             endAutoReconnect(of: tab)
             _ = detachAttempt(of: tab)
@@ -434,57 +461,80 @@ public final class SessionManager {
 
     // MARK: Tab order, windows, rename, duplicate, theme
 
-    /// The tabs of one window (nil = the main window), in tab bar order.
+    /// Every session of one window (nil = the main window): plain tabs and workspace panes, in tab bar
+    /// order with each workspace's panes together at its place, in reading order. The tab bar itself
+    /// shows `strip(inWindow:)`.
     public func tabs(inWindow windowID: UUID?) -> [TerminalTab] {
         tabs.filter { $0.windowID == windowID }
     }
 
-    /// The window's selected tab id; nil = Vaults.
+    /// The tab the window's commands act on: the selected plain tab, or the selected workspace's focused
+    /// pane; nil = Vaults.
     public func selectedTabID(inWindow windowID: UUID?) -> UUID? {
-        selections[windowID]
+        guard let id = selections[windowID] else { return nil }
+        if let workspace = workspacesByID[id] { return workspace.focusedPaneID }
+        return id
     }
 
-    /// Selects a tab of the window, or Vaults (nil). A tab that is not open in that window is ignored.
+    /// Selects a strip item of the window, or Vaults (nil): a plain tab, a workspace (by its id), or a
+    /// workspace pane (its workspace is selected and the pane focused). Anything not open in that window
+    /// is ignored.
     public func select(tabID: UUID?, inWindow windowID: UUID?) {
         guard let tabID else {
             selections[windowID] = nil
             return
         }
+        if let workspace = workspacesByID[tabID] {
+            guard workspace.windowID == windowID else { return }
+            selections[windowID] = workspace.id
+            return
+        }
         guard let tab = tab(tabID), tab.windowID == windowID else { return }
-        selections[windowID] = tabID
+        if let workspace = workspace(containing: tabID) {
+            selections[windowID] = workspace.id
+            focusPane(tabID)
+        } else {
+            selections[windowID] = tabID
+        }
     }
 
-    /// Moves the tab to `index` among its window's tabs (clamped), the others keeping their order.
-    /// Sessions and the selection are untouched. Unknown ids are ignored.
+    /// Moves a strip item (a plain tab's or a workspace's id) to `index` among its window's strip items
+    /// (clamped), the others keeping their order. Sessions and the selection are untouched. Unknown ids,
+    /// and panes (not strip items), are ignored.
     public func moveTab(id: UUID, toIndex index: Int) {
-        guard let tab = tab(id) else { return }
-        var windowTabs = tabs(inWindow: tab.windowID)
-        guard let from = windowTabs.firstIndex(where: { $0 === tab }) else { return }
-        let to = max(0, min(index, windowTabs.count - 1))
+        let window: UUID?
+        if let workspace = workspacesByID[id] {
+            window = workspace.windowID
+        } else if let tab = tab(id) {
+            window = tab.windowID
+        } else {
+            return
+        }
+        var items = strip(inWindow: window)
+        guard let from = items.firstIndex(where: { $0.id == id }) else { return }
+        let to = max(0, min(index, items.count - 1))
         guard from != to else { return }
-        windowTabs.remove(at: from)
-        windowTabs.insert(tab, at: to)
-        // The window's tabs fill the same places in `tabs`, in their new order.
-        var reordered = windowTabs.makeIterator()
-        tabs = tabs.map { $0.windowID == tab.windowID ? reordered.next()! : $0 }
+        let item = items.remove(at: from)
+        items.insert(item, at: to)
+        applyOrder(items, inWindow: window)
     }
 
-    /// Selects the window's next tab, wrapping; from Vaults, the first.
+    /// Selects the window's next strip item (tab or workspace), wrapping; from Vaults, the first.
     public func selectNextTab(inWindow windowID: UUID?) { selectAdjacentTab(by: 1, inWindow: windowID) }
 
-    /// Selects the window's previous tab, wrapping; from Vaults, the last.
+    /// Selects the window's previous strip item (tab or workspace), wrapping; from Vaults, the last.
     public func selectPreviousTab(inWindow windowID: UUID?) { selectAdjacentTab(by: -1, inWindow: windowID) }
 
     private func selectAdjacentTab(by step: Int, inWindow windowID: UUID?) {
-        let windowTabs = tabs(inWindow: windowID)
-        guard !windowTabs.isEmpty else { return }
+        let items = strip(inWindow: windowID)
+        guard !items.isEmpty else { return }
         let next: Int
-        if let current = selections[windowID], let index = windowTabs.firstIndex(where: { $0.id == current }) {
-            next = (index + step + windowTabs.count) % windowTabs.count
+        if let current = selections[windowID], let index = items.firstIndex(where: { $0.id == current }) {
+            next = (index + step + items.count) % items.count
         } else {
-            next = step > 0 ? 0 : windowTabs.count - 1
+            next = step > 0 ? 0 : items.count - 1
         }
-        selections[windowID] = windowTabs[next].id
+        selections[windowID] = items[next].id
     }
 
     /// Renames the tab only (the host keeps its label); a blank name goes back to the host's label.
@@ -492,15 +542,18 @@ public final class SessionManager {
         guard let tab = tab(tabID) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         tab.customTitle = trimmed.isEmpty ? nil : trimmed
+        workspace(containing: tabID)?.refreshUnsavedChanges()
     }
 
     /// Opens a new tab with a new session to the same host or quick connect target, right after the
-    /// source in its window, and selects it. It keeps the source's theme override, not its custom
-    /// title or a typed password. Nil when the source is not open.
+    /// source in its window (after its workspace, for a pane), and selects it. It keeps the source's theme
+    /// override, not its custom title or a typed password. Nil when the source is not open.
     @discardableResult
     public func duplicate(tabID: UUID) -> TerminalTab? {
         guard let source = tab(tabID), let index = tabs.firstIndex(where: { $0 === source }) else { return nil }
-        return openCopy(of: source, inWindow: source.windowID, at: index + 1)
+        let copy = openCopy(of: source, inWindow: source.windowID, at: index + 1)
+        if workspace(containing: tabID) != nil { normalizeOrder(inWindow: source.windowID) }
+        return copy
     }
 
     /// The same, as the first tab of the window `windowID` (a new window), selected there.
@@ -510,19 +563,61 @@ public final class SessionManager {
         return openCopy(of: source, inWindow: windowID, at: tabs.count)
     }
 
-    private func openCopy(of source: TerminalTab, inWindow windowID: UUID?, at index: Int) -> TerminalTab {
+    private func openCopy(of source: TerminalTab, inWindow windowID: UUID?, at index: Int, select: Bool = true) -> TerminalTab {
         let copy = TerminalTab(target: source.target, title: source.title, badge: source.badge)
         copy.themeOverrideID = source.themeOverrideID
         copy.windowID = windowID
         tabs.insert(copy, at: index)
-        selections[windowID] = copy.id
+        if select { selections[windowID] = copy.id }
         connect(copy, plan: nil) // plans afresh; a host that can't be planned shows as disconnected
         return copy
     }
 
-    /// Closes every tab of the window (nil = the main window): its window was closed. Other windows'
-    /// tabs keep running.
+    // MARK: New tabs for workspaces (appended to their window, connecting, not selected)
+
+    /// A copy of `source` as `duplicate` makes it, appended, not selected.
+    func appendCopy(of source: TerminalTab) -> TerminalTab {
+        openCopy(of: source, inWindow: source.windowID, at: tabs.count, select: false)
+    }
+
+    /// A tab for a saved host with its plan made already.
+    func appendTab(hostID: UUID, plan: ConnectionPlan, inWindow windowID: UUID?) -> TerminalTab {
+        let tab = TerminalTab(target: .host(hostID), title: plan.label, badge: vault.get(SavedHost.self, id: hostID)?.osBadge)
+        tab.windowID = windowID
+        tabs.append(tab)
+        connect(tab, plan: plan)
+        return tab
+    }
+
+    /// A tab for a saved host that may not be plannable: then it shows as disconnected with the reason.
+    func appendTab(hostID: UUID, fallbackTitle: String, inWindow windowID: UUID?) -> TerminalTab {
+        if let plan = try? ConnectionPlanner.plan(hostID: hostID, vault: vault) {
+            return appendTab(hostID: hostID, plan: plan, inWindow: windowID)
+        }
+        let tab = TerminalTab(target: .host(hostID), title: fallbackTitle, badge: nil)
+        tab.windowID = windowID
+        tabs.append(tab)
+        connect(tab, plan: nil)
+        return tab
+    }
+
+    func appendTab(quickConnect target: QuickConnectTarget, inWindow windowID: UUID?) -> TerminalTab {
+        let plan = ConnectionPlanner.plan(quickConnect: target, defaultUsername: defaultUsername)
+        let tab = TerminalTab(target: .quickConnect(target), title: plan.label, badge: nil)
+        tab.windowID = windowID
+        tabs.append(tab)
+        connect(tab, plan: plan)
+        return tab
+    }
+
+    func plan(hostID: UUID) throws -> ConnectionPlan {
+        try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+    }
+
+    /// Closes every tab of the window (nil = the main window), workspaces included: its window was
+    /// closed. Other windows' tabs keep running.
     public func closeWindow(_ windowID: UUID?) {
+        for workspace in workspacesByID.values where workspace.windowID == windowID { closeWorkspace(workspace.id) }
         for tab in tabs(inWindow: windowID) { close(tabID: tab.id) }
         selections[windowID] = nil
     }
@@ -596,13 +691,12 @@ public final class SessionManager {
         vault.saveNow(host)
     }
 
-    /// After `tab` was removed from `tabs` at `index`: if it was its window's selection, selects the
-    /// window's tab that took its place, else the one before it, else Vaults.
-    private func reselect(afterRemoving tab: TerminalTab, at index: Int) {
-        guard selections[tab.windowID] == tab.id else { return }
-        let siblings = tabs(inWindow: tab.windowID)
-        let place = tabs[..<index].filter { $0.windowID == tab.windowID }.count
-        selections[tab.windowID] = siblings.isEmpty ? nil : siblings[min(place, siblings.count - 1)].id
+    /// After the strip item `id` was removed from the window's strip at `place`: if it was the window's
+    /// selection, selects the item that took its place, else the one before it, else Vaults.
+    func reselect(afterRemoving id: UUID, at place: Int?, inWindow windowID: UUID?) {
+        guard selections[windowID] == id else { return }
+        let items = strip(inWindow: windowID)
+        selections[windowID] = items.isEmpty ? nil : items[min(place ?? 0, items.count - 1)].id
     }
 
     // MARK: Auto-reconnect
@@ -758,11 +852,20 @@ public final class SessionManager {
         tab(tabID)?.attempt?.inputs.yield(.bytes(bytes))
     }
 
+    /// Sends to the tab only when it is connected (a broadcast target).
+    @discardableResult
+    func sendIfConnected(tabID: UUID, _ bytes: [UInt8]) -> Bool {
+        guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
+        attempt.inputs.yield(.bytes(bytes))
+        return true
+    }
+
     // MARK: Snippets
 
     /// Types `text` into the tab as `deliveryText(_:as:)` gives it. False, and nothing sent, when the
     /// tab is not open or not connected (`.connected` with a live session). Placeholders must already
-    /// be filled.
+    /// be filled. When the tab is the focused pane of a broadcasting workspace, the same bytes also go to
+    /// the workspace's other included, connected panes (as typed input does, `sendInput`).
     @discardableResult
     /// `bracketedPaste`: the terminal has bracketed paste on (the shell asked for it), so a `.paste`
     /// is wrapped in its markers and a multi-line paste is inserted, not run line by line.
@@ -770,7 +873,10 @@ public final class SessionManager {
                         bracketedPaste: Bool = false) -> Bool {
         guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
         let typed = Self.deliveryText(text, as: delivery, bracketedPaste: bracketedPaste)
-        if !typed.isEmpty { attempt.inputs.yield(.bytes(Array(typed.utf8))) }
+        guard !typed.isEmpty else { return true }
+        let bytes = Array(typed.utf8)
+        attempt.inputs.yield(.bytes(bytes))
+        for target in broadcastTargets(fromTab: tabID) { sendIfConnected(tabID: target, bytes) }
         return true
     }
 
@@ -837,7 +943,7 @@ public final class SessionManager {
 
     // MARK: Connecting
 
-    private func tab(_ id: UUID) -> TerminalTab? {
+    func tab(_ id: UUID) -> TerminalTab? {
         tabs.first { $0.id == id }
     }
 
@@ -1109,6 +1215,7 @@ public final class SessionManager {
             sessionBecameReady(attempt, tab: current)
         case .output(let bytes):
             current?.deliver(bytes)
+            if let current { noteOutput(tabID: current.id) }
         case .closed(let reason):
             endLog(of: attempt)
             attempt.inputs.finish()
