@@ -230,3 +230,10 @@ Saved on this Mac only.                                     [Theme credits…]
 5. **Text size** — range 9–24 pt, default 13, step 1 OK? Also add View-menu Cmd+= / Cmd+− / Cmd+0 for text size (applies the app-wide size)?
 6. **Extra variants** — the same upstream licenses also cover Rosé Pine Moon and Rosé Pine Dawn (a light one), Kanagawa is complete, Everforest has Hard/Soft contrasts. Add Rosé Pine Moon/Dawn, or ship exactly the list?
 7. **Upstream quirks** — keep upstream values exactly (Aura/Rosé Pine/Everforest bright = normal; Flexoki Light "white" = background), or allow small documented tweaks for readability?
+
+## Decisions (Cory, 2026-11-14)
+- App default theme and text size: per Mac (not synced). Per-host/group themes sync via Host.themeID / HostGroup.defaultThemeID.
+- "Automatic" card first and the starting default (Reimagined Light in Light Mode, Reimagined Dark in Dark Mode).
+- Group theme: "Theme" submenu on the group card's right-click menu; no Group Details panel this milestone.
+- Text size 9–24 pt, default 13, step 1, plus ⌘= / ⌘− / ⌘0 shortcuts.
+- Controller calls (Cory may override): names "Reimagined Light/Dark"; ship exactly Cory's list (no extra variants); keep upstream colors exactly except documented minimal fixes where text would be invisible (e.g. Flexoki Light "white" equal to background).
