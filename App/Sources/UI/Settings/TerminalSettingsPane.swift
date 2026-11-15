@@ -5,9 +5,9 @@ import AppCore
 import SSHCore
 
 /// Settings → Terminal: font, text size, the app-wide default theme (package A's `ThemeGallery`,
-/// "Default" = Automatic first), Behaviour, then Keyword highlighting. Everything is saved per Mac
-/// (`TerminalSettings`, `KeywordHighlightSettings`); open tabs follow all of it at once except the
-/// terminal type, which applies to new connections. A host or group with its own theme keeps it.
+/// "Default" = Automatic first) and Behaviour (highlighting has its own pane,
+/// `HighlightingSettingsPane`). Everything is saved per Mac (`TerminalSettings`); open tabs follow
+/// all of it at once except the terminal type, which applies to new connections. A host or group with its own theme keeps it.
 struct TerminalSettingsPane: View {
     let settings: TerminalSettings
     var catalog: TerminalThemeCatalog = .shared
@@ -50,7 +50,12 @@ struct TerminalSettingsPane: View {
 
                 TerminalBehaviourSection(settings: settings)
 
-                KeywordHighlightingSection(settings: TerminalHighlighting.settings)
+                SectionHeading("Highlighting")
+
+                Text("Keyword highlighting and your own highlighting rules are in Settings \u{2192} Highlighting.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -62,7 +67,7 @@ struct TerminalSettingsPane: View {
 }
 
 /// A pane section's small grey heading.
-private struct SectionHeading: View {
+struct SectionHeading: View {
     let title: String
     init(_ title: String) { self.title = title }
 
@@ -141,76 +146,8 @@ private struct TerminalBehaviourSection: View {
     }
 }
 
-/// Settings → Terminal → Keyword highlighting (package E's `KeywordHighlightSettings`): the master
-/// switch and one colour well per category. Changes reach open tabs at once.
-private struct KeywordHighlightingSection: View {
-    let settings: KeywordHighlightSettings
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            SectionHeading("Keyword highlighting")
-
-            VStack(alignment: .leading, spacing: 12) {
-                SettingToggle(title: "Highlight keywords",
-                              detail: "Colours words like error, warning, ok and info, and IP and MAC addresses, in output that has no colour of its own.",
-                              isOn: Binding(get: { settings.isEnabled }, set: { settings.isEnabled = $0 }))
-
-                Divider()
-
-                LazyVGrid(columns: [GridItem(.flexible(), spacing: 24), GridItem(.flexible(), spacing: 24)],
-                          alignment: .leading, spacing: 10) {
-                    ForEach(KeywordCategory.allCases) { category in
-                        HStack(spacing: 8) {
-                            ColorPicker(category.displayName, selection: colorBinding(category), supportsOpacity: false)
-                                .labelsHidden()
-                            Text(category.displayName)
-                                .font(.system(size: 13))
-                            Spacer(minLength: 0)
-                        }
-                        .help(helpText(category))
-                        .accessibilityElement(children: .combine)
-                        .accessibilityLabel("\(category.displayName) colour")
-                    }
-                }
-                .disabled(!settings.isEnabled)
-
-                HStack {
-                    Spacer(minLength: 0)
-                    Button("Restore Default Colours") { settings.resetAllColors() }
-                        .disabled(!settings.isEnabled
-                                  || KeywordCategory.allCases.allSatisfy { settings.isDefaultColor(for: $0) })
-                }
-            }
-            .padding(Theme.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background {
-                RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous)
-                    .fill(Theme.cardBackground)
-            }
-
-            Text("Never changes colours a program sets, and stays off in full-screen programs such as vim, htop and less. Saved on this Mac only.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func colorBinding(_ category: KeywordCategory) -> Binding<SwiftUI.Color> {
-        Binding(get: { settings.color(for: category).swiftUIColor },
-                set: { color in
-                    if let rgb = AppCore.RGBColor(srgb: color) { settings.setColor(rgb, for: category) }
-                })
-    }
-
-    private func helpText(_ category: KeywordCategory) -> String {
-        let words = category.keywords
-        guard !words.isEmpty else { return "IPv4 and IPv6 addresses, MAC addresses" }
-        return words.joined(separator: ", ")
-    }
-}
-
 // Qualified: legacy QuickDraw headers (via AppKit) also declare a C `RGBColor`.
-private extension AppCore.RGBColor {
+extension AppCore.RGBColor {
     /// A colour well's colour in sRGB, rounded to 8 bits a component; nil if it has no sRGB form
     /// (a pattern colour).
     init?(srgb color: SwiftUI.Color) {
@@ -223,7 +160,7 @@ private extension AppCore.RGBColor {
 }
 
 /// A switch with a title and a grey line under it.
-private struct SettingToggle: View {
+struct SettingToggle: View {
     let title: String
     let detail: String
     let isOn: Binding<Bool>

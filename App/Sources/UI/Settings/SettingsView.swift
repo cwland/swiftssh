@@ -61,6 +61,8 @@ struct SettingsView: View {
         switch pane {
         case .connection: ConnectionSettingsPane(settings: connectionSettings)
         case .terminal: TerminalSettingsPane(settings: terminalSettings)
+        case .highlighting:
+            HighlightingSettingsPane(keywords: TerminalHighlighting.settings, rules: TerminalHighlighting.rules)
         case .sync: SyncSettingsPane(sync: sync, vault: vault)
         case .onePassword: OnePasswordSettingsPane(setup: onePassword)
         case .osIcons: OSIconsSettingsPane()

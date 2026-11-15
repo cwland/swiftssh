@@ -115,6 +115,8 @@ final class AppEnvironment {
             keyWasCreated = loaded.created
             let persistence = EncryptedFileVaultPersistence(fileURL: fileURL, key: loaded.key)
             let vault = try await LocalVault.open(persistence: persistence)
+            // Custom highlighting rules live in the vault; open terminals pick them up at once.
+            TerminalHighlighting.rules.attach(vault)
             let sessions = makeSessionManager(vault: vault, runtime: runtime)
             self.sessions = sessions
             workspaceTemplates.attach(sessions)

@@ -72,11 +72,14 @@ final class TerminalHostView: NSView {
     }
 }
 
-/// Settings → Terminal → Keyword highlighting for this Mac: one instance, shared by the Settings
-/// pane and every terminal view (`TerminalViewStore` pushes changes to open tabs).
+/// Settings → Highlighting: the built-in keyword settings for this Mac and the custom rules
+/// (synced through the vault). One instance each, shared by the Settings pane and every terminal
+/// view (`TerminalViewStore` pushes changes to open tabs). `AppEnvironment` attaches the vault to
+/// `rules` once it is open.
 @MainActor
 enum TerminalHighlighting {
     static let settings = KeywordHighlightSettings()
+    static let rules = HighlightRulesStore()
 }
 
 /// One SwiftTerm view (and its delegate) per open terminal tab, kept while the tab is open.
@@ -88,16 +91,18 @@ final class TerminalViewStore {
         followHighlightSettings()
     }
 
-    /// Gives every open view the current keyword highlighting settings, now and after each change
-    /// (Observation fires once per registration, so this registers again each time).
+    /// Gives every open view the current keyword highlighting settings and custom rules, now and
+    /// after each change, including rules pulled from another Mac (Observation fires once per
+    /// registration, so this registers again each time).
     private func followHighlightSettings() {
-        let snapshot = withObservationTracking {
-            TerminalHighlighting.settings.snapshot
+        let (snapshot, rules) = withObservationTracking {
+            (TerminalHighlighting.settings.snapshot, TerminalHighlighting.rules.compiled)
         } onChange: { [weak self] in
             Task { @MainActor in self?.followHighlightSettings() }
         }
         for entry in entries.values {
             entry.view.updateHighlighting(snapshot)
+            entry.view.updateHighlightRules(rules)
         }
     }
 
@@ -110,6 +115,7 @@ final class TerminalViewStore {
         entries[tab.id] = entry
         let view = entry.view
         view.updateHighlighting(TerminalHighlighting.settings.snapshot)
+        view.updateHighlightRules(TerminalHighlighting.rules.compiled)
         tab.outputSink = { [weak entry] bytes in
             entry?.receiveOutput(bytes)
         }
@@ -342,6 +348,9 @@ final class SessionTerminalView: TerminalView {
     /// incomplete escape or UTF-8 sequence at the end of a chunk (bounded), so typed characters
     /// echo without delay.
     private let highlighter = KeywordHighlighter()
+    /// Custom highlighting rules (Settings → Highlighting), applied before the keywords so a custom
+    /// rule wins where both match. Also always in the path; holds nothing back between chunks.
+    private let customHighlighter = CustomHighlighter()
     /// Whether the shell turned on bracketed paste (`CSI ? 2004 h`), tracked from the output.
     var isBracketedPasteActive: Bool { highlighter.isBracketedPasteActive }
     /// When output last arrived. Held bytes are released `idleFlushDelay` after the last output
@@ -453,9 +462,10 @@ final class SessionTerminalView: TerminalView {
 
     // MARK: Output
 
-    /// Session output for this tab: through the keyword highlighter, then into the terminal.
+    /// Session output for this tab: through the custom rules and the keyword highlighter, then
+    /// into the terminal.
     func receive(_ bytes: [UInt8]) {
-        let output = highlighter.process(bytes[...])
+        let output = highlighter.process(customHighlighter.process(bytes[...])[...])
         if !output.isEmpty {
             feed(byteArray: output[...])
         }
@@ -463,10 +473,17 @@ final class SessionTerminalView: TerminalView {
         scheduleIdleFlush()
     }
 
-    /// Settings → Terminal → Keyword highlighting changed (or the view is new).
+    /// Settings → Highlighting → Built-in keywords changed (or the view is new).
     func updateHighlighting(_ snapshot: KeywordHighlightSettings.Snapshot) {
         guard snapshot != highlighter.settings else { return }
         highlighter.update(settings: snapshot)
+    }
+
+    /// Settings → Highlighting → custom rules changed, here or on another Mac (or the view is new).
+    /// Applies to output from now on; text already on screen keeps its colours.
+    func updateHighlightRules(_ rules: CompiledHighlightRules) {
+        guard rules != customHighlighter.rules else { return }
+        customHighlighter.update(rules: rules)
     }
 
     /// One wait per quiet period, not one per chunk: the task sleeps until `idleFlushDelay` after
