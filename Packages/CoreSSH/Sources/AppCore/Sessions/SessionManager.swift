@@ -679,12 +679,25 @@ public final class SessionManager {
         pendingHostThemes[hostID]
     }
 
-    /// Applies a theme from the tab's theme panel (nil = Default). A saved host's tab shows it at once in
+    /// Sets a tab's own theme (opening a saved workspace's pane).
+    func setThemeOverride(_ themeID: String?, tabID: UUID) {
+        tab(tabID)?.themeOverrideID = themeID
+    }
+
+    /// Applies a theme from the tab's theme panel (nil = Default). A workspace's pane gets it as its own
+    /// theme only (see below). A saved host's tab shows it at once in
     /// all the host's tabs (`pendingTheme(forHost:)`) and saves it to the host (it syncs) once no other
     /// click came for `themeSaveDelay`, so browsing the gallery writes once; the tab's override is
     /// dropped. Other tabs (quick connect, a deleted host) get a per-tab override.
     public func applyTheme(_ themeID: String?, tabID: UUID) {
         guard let tab = tab(tabID) else { return }
+        // A workspace's pane: that pane only, never its host (nil = follows the host again); part of
+        // what the workspace saves.
+        if let workspace = workspace(containing: tabID) {
+            tab.themeOverrideID = themeID
+            workspace.refreshUnsavedChanges()
+            return
+        }
         guard let hostID = tab.hostID, vault.get(SavedHost.self, id: hostID) != nil else {
             tab.themeOverrideID = themeID
             return

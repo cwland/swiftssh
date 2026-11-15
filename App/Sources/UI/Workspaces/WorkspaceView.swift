@@ -141,6 +141,7 @@ struct WorkspaceView: View {
                                isBroadcasting: workspace.isBroadcasting,
                                isIncludedInBroadcast: isIncluded,
                                toggleBroadcast: { actions.toggleBroadcast() },
+                               changeTheme: { actions.changeTheme(id) },
                                enterFocusMode: { actions.enterFocusMode(id) },
                                close: { actions.close(id) })
                         .onDrag { beginPaneDrag(id) }

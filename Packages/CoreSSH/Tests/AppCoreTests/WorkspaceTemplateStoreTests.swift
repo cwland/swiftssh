@@ -271,6 +271,22 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates.first?.viewMode, .focus)
     }
 
+    func testPaneThemesAreUnsavedChangesAndAreSavedAndRestored() async throws {
+        let (ws, _, _) = try sampleWorkspace()
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        try store.save(ws, sessions: manager)
+        manager.applyTheme("dracula", tabID: ws.paneIDs[1])
+        XCTAssertTrue(ws.hasUnsavedChanges, "a pane's theme is part of the workspace")
+        let template = try store.save(ws, sessions: manager)
+        XCTAssertFalse(ws.hasUnsavedChanges)
+        XCTAssertEqual(template.layout.panes.map(\.themeID), [nil, "dracula", nil])
+        XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates.first?.layout.panes[1].themeID, "dracula")
+
+        let opened = try manager.openTemplate(template)
+        XCTAssertEqual(opened.paneIDs.map { manager.themeChoice(tabID: $0) }, [nil, "dracula", nil])
+        XCTAssertFalse(opened.hasUnsavedChanges)
+    }
+
     func testHasSavedCopyOnlyWhileItsTemplateExists() async throws {
         let (ws, _, _) = try sampleWorkspace()
         let store = WorkspaceTemplateStore(fileURL: fileURL)

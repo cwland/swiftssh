@@ -104,11 +104,14 @@ public struct TemplatePane: Codable, Equatable, Sendable {
     public var hostID: UUID?
     public var quickConnect: String?
     public var title: String?
+    /// The pane's own theme (chosen in the workspace; never its host's); nil = follows the host.
+    public var themeID: String?
 
-    public init(hostID: UUID? = nil, quickConnect: String? = nil, title: String? = nil) {
+    public init(hostID: UUID? = nil, quickConnect: String? = nil, title: String? = nil, themeID: String? = nil) {
         self.hostID = hostID
         self.quickConnect = quickConnect
         self.title = title
+        self.themeID = themeID
     }
 }
 
@@ -282,7 +285,7 @@ public final class WorkspaceTemplateStore {
             let tab = sessions.tab(id)
             return .pane(TemplatePane(hostID: tab?.savedHostID,
                                       quickConnect: tab?.quickConnectTarget.map { Self.quickConnectText($0) },
-                                      title: tab?.customTitle))
+                                      title: tab?.customTitle, themeID: tab?.themeOverrideID))
         case .split(let axis, let ratio, let first, let second):
             return .split(axis, ratio: ratio, layout(of: first, sessions: sessions), layout(of: second, sessions: sessions))
         }

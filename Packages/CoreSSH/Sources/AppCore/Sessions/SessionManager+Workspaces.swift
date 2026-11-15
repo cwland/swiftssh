@@ -166,6 +166,7 @@ extension SessionManager {
                 return nil
             }
             if let title = pane.title { rename(tabID: tab.id, to: title) }
+            if let themeID = pane.themeID { setThemeOverride(themeID, tabID: tab.id) }
             return .pane(tab.id)
         case .split(let axis, let ratio, let first, let second):
             let f = buildRoot(first, inWindow: windowID, skipped: &skipped)

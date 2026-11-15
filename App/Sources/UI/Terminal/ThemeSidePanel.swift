@@ -5,7 +5,8 @@ import CoreModels
 /// The tab's "Change Theme…" panel: floats over the terminal's right edge (the terminal is not resized,
 /// so nothing reflows) and lists the theme gallery in one column, Default first. A click applies at once
 /// and the panel stays open, so themes can be compared on the live terminal. For a saved host the choice
-/// is saved to the host (all its tabs follow, and it syncs); a quick connect tab changes only itself.
+/// is saved to the host (all its tabs follow, and it syncs); a quick connect tab, and a workspace's
+/// pane, change only themselves (the workspace saves a pane's theme).
 /// The close button and Esc close the panel (while it is open, Esc does not reach the terminal). A host
 /// choice is saved shortly after the last click (`SessionManager.applyTheme`), and at once when the panel
 /// closes.
@@ -86,7 +87,13 @@ struct ThemeSidePanel: View {
     }
 
     /// Says where the choice goes.
+    /// The tab is a workspace's pane: its theme is its own (the workspace saves it).
+    private var isPane: Bool { sessions.workspace(containing: tab.id) != nil }
+
     private var scopeText: String {
+        if isPane {
+            return "This terminal only \u{2014} its host keeps its theme. Save the workspace (\u{2318}S) to keep it."
+        }
         if let host = savedHost {
             let name = host.label.isEmpty ? host.address : host.label
             return "Saved to \u{201C}\(name)\u{201D} \u{2014} all its tabs follow."
@@ -98,6 +105,10 @@ struct ThemeSidePanel: View {
     /// Automatic (the gallery draws Reimagined Light/Dark).
     private var inheritedTheme: TerminalTheme? {
         let catalog = TerminalThemeCatalog.shared
+        // A pane's Default is its host's own choice.
+        if isPane, let id = savedHost?.themeID, let theme = catalog.theme(id: id) {
+            return theme
+        }
         if let host = savedHost,
            let id = TerminalThemeResolver.inheritedThemeID(forHostID: host.id, hosts: [host],
                                                            groups: vault.all(HostGroup.self)),

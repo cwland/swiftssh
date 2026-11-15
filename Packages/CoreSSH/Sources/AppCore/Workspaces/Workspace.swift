@@ -52,6 +52,7 @@ public final class Workspace: Identifiable {
         var root: PaneNode
         var viewMode: ViewMode
         var titles: [UUID: String]
+        var themes: [UUID: String]
     }
 
     init(id: UUID = UUID(), name: String, root: PaneNode, viewMode: ViewMode = .split, focusedPaneID: UUID,
@@ -148,9 +149,11 @@ public final class Workspace: Identifiable {
 
     private func snapshot() -> Snapshot {
         var titles: [UUID: String] = [:]
+        var themes: [UUID: String] = [:]
         for id in root.paneIDs {
             if let title = sessions?.tab(id)?.customTitle { titles[id] = title }
+            if let theme = sessions?.tab(id)?.themeOverrideID { themes[id] = theme }
         }
-        return Snapshot(name: name, root: root, viewMode: viewMode, titles: titles)
+        return Snapshot(name: name, root: root, viewMode: viewMode, titles: titles, themes: themes)
     }
 }

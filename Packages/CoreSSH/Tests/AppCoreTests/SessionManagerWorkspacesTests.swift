@@ -128,6 +128,21 @@ final class SessionManagerWorkspacesTests: XCTestCase {
         await waitUntil("pane closed") { ws.paneIDs == [tabs[0].id, tabs[2].id] }
     }
 
+    // MARK: A theme for each pane (v0.10)
+
+    func testAThemeChosenInAPaneIsThatPanesOnlyAndNeverSavedToTheHost() async throws {
+        let (_, tabs) = try await workspace("a", "b")
+        let hostID = try XCTUnwrap(tabs[0].savedHostID)
+        manager.applyTheme("dracula", tabID: tabs[0].id)
+        XCTAssertEqual(manager.themeChoice(tabID: tabs[0].id), "dracula")
+        XCTAssertNil(manager.themeChoice(tabID: tabs[1].id))
+        XCTAssertNil(manager.pendingTheme(forHost: hostID))
+        try await Task.sleep(for: .milliseconds(1_200))
+        XCTAssertNil(vault.get(SavedHost.self, id: hostID)?.themeID, "the host's own theme is untouched")
+        manager.applyTheme(nil, tabID: tabs[0].id)
+        XCTAssertNil(manager.themeChoice(tabID: tabs[0].id), "Default: the pane follows its host again")
+    }
+
     // MARK: Hosts screen actions (v0.10)
 
     func testOpenHostInAnotherWindowSelectsItThere() async throws {

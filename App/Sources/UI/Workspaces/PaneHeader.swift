@@ -17,6 +17,8 @@ struct PaneHeader: View {
     /// This pane takes part when broadcasting (`excludedFromBroadcast` doesn't hold it).
     let isIncludedInBroadcast: Bool
     let toggleBroadcast: () -> Void
+    /// This pane's own theme (the host keeps its theme; the workspace saves it).
+    let changeTheme: () -> Void
     let enterFocusMode: () -> Void
     let close: () -> Void
 
@@ -41,6 +43,10 @@ struct PaneHeader: View {
             }
             StatusDot(status: status)
             Spacer(minLength: 4)
+            HeaderButton(symbol: "paintpalette",
+                         help: "Theme for this terminal (its host keeps its own)",
+                         label: "Change theme",
+                         action: changeTheme)
             HeaderButton(symbol: "dot.radiowaves.left.and.right",
                          isOn: isBroadcasting && isIncludedInBroadcast,
                          help: isBroadcasting ? "Stop broadcasting input (\u{2318}B)" : "Broadcast input \u{2318}B",
