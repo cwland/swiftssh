@@ -53,6 +53,7 @@ private struct ReadyArea: View {
         Group {
             if let tab = environment.selectedTab {
                 TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews,
+                                vault: vault, terminalSettings: environment.terminalSettings,
                                 closeTab: { environment.closeTab(tabID: tab.id) })
                     .id(tab.id)
             } else {
@@ -60,6 +61,7 @@ private struct ReadyArea: View {
                     navigation: environment.navigation,
                     vault: vault,
                     sessions: sessions,
+                    terminalSettings: environment.terminalSettings,
                     hostsModel: hostsModel,
                     keychainModel: keychainModel,
                     logsModel: logsModel
@@ -87,6 +89,8 @@ private struct MainArea: View {
     let navigation: AppNavigation
     let vault: LocalVault
     let sessions: SessionManager
+    /// For Host Details' "Default (…)" theme label (passed on to `HostsView`).
+    let terminalSettings: TerminalSettings
     let hostsModel: HostsViewModel?
     let keychainModel: KeychainViewModel?
     let logsModel: LogsViewModel?
@@ -112,7 +116,7 @@ private struct MainArea: View {
         switch navigation.sidebar {
         case .hosts:
             if let hostsModel {
-                HostsView(model: hostsModel, vault: vault, sessions: sessions)
+                HostsView(model: hostsModel, vault: vault, sessions: sessions, terminalSettings: terminalSettings)
             } else {
                 Theme.contentBackground
             }

@@ -86,4 +86,64 @@ final class HostQueriesTests: XCTestCase {
         XCTAssertEqual(dir.effectivePort(for: live), 22)
         XCTAssertEqual(dir.filter(tags: [], search: "").map(\.id), [live.id])
     }
+
+    // MARK: Theme chain
+
+    func testThemeIDChainListsHostThenGroupsNearestFirst() {
+        let grand = HostGroup(name: "grand", defaultThemeID: "dracula")
+        let parent = HostGroup(name: "parent", parentID: grand.id, defaultThemeID: "nord")
+        let host = Host(label: "h", address: "h", groupID: parent.id, themeID: "aura")
+        let dir = HostDirectory(hosts: [host], groups: [grand, parent])
+        XCTAssertEqual(dir.themeIDChain(for: host), ["aura", "nord", "dracula"])
+    }
+
+    func testThemeIDChainSkipsNilLevels() {
+        let grand = HostGroup(name: "grand", defaultThemeID: "dracula")
+        let parent = HostGroup(name: "parent", parentID: grand.id)
+        let child = HostGroup(name: "child", parentID: parent.id, defaultThemeID: "nord")
+        let host = Host(label: "h", address: "h", groupID: child.id)
+        let dir = HostDirectory(hosts: [host], groups: [grand, parent, child])
+        XCTAssertEqual(dir.themeIDChain(for: host), ["nord", "dracula"])
+    }
+
+    func testThemeIDChainSkipsDeletedGroups() {
+        let grand = HostGroup(name: "grand", defaultThemeID: "dracula")
+        let dead = HostGroup(name: "dead", parentID: grand.id, defaultThemeID: "nord", deleted: true)
+        let host = Host(label: "h", address: "h", groupID: dead.id, themeID: "aura")
+        let dir = HostDirectory(hosts: [host], groups: [grand, dead])
+        // A deleted group ends the walk (its parent link is gone with it), like the other settings.
+        XCTAssertEqual(dir.themeIDChain(for: host), ["aura"])
+    }
+
+    func testThemeIDChainStopsOnCycle() {
+        var a = HostGroup(name: "A", defaultThemeID: "nord")
+        var b = HostGroup(name: "B", defaultThemeID: "dracula")
+        a.parentID = b.id
+        b.parentID = a.id
+        let host = Host(label: "h", address: "h", groupID: a.id)
+        let dir = HostDirectory(hosts: [host], groups: [a, b])
+        XCTAssertEqual(dir.themeIDChain(for: host), ["nord", "dracula"])
+    }
+
+    func testThemeIDChainForHostWithoutGroupIsOwnIDOnly() {
+        let themed = Host(label: "t", address: "t", themeID: "nord")
+        let bare = Host(label: "b", address: "b")
+        let dir = HostDirectory(hosts: [themed, bare], groups: [HostGroup(name: "x", defaultThemeID: "aura")])
+        XCTAssertEqual(dir.themeIDChain(for: themed), ["nord"])
+        XCTAssertEqual(dir.themeIDChain(for: bare), [])
+    }
+
+    func testEffectiveThemeIDIsFirstOfChain() {
+        let grand = HostGroup(name: "grand", defaultThemeID: "dracula")
+        let parent = HostGroup(name: "parent", parentID: grand.id)
+        let own = Host(label: "o", address: "o", groupID: parent.id, themeID: "aura")
+        let inherited = Host(label: "i", address: "i", groupID: parent.id)
+        let none = Host(label: "n", address: "n")
+        let dir = HostDirectory(hosts: [own, inherited, none], groups: [grand, parent])
+        for host in [own, inherited, none] {
+            XCTAssertEqual(dir.effectiveThemeID(for: host), dir.themeIDChain(for: host).first)
+        }
+        XCTAssertEqual(dir.effectiveThemeID(for: inherited), "dracula")
+        XCTAssertNil(dir.effectiveThemeID(for: none))
+    }
 }

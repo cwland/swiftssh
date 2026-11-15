@@ -6,6 +6,7 @@ import AppCore
 /// lives in `SettingsNavigation`, so other windows can open Settings on a pane.
 struct SettingsView: View {
     let connectionSettings: ConnectionSettings
+    let terminalSettings: TerminalSettings
     let navigation: SettingsNavigation
     let onePassword: OnePasswordSetup
     /// nil until the vault is open.
@@ -42,6 +43,7 @@ struct SettingsView: View {
     private func pane(for pane: SettingsPane) -> some View {
         switch pane {
         case .connection: ConnectionSettingsPane(settings: connectionSettings)
+        case .terminal: TerminalSettingsPane(settings: terminalSettings)
         case .sync: SyncSettingsPane(sync: sync, vault: vault)
         case .onePassword: OnePasswordSettingsPane(setup: onePassword)
         case .osIcons: OSIconsSettingsPane()

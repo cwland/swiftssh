@@ -243,4 +243,57 @@ final class HostsViewModelTests: XCTestCase {
     }
 }
 
+extension HostsViewModelTests {
+    @MainActor func testThemeIDOfGroup() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "nord"))
+        let plain = try await vault.save(HostGroup(name: "H"))
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.themeID(ofGroup: group.id), "nord")
+        XCTAssertNil(vm.themeID(ofGroup: plain.id))
+        XCTAssertNil(vm.themeID(ofGroup: UUID()))
+    }
+
+    @MainActor func testSetGroupThemeSaves() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultPort: 2222))
+        let vm = HostsViewModel(vault: vault)
+        try await vm.setTheme("dracula", forGroup: group.id)
+        let stored = try XCTUnwrap(vault.get(HostGroup.self, id: group.id))
+        XCTAssertEqual(stored.defaultThemeID, "dracula")
+        XCTAssertEqual(stored.defaultPort, 2222)
+        XCTAssertEqual(stored.name, "G")
+    }
+
+    @MainActor func testSetGroupThemeNilClears() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let vm = HostsViewModel(vault: vault)
+        try await vm.setTheme(nil, forGroup: group.id)
+        XCTAssertNil(vault.get(HostGroup.self, id: group.id)?.defaultThemeID)
+    }
+
+    @MainActor func testSetGroupThemeOnMissingGroupDoesNothing() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G"))
+        try await vault.deleteGroup(id: group.id)
+        let vm = HostsViewModel(vault: vault)
+        try await vm.setTheme("nord", forGroup: group.id)
+        try await vm.setTheme("nord", forGroup: UUID())
+        XCTAssertNil(vault.get(HostGroup.self, id: group.id))
+        XCTAssertTrue(vault.all(HostGroup.self).isEmpty)
+    }
+
+    @MainActor func testInheritedGroupThemeFromParent() async throws {
+        let vault = try await makeVault()
+        let root = try await vault.save(HostGroup(name: "R", defaultThemeID: "nord"))
+        let mid = try await vault.save(HostGroup(name: "M", parentID: root.id))
+        let leaf = try await vault.save(HostGroup(name: "L", parentID: mid.id, defaultThemeID: "dracula"))
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.inheritedThemeID(ofGroup: leaf.id), "nord")
+        XCTAssertEqual(vm.inheritedThemeID(ofGroup: mid.id), "nord")
+        XCTAssertNil(vm.inheritedThemeID(ofGroup: root.id))
+    }
+}
+
 private final class Fired: @unchecked Sendable { var value = false }

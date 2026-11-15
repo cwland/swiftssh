@@ -79,6 +79,9 @@ public final class TerminalTab: Identifiable {
         return nil
     }
 
+    /// The saved host this tab connects to; nil for quick connect.
+    public var savedHostID: UUID? { hostID }
+
     /// Whether a typed password can be saved: only a saved host has somewhere to keep it.
     public var canSavePassword: Bool { hostID != nil }
 

@@ -843,4 +843,91 @@ final class HostDetailsViewModelTests: XCTestCase {
         try await vault.save(synced)
         XCTAssertEqual(vm.credentialMode, .direct)
     }
+
+    // MARK: Theme
+
+    func testThemeIDDefaultsToNil() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertNil(vm.themeID)
+        XCTAssertNil(vm.unknownThemeID)
+    }
+
+    func testSettingThemeIDSavesImmediately() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", username: "root"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.themeID = "nord"
+        XCTAssertEqual(vm.themeID, "nord")
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.themeID, "nord")
+        XCTAssertEqual(vm.username, "root")
+        await vault.flush()
+        let stored = try await persistedHost(p, id: host.id)
+        XCTAssertEqual(stored.themeID, "nord")
+    }
+
+    func testSettingSameThemeIDDoesNotSaveAgain() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", themeID: "nord"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let before = try XCTUnwrap(vault.get(SavedHost.self, id: host.id)).updatedAt
+        vm.themeID = "nord"
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.updatedAt, before)
+    }
+
+    func testSettingThemeIDNilClearsIt() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", themeID: "nord"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.themeID = nil
+        XCTAssertNil(vm.themeID)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.themeID)
+    }
+
+    func testInheritedThemeIDFromGroup() async throws {
+        let vault = try await makeVault()
+        let parent = try await vault.save(HostGroup(name: "P", defaultThemeID: "dracula"))
+        let child = try await vault.save(HostGroup(name: "C", parentID: parent.id))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: child.id, themeID: "nord"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        // The host's own theme is not part of what "Default" resolves to.
+        XCTAssertEqual(vm.inheritedThemeID, "dracula")
+        vm.themeID = nil
+        XCTAssertEqual(vm.inheritedThemeID, "dracula")
+    }
+
+    func testInheritedThemeIDIgnoresUnknownGroupTheme() async throws {
+        let vault = try await makeVault()
+        let parent = try await vault.save(HostGroup(name: "P", defaultThemeID: "nord"))
+        let child = try await vault.save(HostGroup(name: "C", parentID: parent.id, defaultThemeID: "from-the-future"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: child.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.inheritedThemeID, "nord")
+        let loose = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        XCTAssertNil(HostDetailsViewModel(vault: vault, hostID: loose.id).inheritedThemeID)
+    }
+
+    func testUnknownThemeIDReportedForUnknownStoredID() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", themeID: "from-the-future"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.unknownThemeID, "from-the-future")
+        XCTAssertEqual(vm.themeID, "from-the-future")
+        vm.themeID = "nord"
+        XCTAssertNil(vm.unknownThemeID)
+    }
+
+    func testThemeIDOnDeletedHostIsIgnored() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        try await vm.delete()
+        vm.themeID = "nord"
+        XCTAssertNil(vm.themeID)
+        XCTAssertNil(vm.inheritedThemeID)
+        XCTAssertNil(vm.unknownThemeID)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id))
+    }
 }

@@ -1,17 +1,24 @@
 import SwiftUI
 import AppCore
+import CoreModels
 import SSHCore
 
 /// A terminal tab: the disconnected banner (when the session ended), the terminal, and sheets for
-/// the host key and password prompts.
+/// the host key and password prompts. The tab's theme and text size follow the host's and its
+/// groups' themes, Settings → Terminal and the system appearance live (see `resolvedAppearance`).
 struct TerminalTabView: View {
     let tab: TerminalTab
     let sessions: SessionManager
     let store: TerminalViewStore
+    let vault: LocalVault
+    let terminalSettings: TerminalSettings
     /// Closes this tab, the same as Cmd+W.
     let closeTab: () -> Void
 
+    @Environment(\.colorScheme) private var colorScheme
+
     var body: some View {
+        let appearance = resolvedAppearance
         VStack(spacing: 0) {
             if case .disconnected(let message) = tab.state, !isAutoReconnecting {
                 DisconnectedBanner(message: bannerMessage(message),
@@ -19,7 +26,7 @@ struct TerminalTabView: View {
                     sessions.reconnect(tabID: tab.id)
                 }
             }
-            SwiftTermView(tab: tab, sessions: sessions, store: store)
+            SwiftTermView(tab: tab, sessions: sessions, store: store, appearance: appearance)
                 .padding(.leading, 8)
                 .padding(.top, 4)
                 .overlay(alignment: .top) {
@@ -40,12 +47,35 @@ struct TerminalTabView: View {
                         .padding(12)
                     }
                 }
+                // Only behind the terminal: the disconnected banner keeps the system look, so its
+                // text stays readable when the theme and Light/Dark Mode differ.
+                .background(appearance.theme.background.swiftUIColor)
         }
-        .background(TerminalTheme.dynamicBackground)
         .sheet(item: promptBinding) { prompt in
             promptSheet(prompt)
                 .interactiveDismissDisabled()
         }
+    }
+
+    // MARK: Appearance
+
+    /// Host theme → group chain → app default → Automatic (by the color scheme), and the text
+    /// size. Reading `vault.revision`, the settings and `colorScheme` here makes Observation
+    /// re-run the body (and so `SwiftTermView.updateNSView`) when any of them changes: a Settings
+    /// click, a Host Details edit, a group menu choice, a sync from another Mac, or Light/Dark.
+    /// Only the tab's own host is decoded (not every saved host); a deleted host reads as nil and
+    /// gets the app default, as does quick connect.
+    private var resolvedAppearance: TerminalAppearance {
+        _ = vault.revision
+        let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+        let theme = TerminalThemeResolver.theme(
+            forHostID: tab.savedHostID,
+            hosts: host.map { [$0] } ?? [],
+            groups: host == nil ? [] : vault.all(HostGroup.self),
+            defaultThemeID: terminalSettings.defaultThemeID,
+            prefersDark: colorScheme == .dark
+        )
+        return TerminalAppearance(theme: theme, fontSize: terminalSettings.fontSize)
     }
 
     // MARK: Auto-reconnect
