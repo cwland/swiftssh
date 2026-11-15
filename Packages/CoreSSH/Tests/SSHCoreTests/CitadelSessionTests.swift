@@ -1,6 +1,7 @@
 import AppCore
 import CoreModels
 import Foundation
+import NIOCore
 import XCTest
 @testable import SSHCore
 
@@ -465,6 +466,143 @@ final class CitadelSessionTests: XCTestCase {
         await session.close()
     }
 
+    // MARK: Connection progress
+
+    func testPasswordLoginReportsEveryStepBeforeConnected() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        // An IP address needs no lookup, so there is no `.resolving` step.
+        XCTAssertEqual(recorder.steps, [
+            .connecting(address: "127.0.0.1", port: server.port),
+            .connected(address: "127.0.0.1"),
+            .handshake,
+            .authenticating(method: "password"),
+            .authenticated,
+            .openingShell,
+        ])
+        await session.close()
+        try await recorder.waitForFinish()
+    }
+
+    func testHostNameIsResolvedFirst() async throws {
+        var plan = plan(.password(server.password))
+        plan.host = "localhost"
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        let steps = recorder.steps
+        XCTAssertEqual(steps.first, .resolving(host: "localhost"))
+        XCTAssertTrue(steps.contains(.connecting(address: "127.0.0.1", port: server.port)), "\(steps)")
+        XCTAssertTrue(steps.contains(.connected(address: "127.0.0.1")), "\(steps)")
+        XCTAssertEqual(Array(steps.suffix(3)), [.authenticating(method: "password"), .authenticated, .openingShell])
+        await session.close()
+    }
+
+    func testKeyLoginReportsTheKeyMethod() async throws {
+        let generated = SSHKeyGenerator.ed25519(comment: "progress-test")
+        try server.authorize(publicKeyLine: generated.publicKey)
+        let session = CitadelSession(plan: plan(.privateKey(type: .ed25519, pem: generated.privateKey, passphrase: nil)),
+                                     hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        XCTAssertTrue(recorder.steps.contains(.authenticating(method: "key")), "\(recorder.steps)")
+        await session.close()
+    }
+
+    func testRejectedPasswordStopsAfterTheSignInStep() async throws {
+        let session = CitadelSession(plan: plan(.password("wrong-\(server.password)")), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps.last, .authenticating(method: "password"))
+        XCTAssertFalse(recorder.steps.contains(.authenticated))
+        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
+    }
+
+    func testRefusedConnectionSaysConnectionRefused() async throws {
+        let closedPort = try Self.unusedPort()
+        var plan = plan(.password(server.password))
+        plan.port = closedPort
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps, [.connecting(address: "127.0.0.1", port: closedPort)])
+        guard case .closed(.failed(.connectionFailed(let reason))) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        XCTAssertTrue(reason.contains("connection refused"), reason)
+        XCTAssertTrue(reason.contains("127.0.0.1:\(closedPort)"), reason)
+    }
+
+    func testUnknownHostNameFailsAfterResolving() async throws {
+        var plan = plan(.password(server.password))
+        plan.host = "no-such-host.invalid"
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted), connectTimeout: .seconds(5))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps, [.resolving(host: "no-such-host.invalid")])
+        guard case .closed(.failed(let error)) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        // Without DNS in the sandbox the lookup may also time out; either way nothing connected.
+        if case .connectionFailed(let reason) = error {
+            XCTAssertTrue(reason.hasPrefix("Could not resolve no-such-host.invalid"), reason)
+        } else {
+            XCTAssertEqual(error, .timedOut)
+        }
+    }
+
+    func testServerHangingUpDuringTheHandshakeFailsThatStep() async throws {
+        let hangUp = try HangUpSocket(reset: false)
+        var plan = plan(.password(server.password))
+        plan.port = hangUp.port
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted), connectTimeout: .seconds(5))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps, [.connecting(address: "127.0.0.1", port: hangUp.port),
+                                        .connected(address: "127.0.0.1"), .handshake])
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.closed(.failed(.connectionFailed(CitadelSession.closedDuringHandshakeMessage)))])
+        withExtendedLifetime(hangUp) {}
+    }
+
+    func testServerResettingTheConnectionSaysConnectionReset() async throws {
+        let reset = try HangUpSocket(reset: true, banner: "SSH-2.0-OpenSSH_9.6\r\n")
+        var plan = plan(.password(server.password))
+        plan.port = reset.port
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted), connectTimeout: .seconds(5))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps.last, .handshake)
+        guard case .closed(.failed(.connectionFailed(let reason))) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        XCTAssertTrue(reason.contains("connection reset by peer"), reason)
+        withExtendedLifetime(reset) {}
+    }
+
+    func testLowLevelReasonsAreNamed() {
+        XCTAssertEqual(CitadelSession.lowLevelReason(IOError(errnoCode: ECONNREFUSED, reason: "connect")), "connection refused")
+        XCTAssertEqual(CitadelSession.lowLevelReason(IOError(errnoCode: ECONNRESET, reason: "read")), "connection reset by peer")
+        XCTAssertEqual(CitadelSession.lowLevelReason(IOError(errnoCode: EHOSTUNREACH, reason: "connect")), "no route to host")
+        XCTAssertEqual(CitadelSession.lowLevelReason(IOError(errnoCode: ENETUNREACH, reason: "connect")), "network is unreachable")
+        XCTAssertNil(CitadelSession.lowLevelReason(CancellationError()))
+    }
+
+    private static func unusedPort() throws -> Int {
+        let fd = try ListeningSocket.makeBoundSocket() // bound, never listening: connecting is refused
+        defer { close(fd) }
+        return try ListeningSocket.localPort(of: fd)
+    }
+
     // MARK: Helpers
 
     private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {
@@ -541,6 +679,7 @@ final class TestEvaluator: HostKeyEvaluator, @unchecked Sendable {
 final class EventRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var events: [SessionEvent] = []
+    private var recordedSteps: [ConnectionStep] = []
     private var bytes: [UInt8] = []
     private var finished = false
     /// Set when output arrives before `.connected` or after `.closed`, or `.ready` is out of place.
@@ -555,6 +694,11 @@ final class EventRecorder: @unchecked Sendable {
 
     private func record(_ event: SessionEvent) {
         lock.withLock {
+            if case .progress(let step) = event {
+                if !events.isEmpty { outputOutsideSession = true } // steps only before .connected / .closed
+                recordedSteps.append(step)
+                return
+            }
             if case .output(let chunk) = event {
                 if !events.contains(.connected) || events.contains(where: { if case .closed = $0 { true } else { false } }) {
                     outputOutsideSession = true
@@ -569,7 +713,10 @@ final class EventRecorder: @unchecked Sendable {
         }
     }
 
-    /// Events other than output, in order (output is checked separately via `output`).
+    /// The `.progress` steps, in order (kept out of `nonOutputEvents`).
+    var steps: [ConnectionStep] { lock.withLock { recordedSteps } }
+
+    /// Events other than output and progress, in order (output is checked separately via `output`).
     var nonOutputEvents: [SessionEvent] {
         lock.withLock { events.filter { if case .output = $0 { false } else { true } } }
     }
@@ -605,7 +752,7 @@ final class EventRecorder: @unchecked Sendable {
     func waitForFinish(timeout: TimeInterval = 20, file: StaticString = #filePath, line: UInt = #line) async throws {
         try await waitUntil(timeout: timeout, file: file, line: line,
                             message: { "event stream did not finish: \(self.nonOutputEvents)" }) { self.isFinished }
-        XCTAssertFalse(lock.withLock { outputOutsideSession }, "output outside connected..closed, or .ready misplaced", file: file, line: line)
+        XCTAssertFalse(lock.withLock { outputOutsideSession }, "output outside connected..closed, .ready misplaced, or progress after .connected/.closed", file: file, line: line)
         let closedCount = nonOutputEvents.filter { if case .closed = $0 { true } else { false } }.count
         XCTAssertEqual(closedCount, 1, "exactly one .closed event", file: file, line: line)
         if case .closed = nonOutputEvents.last {} else { XCTFail("last event is not .closed", file: file, line: line) }
