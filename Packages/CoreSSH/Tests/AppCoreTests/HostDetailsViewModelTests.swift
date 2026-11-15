@@ -163,18 +163,21 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.credentialMode = .identity
         XCTAssertEqual(vm.credentialMode, .identity)
         var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertNil(stored.username)
+        XCTAssertEqual(stored.username, "root", "switching the login method never clears the username")
         XCTAssertNil(stored.password)
         XCTAssertNil(stored.sshKeyID)
-        XCTAssertEqual(vm.username, "")
+        XCTAssertEqual(vm.credentialMode, .identity, "a kept username doesn't flip the mode back to direct")
 
         vm.identityID = identity.id
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.identityID, identity.id)
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.username, "root")
+        XCTAssertEqual(vm.credentialMode, .identity)
 
         vm.credentialMode = .direct
         XCTAssertEqual(vm.credentialMode, .direct)
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertNil(stored.identityID)
+        XCTAssertEqual(vm.username, "root", "back in direct mode the kept username shows")
 
         vm.username = "admin"
         vm.password = "secret"
@@ -211,7 +214,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         for host in hosts {
             let stored = try await persistedHost(p, id: host.id)
             XCTAssertEqual(stored.identityID, identity.id)
-            XCTAssertNil(stored.username)
+            XCTAssertEqual(stored.username, "cory", "linking an identity never clears the username")
             XCTAssertNil(stored.password)
             XCTAssertNil(stored.sshKeyID, "the identity is now the host's only credential source")
         }
@@ -245,7 +248,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         for host in hosts {
             let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
             XCTAssertEqual(stored.identityID, identity.id)
-            XCTAssertNil(stored.username)
+            XCTAssertEqual(stored.username, "cory")
             XCTAssertNil(stored.password)
         }
         await p.setFailing(false)
@@ -254,7 +257,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         for host in hosts {
             let stored = try await persistedHost(p, id: host.id)
             XCTAssertEqual(stored.identityID, identity.id)
-            XCTAssertNil(stored.username)
+            XCTAssertEqual(stored.username, "cory")
         }
         let contents = await p.contents
         XCTAssertNotNil(contents?.records.first { $0.id == identity.id })
@@ -297,11 +300,11 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.username = "root"
         vm.password = "pw"
 
-        // Setting an identity clears the direct fields.
+        // Setting an identity clears the direct password and key, never the username.
         vm.identityID = other.id
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(stored.identityID, other.id)
-        XCTAssertNil(stored.username)
+        XCTAssertEqual(stored.username, "root")
         XCTAssertNil(stored.password)
         XCTAssertNil(stored.sshKeyID)
         XCTAssertEqual(vm.credentialMode, .identity)
@@ -497,7 +500,7 @@ final class HostDetailsViewModelTests: XCTestCase {
                                                agentKey: AgentKeyChoice(publicKey: nil)))
         HostDetailsViewModel(vault: vault, hostID: a.id).credentialMode = .identity
         XCTAssertNil(vault.get(SavedHost.self, id: a.id)?.agentKey)
-        XCTAssertNil(vault.get(SavedHost.self, id: a.id)?.username)
+        XCTAssertEqual(vault.get(SavedHost.self, id: a.id)?.username, "root")
         HostDetailsViewModel(vault: vault, hostID: b.id).identityID = identity.id
         let linked = try XCTUnwrap(vault.get(SavedHost.self, id: b.id))
         XCTAssertNil(linked.agentKey)
@@ -512,5 +515,283 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.agentKey = AgentKeyChoice(publicKey: nil)
         XCTAssertNil(vault.get(SavedHost.self, id: host.id))
         XCTAssertNil(vm.agentKey)
+    }
+
+    // MARK: Username is kept across login methods
+
+    func testKeptUsernameNeverOverridesALinkedIdentity() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "idUser", password: "idpw"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root", password: "pw"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.identityID = identity.id
+        let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertEqual(vm.credentialMode, .identity)
+
+        let plan = try ConnectionPlanner.plan(hostID: stored.id, vault: vault)
+        XCTAssertEqual(plan.username, "idUser", "the identity applies first")
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, idUser",
+                       "the card shows the user actually used")
+    }
+
+    func testIdentityModeWithoutIdentityKeepsUsernameAndStaysInIdentityMode() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  agentKey: AgentKeyChoice(publicKey: nil)))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.credentialMode = .identity
+        XCTAssertEqual(vm.credentialMode, .identity)
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.username, "root")
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .identity,
+                       "the choice is stored, so a fresh editor sees identity mode too")
+        vm.credentialMode = .direct
+        XCTAssertEqual(vm.username, "root")
+    }
+
+    // MARK: Replacing credentials
+
+    private func keyItem(_ vault: LocalVault) async throws -> SSHKey {
+        try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+    }
+
+    func testAgentReplacesPlainPasswordAndKeyLink() async throws {
+        let vault = try await makeVault()
+        let key = try await keyItem(vault)
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  password: "pw", sshKeyID: key.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let change = CredentialChange.agent(AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin"))
+        XCTAssertEqual(vm.secretsReplaced(by: change), ReplacedSecrets(password: true, keyLink: true))
+        vm.apply(change, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin"))
+        XCTAssertNil(saved.password)
+        XCTAssertNil(saved.sshKeyID)
+        XCTAssertEqual(saved.username, "root")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: key.id), "the key item itself stays in Keychain")
+        XCTAssertTrue(vm.secretsReplaced(by: change).isEmpty)
+    }
+
+    func testAgentKeepsAReferencePasswordAndDoesNotCountIt() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  password: " op://Private/web/password"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let change = CredentialChange.agent(AgentKeyChoice(publicKey: nil))
+        XCTAssertEqual(vm.secretsReplaced(by: change), ReplacedSecrets(password: false, keyLink: false))
+        XCTAssertTrue(vm.secretsReplaced(by: change).isEmpty)
+        vm.apply(change, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.password, " op://Private/web/password", "a reference isn't a secret; it is kept")
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+    }
+
+    func testPasswordReferenceOverwritesPasswordAndReplacesKeyLink() async throws {
+        let vault = try await makeVault()
+        let key = try await keyItem(vault)
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  password: "pw", sshKeyID: key.id,
+                                                  agentKey: AgentKeyChoice(publicKey: nil)))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        let change = CredentialChange.passwordReference("op://Private/web/password")
+        XCTAssertEqual(vm.secretsReplaced(by: change), ReplacedSecrets(password: false, keyLink: true),
+                       "the password is overwritten either way; only the key link is a choice")
+        vm.apply(change, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.password, "op://Private/web/password")
+        XCTAssertNil(saved.sshKeyID)
+        XCTAssertNil(saved.agentKey, "the password is what logs in now")
+        XCTAssertEqual(saved.username, "root")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: key.id))
+    }
+
+    func testPasswordReferenceWithoutKeyLinkCountsNothing() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", password: "op://a/b/c"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertTrue(vm.secretsReplaced(by: .passwordReference("op://a/b/d")).isEmpty)
+        let plain = try await vault.save(SavedHost(label: "p", address: "p.example", password: "pw"))
+        XCTAssertTrue(HostDetailsViewModel(vault: vault, hostID: plain.id)
+            .secretsReplaced(by: .passwordReference("op://a/b/d")).isEmpty, "a plain password alone asks nothing")
+        vm.apply(.passwordReference("op://a/b/d"), removingReplaced: false)
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.password, "op://a/b/d")
+    }
+
+    func testKeyReplacesPlainPasswordAndClearsAgent() async throws {
+        let vault = try await makeVault()
+        let old = try await keyItem(vault)
+        let new = try await keyItem(vault)
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  password: "pw", sshKeyID: old.id,
+                                                  agentKey: AgentKeyChoice(publicKey: nil)))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.secretsReplaced(by: .key(new.id)), ReplacedSecrets(password: true, keyLink: false))
+        vm.apply(.key(new.id), removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.sshKeyID, new.id)
+        XCTAssertNil(saved.agentKey)
+        XCTAssertNil(saved.password)
+        XCTAssertEqual(saved.username, "root")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: old.id), "the old key item is kept")
+    }
+
+    func testKeyKeepsAReferencePassword() async throws {
+        let vault = try await makeVault()
+        let key = try await keyItem(vault)
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", password: "op://a/b/c"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertTrue(vm.secretsReplaced(by: .key(key.id)).isEmpty)
+        vm.apply(.key(key.id), removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(saved.password, "op://a/b/c")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+    }
+
+    func testNotRemovingReplacedKeepsTheFields() async throws {
+        let vault = try await makeVault()
+        let key = try await keyItem(vault)
+        let other = try await keyItem(vault)
+        func fresh() async throws -> HostDetailsViewModel {
+            let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                      password: "pw", sshKeyID: key.id))
+            return HostDetailsViewModel(vault: vault, hostID: host.id)
+        }
+        var vm = try await fresh()
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: false)
+        var saved = try XCTUnwrap(vault.get(SavedHost.self, id: vm.hostID))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+
+        vm = try await fresh()
+        vm.apply(.passwordReference("op://a/b/c"), removingReplaced: false)
+        saved = try XCTUnwrap(vault.get(SavedHost.self, id: vm.hostID))
+        XCTAssertEqual(saved.password, "op://a/b/c", "the reference takes the password's place")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+
+        vm = try await fresh()
+        vm.apply(.key(other.id), removingReplaced: false)
+        saved = try XCTUnwrap(vault.get(SavedHost.self, id: vm.hostID))
+        XCTAssertEqual(saved.sshKeyID, other.id)
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.username, "root")
+    }
+
+    func testApplyUnlinksIdentityKeepsUsernameAndPersists() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  identityID: identity.id))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertTrue(vm.secretsReplaced(by: .agent(AgentKeyChoice(publicKey: nil))).isEmpty,
+                      "only the host's direct credentials count")
+        let revision = vault.revision
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: true)
+        XCTAssertGreaterThan(vault.revision, revision)
+        XCTAssertEqual(vm.credentialMode, .direct)
+        await vault.flush()
+        let stored = try await persistedHost(p, id: host.id)
+        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertEqual(stored.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertNotNil(vault.get(Identity.self, id: identity.id))
+    }
+
+    func testReplacingOnADeletedHostDoesNothing() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", password: "pw"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        try await vm.delete()
+        XCTAssertTrue(vm.secretsReplaced(by: .agent(AgentKeyChoice(publicKey: nil))).isEmpty)
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: true)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id))
+    }
+
+    func testReplacedSecretsIsEmpty() async {
+        XCTAssertTrue(ReplacedSecrets(password: false, keyLink: false).isEmpty)
+        XCTAssertFalse(ReplacedSecrets(password: true, keyLink: false).isEmpty)
+        XCTAssertFalse(ReplacedSecrets(password: false, keyLink: true).isEmpty)
+    }
+
+    // MARK: Persisted login-method choice
+
+    func testIdentityModeIsPersistedAndUsesTheGroupDefaultWhileKeepingTheUsername() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser", password: "gpw"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", groupID: group.id,
+                                                  username: "root", password: "pw"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.credentialMode = .identity
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, true)
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertNil(stored.password)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .identity,
+                       "a fresh editor (another Mac) sees identity mode")
+        var plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "groupUser")
+        guard case .password("gpw") = plan.credential else { return XCTFail("\(plan.credential)") }
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, groupUser")
+
+        vm.credentialMode = .direct
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, false)
+        XCTAssertEqual(vm.username, "root")
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .direct)
+        plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "root", "back in direct mode the kept username is used")
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, root")
+
+        await vault.flush()
+        let persisted = try await persistedHost(p, id: host.id)
+        XCTAssertEqual(persisted.prefersIdentity, false, "synced with the record")
+    }
+
+    func testLegacyHostKeepsInferredMode() async throws {
+        let vault = try await makeVault()
+        let bare = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        let withUser = try await vault.save(SavedHost(label: "u", address: "u.example", username: "root"))
+        XCTAssertNil(bare.prefersIdentity)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: bare.id).credentialMode, .direct)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: withUser.id).credentialMode, .direct)
+    }
+
+    func testDirectEditsAndLinkingUpdateThePersistedChoice() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  prefersIdentity: true))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.credentialMode, .identity)
+        vm.password = "pw"
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.prefersIdentity, false, "a direct secret means direct")
+        XCTAssertEqual(vm.credentialMode, .direct)
+
+        vm.identityID = identity.id
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.prefersIdentity, true)
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: true)
+        let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, false)
+        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertEqual(vm.credentialMode, .direct)
+    }
+
+    func testRecordFromAnotherDeviceDrivesTheMode() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.credentialMode, .direct)
+        var synced = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        synced.prefersIdentity = true
+        try await vault.save(synced)
+        XCTAssertEqual(vm.credentialMode, .identity)
+        synced.prefersIdentity = false
+        try await vault.save(synced)
+        XCTAssertEqual(vm.credentialMode, .direct)
     }
 }

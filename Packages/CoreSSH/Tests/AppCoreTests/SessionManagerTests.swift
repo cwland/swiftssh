@@ -1275,7 +1275,7 @@ extension SessionManagerTests {
         manager = makeManager(initialSizeTimeout: .zero, agentSocket: { "/tmp/a.sock" })
         let tab = try manager.open(hostID: agentHost().id)
         await waitUntil("disconnected") {
-            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example.")
+            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example. Either the key's public half isn't in ~/.ssh/authorized_keys on the server, or 1Password is locked \u{2014} unlock it and try again.")
         }
         XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup, "1Password may hold another key, or be locked")
     }
@@ -1334,7 +1334,7 @@ private final class FakeOnePassword: OnePasswordCLI, Sendable {
         do {
             return try await answer(reference)
         } catch {
-            if error == .cancelled { state.withLock { $0.cancelled += 1 } }
+            if case .cancelled = error { state.withLock { $0.cancelled += 1 } }
             throw error
         }
     }
@@ -1466,8 +1466,8 @@ final class SessionManagerOnePasswordTests: XCTestCase {
 
     func testErrorsDisconnectWithTheMessageAndSuggestSetupWhenItHelps() async throws {
         let cases: [(OnePasswordError, SuggestedAction?)] = [
-            (.cliNotFound, .openOnePasswordSetup), (.integrationOff, .openOnePasswordSetup),
-            (.appLocked, .openOnePasswordSetup), (.timedOut, nil), (.notFound("could not find item web"), nil),
+            (.cliNotFound, .openOnePasswordSetup), (.integrationOff(details: "No accounts configured"), .openOnePasswordSetup),
+            (.appLocked(details: nil), .openOnePasswordSetup), (.timedOut(details: "authorization timeout"), nil), (.notFound("could not find item web"), nil),
             (.failed("boom"), nil),
         ]
         for (error, suggestion) in cases {
@@ -1481,7 +1481,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
     }
 
     func testCancelledShowsCancelledWithoutASuggestion() async throws {
-        op?.setAnswer { _ throws(OnePasswordError) in throw .cancelled }
+        op?.setAnswer { _ throws(OnePasswordError) in throw .cancelled(details: "authorization prompt dismissed") }
         let tab = try manager.open(hostID: referenceHost().id)
         await waitUntil("disconnected") { tab.state == .disconnected("Cancelled") }
         XCTAssertNil(tab.suggestedAction)
@@ -1496,7 +1496,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
     }
 
     func testSuggestionIsClearedWhenANewAttemptStarts() async throws {
-        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked }
+        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked(details: nil) }
         let tab = try manager.open(hostID: referenceHost().id)
         await waitUntil("suggestion") { tab.suggestedAction == .openOnePasswordSetup }
         op?.setAnswer { _ in "resolved-pw" }
@@ -1509,7 +1509,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
 
     func testClosingTheTabWhileReadingCancelsTheRead() async throws {
         op?.setAnswer { _ throws(OnePasswordError) in
-            do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled }
+            do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled(details: nil) }
             return "too late"
         }
         let tab = try manager.open(hostID: referenceHost().id)
@@ -1528,7 +1528,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
                 return value
             }
             if isFirst {
-                do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled }
+                do { try await Task.sleep(for: .seconds(30)) } catch { throw .cancelled(details: nil) }
                 return "stale"
             }
             return "fresh"
@@ -1565,9 +1565,9 @@ final class SessionManagerOnePasswordTests: XCTestCase {
         await waitUntil("ready") { !self.vault.all(ConnectionLog.self).isEmpty }
         factory.sessions[0].emit(.closed(.failed(broken)))
         await waitUntil("waiting") { tab.autoReconnect != nil }
-        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked }
+        op?.setAnswer { _ throws(OnePasswordError) in throw .appLocked(details: nil) }
         sleeper.elapseAll()
-        await waitUntil("stopped") { tab.state == .disconnected(OnePasswordError.appLocked.message) }
+        await waitUntil("stopped") { tab.state == .disconnected(OnePasswordError.appLocked(details: nil).message) }
         XCTAssertNil(tab.autoReconnect)
         XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
         await settle()
@@ -1677,7 +1677,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
         factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
         sleeper.elapseAll()
         await waitUntil("stopped") {
-            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example.")
+            tab.state == .disconnected("The server didn't accept the key from 1Password's SSH agent for root@agent.example. Either the key's public half isn't in ~/.ssh/authorized_keys on the server, or 1Password is locked \u{2014} unlock it and try again.")
         }
         XCTAssertNil(tab.autoReconnect)
         XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)

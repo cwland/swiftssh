@@ -259,4 +259,155 @@ final class KeychainViewModelTests: XCTestCase {
         XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 2)
         XCTAssertEqual(vm.usageSummary(sshKeyID: key.id), "Used by 2 hosts")
     }
+
+    // MARK: Replacing an identity's credentials
+
+    private func identityWithSecrets(_ vault: LocalVault, password: String? = "pw",
+                                     agent: AgentKeyChoice? = nil) async throws -> (Identity, SSHKey) {
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+        let identity = try await vault.save(Identity(label: "i", username: "cory", password: password,
+                                                     sshKeyID: key.id, agentKey: agent))
+        return (identity, key)
+    }
+
+    func testIdentityAgentReplacesPlainPasswordAndKeyLink() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let (identity, key) = try await identityWithSecrets(vault)
+        let change = CredentialChange.agent(AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin"))
+        XCTAssertEqual(vm.secretsReplaced(by: change, identityID: identity.id), ReplacedSecrets(password: true, keyLink: true))
+        vm.apply(change, identityID: identity.id, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin"))
+        XCTAssertNil(saved.password)
+        XCTAssertNil(saved.sshKeyID)
+        XCTAssertEqual(saved.username, "cory", "the username is never touched")
+        XCTAssertEqual(saved.label, "i")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: key.id), "the key item itself stays in Keychain")
+    }
+
+    func testIdentityAgentKeepsAReferencePassword() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let identity = try await vault.save(Identity(label: "i", username: "cory", password: "op://Private/web/password"))
+        let change = CredentialChange.agent(AgentKeyChoice(publicKey: nil))
+        XCTAssertTrue(vm.secretsReplaced(by: change, identityID: identity.id).isEmpty)
+        vm.apply(change, identityID: identity.id, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.password, "op://Private/web/password")
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+    }
+
+    func testIdentityPasswordReferenceOverwritesPasswordAndReplacesKeyLink() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let (identity, key) = try await identityWithSecrets(vault, agent: AgentKeyChoice(publicKey: nil))
+        let change = CredentialChange.passwordReference("op://Private/web/password")
+        XCTAssertEqual(vm.secretsReplaced(by: change, identityID: identity.id), ReplacedSecrets(password: false, keyLink: true))
+        vm.apply(change, identityID: identity.id, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.password, "op://Private/web/password")
+        XCTAssertNil(saved.sshKeyID)
+        XCTAssertNil(saved.agentKey)
+        XCTAssertEqual(saved.username, "cory")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: key.id))
+
+        let plain = try await vault.save(Identity(label: "p", username: "u", password: "pw"))
+        XCTAssertTrue(vm.secretsReplaced(by: change, identityID: plain.id).isEmpty)
+    }
+
+    func testIdentityKeyReplacesPlainPasswordAndClearsAgent() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let (identity, old) = try await identityWithSecrets(vault, agent: AgentKeyChoice(publicKey: nil))
+        let new = try await vault.save(SSHKey(label: "n", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+        XCTAssertEqual(vm.secretsReplaced(by: .key(new.id), identityID: identity.id), ReplacedSecrets(password: true, keyLink: false))
+        vm.apply(.key(new.id), identityID: identity.id, removingReplaced: true)
+        let saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.sshKeyID, new.id)
+        XCTAssertNil(saved.agentKey)
+        XCTAssertNil(saved.password)
+        XCTAssertEqual(saved.username, "cory")
+        XCTAssertNotNil(vault.get(SSHKey.self, id: old.id))
+
+        let ref = try await vault.save(Identity(label: "r", username: "u", password: "op://a/b/c"))
+        XCTAssertTrue(vm.secretsReplaced(by: .key(new.id), identityID: ref.id).isEmpty)
+        vm.apply(.key(new.id), identityID: ref.id, removingReplaced: true)
+        XCTAssertEqual(vault.get(Identity.self, id: ref.id)?.password, "op://a/b/c")
+    }
+
+    func testIdentityNotRemovingReplacedKeepsTheFields() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        var (identity, key) = try await identityWithSecrets(vault)
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), identityID: identity.id, removingReplaced: false)
+        var saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+
+        (identity, key) = try await identityWithSecrets(vault)
+        vm.apply(.passwordReference("op://a/b/c"), identityID: identity.id, removingReplaced: false)
+        saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.password, "op://a/b/c")
+        XCTAssertEqual(saved.sshKeyID, key.id)
+
+        (identity, key) = try await identityWithSecrets(vault)
+        let other = try await vault.save(SSHKey(label: "o", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
+        vm.apply(.key(other.id), identityID: identity.id, removingReplaced: false)
+        saved = try XCTUnwrap(vault.get(Identity.self, id: identity.id))
+        XCTAssertEqual(saved.sshKeyID, other.id)
+        XCTAssertEqual(saved.password, "pw")
+        XCTAssertEqual(saved.username, "cory")
+    }
+
+    func testIdentityApplyPersistsAndIgnoresDeletedIdentities() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await LocalVault.open(persistence: p, newDeviceID: { "dev-1" })
+        let vm = KeychainViewModel(vault: vault)
+        let (identity, _) = try await identityWithSecrets(vault)
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), identityID: identity.id, removingReplaced: true)
+        await vault.flush()
+        let contents = await p.contents
+        let record = try XCTUnwrap(contents?.records.first { $0.id == identity.id })
+        let stored = try record.decode(Identity.self)
+        XCTAssertEqual(stored.agentKey, AgentKeyChoice(publicKey: nil))
+        XCTAssertNil(stored.password)
+        XCTAssertEqual(stored.username, "cory")
+
+        try await vm.deleteIdentity(id: identity.id)
+        let revision = vault.revision
+        XCTAssertTrue(vm.secretsReplaced(by: .key(UUID()), identityID: identity.id).isEmpty)
+        vm.apply(.key(UUID()), identityID: identity.id, removingReplaced: true)
+        XCTAssertEqual(vault.revision, revision)
+        XCTAssertNil(vault.get(Identity.self, id: identity.id))
+        XCTAssertTrue(vm.secretsReplaced(by: .key(UUID()), identityID: UUID()).isEmpty)
+    }
+
+    func testUpdateNowNeverClearsTheUsernameWhenChangingTheLogin() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let (identity, _) = try await identityWithSecrets(vault)
+        var edited = identity
+        edited.password = nil
+        edited.sshKeyID = nil
+        edited.agentKey = AgentKeyChoice(publicKey: nil)
+        vm.updateNow(edited)
+        XCTAssertEqual(vault.get(Identity.self, id: identity.id)?.username, "cory")
+    }
+
+    func testUsageCountsFollowPrefersIdentity() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "s"))
+        _ = try await vault.save(SavedHost(label: "pref", address: "a", groupID: group.id, username: "root",
+                                           sshKeyID: key.id, prefersIdentity: true))
+        _ = try await vault.save(SavedHost(label: "direct", address: "b", groupID: group.id, username: "root",
+                                           prefersIdentity: false))
+        _ = try await vault.save(SavedHost(label: "legacy", address: "c", groupID: group.id, username: "root"))
+        XCTAssertEqual(vm.usageCount(identityID: groupIdentity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 0, "the identity-mode host's own key isn't used")
+    }
 }

@@ -817,7 +817,7 @@ public final class SessionManager {
             case .agent:
                 // 1Password may hold another key, be locked, or not have been allowed to sign.
                 tab.suggestedAction = .openOnePasswordSetup
-                return .disconnected("The server didn't accept the key from 1Password's SSH agent for \(who).")
+                return .disconnected("The server didn't accept the key from 1Password's SSH agent for \(who). Either the key's public half isn't in ~/.ssh/authorized_keys on the server, or 1Password is locked \u{2014} unlock it and try again.")
             case .none:
                 return .disconnected(SessionError.authenticationFailed.localizedDescription)
             }

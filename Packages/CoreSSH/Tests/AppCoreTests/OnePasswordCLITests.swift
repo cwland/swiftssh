@@ -201,7 +201,7 @@ final class OnePasswordCLITests: XCTestCase {
         let op = try fake("exec sleep 30")
         let started = Date()
         let error = await readError(cli(op, timeout: .milliseconds(300)))
-        XCTAssertEqual(error, .timedOut)
+        XCTAssertEqual(error, .timedOut(details: nil))
         XCTAssertLessThan(Date().timeIntervalSince(started), 5)
         let pid = try XCTUnwrap(op.pid)
         XCTAssertFalse(isAlive(pid), "op was killed")
@@ -225,7 +225,7 @@ final class OnePasswordCLITests: XCTestCase {
         let started = Date()
         task.cancel()
         let error = await task.value
-        XCTAssertEqual(error, .cancelled)
+        XCTAssertEqual(error, .cancelled(details: nil))
         XCTAssertLessThan(Date().timeIntervalSince(started), 3)
         XCTAssertFalse(isAlive(pid))
     }
@@ -244,7 +244,7 @@ final class OnePasswordCLITests: XCTestCase {
         }
         task.cancel()
         let error = await task.value
-        XCTAssertEqual(error, .cancelled)
+        XCTAssertEqual(error, .cancelled(details: nil))
     }
 
     func testStdoutCapKillsARunawayProcess() async throws {
@@ -260,8 +260,10 @@ final class OnePasswordCLITests: XCTestCase {
         let op = try fake("head -c 200000 /dev/zero | tr '\\0' 'e' >&2; exit 1")
         let error = await readError(cli(op, stderrLimit: 4096))
         guard case .failed(let detail) = error else { return XCTFail("\(String(describing: error))") }
-        XCTAssertLessThanOrEqual(detail.count, 300)
+        XCTAssertEqual(detail.count, 500)
         XCTAssertTrue(detail.hasPrefix("eee"))
+        XCTAssertTrue(detail.hasSuffix("\u{2026}"))
+        XCTAssertEqual(error?.details, detail)
     }
 
     func testReadOutputNeverAppearsInErrors() async throws {
@@ -277,15 +279,17 @@ final class OnePasswordCLITests: XCTestCase {
 
     func testKnownErrorStrings() async throws {
         let cases: [(String, OnePasswordError)] = [
-            ("[ERROR] 2025/07/11 10:16:41 authorization timeout", .timedOut),
-            ("[ERROR] 2025/07/11 10:16:41 authorization prompt dismissed, please try again", .cancelled),
+            ("[ERROR] 2025/07/11 10:16:41 authorization timeout", .timedOut(details: "authorization timeout")),
+            ("[ERROR] 2025/07/11 10:16:41 authorization prompt dismissed, please try again",
+             .cancelled(details: "authorization prompt dismissed, please try again")),
             ("[ERROR] 2025/07/11 10:16:41 error initializing client: connecting to desktop app: read: connection reset, make sure the CLI is correctly installed and CLI Biometric Unlock is enabled in the 1Password app",
-             .integrationOff),
-            ("[ERROR] 2025/07/11 10:16:41 LostConnectionToApp", .integrationOff),
+             .integrationOff(details: "error initializing client: connecting to desktop app: read: connection reset, make sure the CLI is correctly installed and CLI Biometric Unlock is enabled in the 1Password app")),
+            ("[ERROR] 2025/07/11 10:16:41 LostConnectionToApp", .integrationOff(details: "LostConnectionToApp")),
             ("[ERROR] 2025/07/11 10:16:41 You are not currently signed in. Please run `op signin --help` for instructions",
-             .integrationOff),
-            ("[ERROR] 2025/07/11 10:16:41 No accounts configured for use with 1Password CLI.", .integrationOff),
-            ("[ERROR] 2025/07/11 10:16:41 1Password app is locked", .appLocked),
+             .integrationOff(details: "You are not currently signed in. Please run `op signin --help` for instructions")),
+            ("[ERROR] 2025/07/11 10:16:41 No accounts configured for use with 1Password CLI.",
+             .integrationOff(details: "No accounts configured for use with 1Password CLI.")),
+            ("[ERROR] 2025/07/11 10:16:41 1Password app is locked", .appLocked(details: "1Password app is locked")),
             ("[ERROR] 2025/07/11 10:16:41 could not read secret op://Private/web/password: \"Private\" isn't a vault in this account. Specify the vault with its ID or name.",
              .notFound("could not read secret op://Private/web/password: \"Private\" isn't a vault in this account. Specify the vault with its ID or name.")),
             ("[ERROR] 2025/07/11 10:16:41 could not find item APP_ENV in vault Env_Server_Local, because it has been deleted or archived.",
@@ -309,13 +313,120 @@ final class OnePasswordCLITests: XCTestCase {
     }
 
     func testMessages() {
-        let all: [OnePasswordError] = [.cliNotFound, .appLocked, .cancelled, .integrationOff, .timedOut,
+        let all: [OnePasswordError] = [.cliNotFound, .appLocked(details: nil), .cancelled(details: nil),
+                                       .integrationOff(details: nil), .timedOut(details: nil),
                                        .notFound("x"), .failed("y")]
         for error in all { XCTAssertFalse(error.message.isEmpty) }
-        XCTAssertTrue(OnePasswordError.integrationOff.message.contains("Integrate with 1Password CLI"))
         XCTAssertTrue(OnePasswordError.notFound("could not find item X").message.contains("could not find item X"))
         XCTAssertTrue(OnePasswordError.failed("boom").message.contains("boom"))
-        XCTAssertEqual(OnePasswordError.timedOut.localizedDescription, OnePasswordError.timedOut.message)
+        XCTAssertEqual(OnePasswordError.timedOut(details: nil).localizedDescription,
+                       OnePasswordError.timedOut(details: nil).message)
+    }
+
+    func testIntegrationOffMessageIsExact() {
+        let expected = "The 1Password CLI can't reach the 1Password app. In 1Password \u{2192} Settings \u{2192} Developer, turn on \u{201C}Integrate with 1Password CLI\u{201D}. On macOS 27 or later, also turn on \u{201C}Data shared by 1Password\u{201D} for Termius Reimagined in System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, then quit and reopen Termius Reimagined."
+        XCTAssertEqual(OnePasswordError.integrationOff(details: nil).message, expected)
+        XCTAssertEqual(OnePasswordError.integrationOff(details: "op's own words").message, expected,
+                       "the details are shown separately, never in the message")
+    }
+
+    func testDetailsProperty() {
+        XCTAssertNil(OnePasswordError.cliNotFound.details)
+        XCTAssertEqual(OnePasswordError.appLocked(details: "a").details, "a")
+        XCTAssertEqual(OnePasswordError.integrationOff(details: "b").details, "b")
+        XCTAssertEqual(OnePasswordError.timedOut(details: "c").details, "c")
+        XCTAssertEqual(OnePasswordError.cancelled(details: "d").details, "d")
+        XCTAssertNil(OnePasswordError.cancelled(details: nil).details)
+        XCTAssertEqual(OnePasswordError.notFound("e").details, "e")
+        XCTAssertEqual(OnePasswordError.failed("f").details, "f")
+        XCTAssertNotEqual(OnePasswordError.appLocked(details: "a"), .appLocked(details: nil))
+    }
+
+    // MARK: Details
+
+    /// What `op vault list` prints on a Mac where the CLI can't see any 1Password account (integration
+    /// off, or macOS 27 not sharing 1Password's data), stdin being /dev/null.
+    static let noAccountsStderr = """
+        No accounts configured for use with 1Password CLI.
+
+        Your options are:
+
+        \t1. Turn on the 1Password desktop app integration. Learn more: https://developer.1password.com/docs/cli/get-started/#step-2-turn-on-the-1password-desktop-app-integration
+        \t2. Add an account manually by running 'op account add'.
+
+        Do you want to add an account manually now? [Y/n] [ERROR] 2026/11/14 10:00:00 EOF
+
+        """
+
+    func testNoAccountsConfiguredMapsToIntegrationOffWithDetails() async throws {
+        let op = try fake("cat \"$d/err\" >&2; exit 1")
+        try op.put("err", Self.noAccountsStderr)
+        do {
+            try await cli(op).check()
+            XCTFail("expected an error")
+        } catch {
+            guard case .integrationOff(let details?) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(details.hasPrefix("No accounts configured for use with 1Password CLI. Your options are:"), details)
+            XCTAssertTrue(details.contains("Do you want to add an account manually now? [Y/n]"), details)
+            XCTAssertFalse(details.contains("\t"))
+            XCTAssertFalse(details.contains("\n"))
+            XCTAssertLessThanOrEqual(details.count, 500)
+        }
+    }
+
+    func testDetailsAreSanitized() {
+        let stderr = "[ERROR] 2026/11/14 10:00:00 \u{1B}[31mlocked\u{1B}[0m\tnow\u{07}\u{00}\r\nnext \u{202E}line\u{7F}"
+        XCTAssertEqual(ProcessOnePasswordCLI.details(Data(stderr.utf8)), "locked now next line")
+        let long = String(repeating: "x", count: 2000)
+        let capped = ProcessOnePasswordCLI.details(Data(long.utf8))
+        XCTAssertEqual(capped.count, 500)
+        XCTAssertEqual(capped, String(repeating: "x", count: 499) + "\u{2026}")
+        XCTAssertEqual(ProcessOnePasswordCLI.details(Data(String(repeating: "y", count: 500).utf8)).count, 500)
+        for scalar in capped.unicodeScalars { XCTAssertFalse(scalar.properties.generalCategory == .control) }
+    }
+
+    func testEveryMappedCaseCarriesSanitizedDetails() {
+        let error = ProcessOnePasswordCLI.error(stderr: Data("\u{1B}[1mauthorization timeout\u{1B}[0m\n".utf8), status: 1)
+        XCTAssertEqual(error, .timedOut(details: "authorization timeout"))
+        let notFound = ProcessOnePasswordCLI.error(stderr: Data("could not find\u{07} item x".utf8), status: 1)
+        XCTAssertEqual(notFound, .notFound("could not find item x"))
+    }
+
+    func testTimeoutAndCancellationKeepStderrSoFar() async throws {
+        let op = try fake("echo 'waiting for 1Password' >&2; exec sleep 30")
+        let error = await readError(cli(op, timeout: .milliseconds(500)))
+        XCTAssertEqual(error, .timedOut(details: "waiting for 1Password"))
+    }
+
+    func testDetailsNeverCarryReadOutput() async throws {
+        let cases = [
+            "printf 'TOPSECRET'; echo 'authorization timeout' >&2; exit 1",
+            "printf 'TOPSECRET'; echo 'No accounts configured for use with 1Password CLI.' >&2; exit 1",
+            "printf 'TOPSECRET'; echo '1Password app is locked' >&2; exit 1",
+            "printf 'TOPSECRET'; exit 1",
+            "printf 'TOPSECRET'; exec sleep 30",
+        ]
+        for body in cases {
+            let op = try fake(body)
+            let maybeError = await readError(cli(op, timeout: .milliseconds(500)))
+            let error = try XCTUnwrap(maybeError, body)
+            XCTAssertFalse(error.details?.contains("TOPSECRET") ?? false, body)
+            XCTAssertFalse(error.message.contains("TOPSECRET"), body)
+            XCTAssertFalse("\(error)".contains("TOPSECRET"), body)
+        }
+    }
+
+    func testCheckUsesStdoutWhenStderrIsEmpty() async throws {
+        // op may print the "No accounts configured" text to stdout; `check` (op vault list) has no secrets.
+        let op = try fake("cat \"$d/err\"; exit 1")
+        try op.put("err", Self.noAccountsStderr)
+        do {
+            try await cli(op).check()
+            XCTFail("expected an error")
+        } catch {
+            guard case .integrationOff(let details?) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(details.hasPrefix("No accounts configured"), details)
+        }
     }
 
     // MARK: check
@@ -332,7 +443,7 @@ final class OnePasswordCLITests: XCTestCase {
             try await cli(op).check()
             XCTFail("expected an error")
         } catch {
-            XCTAssertEqual(error, .integrationOff)
+            XCTAssertEqual(error, .integrationOff(details: "connecting to desktop app: read: connection reset"))
         }
     }
 

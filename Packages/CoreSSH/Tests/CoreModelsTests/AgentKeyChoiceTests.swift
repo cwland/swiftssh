@@ -50,4 +50,22 @@ final class AgentKeyChoiceTests: XCTestCase {
         XCTAssertNil(decodedIdentity.agentKey)
         XCTAssertEqual(decodedIdentity.username, "cory")
     }
+
+    func testPrefersIdentityRoundTripsAndOldRecordsDecodeAsNil() throws {
+        XCTAssertNil(Host(label: "x", address: "y").prefersIdentity, "defaults to nil (legacy)")
+        for value in [true, false] {
+            let host = Host(label: "H", address: "a", username: "root", prefersIdentity: value, updatedAt: date)
+            let data = try CoreJSON.encoder.encode(host)
+            let decoded = try CoreJSON.decoder.decode(Host.self, from: data)
+            XCTAssertEqual(decoded, host)
+            XCTAssertEqual(decoded.prefersIdentity, value)
+        }
+        let host = Host(label: "Old", address: "a", prefersIdentity: true, updatedAt: date)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: CoreJSON.encoder.encode(host)) as? [String: Any])
+        XCTAssertEqual(object["prefersIdentity"] as? Bool, true)
+        object.removeValue(forKey: "prefersIdentity")
+        let old = try CoreJSON.decoder.decode(Host.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(old.prefersIdentity)
+        XCTAssertEqual(old.label, "Old")
+    }
 }

@@ -98,4 +98,12 @@ final class VaultOperationsTests: XCTestCase {
         let groups = CredentialReuse.groups(in: small + empty + big)
         XCTAssertEqual(groups.map(\.count), [3, 2])
     }
+
+    func testCredentialReuseLeavesOutIdentityModeHosts() async {
+        let a = CoreModels.Host(label: "a", address: "a", username: "cory", password: "pw")
+        let b = CoreModels.Host(label: "b", address: "b", username: "cory", password: "pw")
+        let c = CoreModels.Host(label: "c", address: "c", username: "cory", password: "pw", prefersIdentity: true)
+        XCTAssertEqual(CredentialReuse.groups(in: [a, b, c]).map { $0.map(\.label) }, [["a", "b"]])
+        XCTAssertEqual(CredentialReuse.groups(in: [a, c]), [])
+    }
 }

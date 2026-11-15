@@ -1,23 +1,35 @@
 import Foundation
 
 /// Why a request to the 1Password CLI (`op`) failed. Never carries a secret value: the details are
-/// `op`'s own error text (stderr), which names references and items but not their values.
+/// `op`'s own error text (stderr, never the stdout of `read`), which names references and items but not
+/// their values; trimmed, at most 500 characters, control characters removed.
 public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
     /// `op` isn't installed where the app looks, or can't be run.
     case cliNotFound
-    case appLocked
+    case appLocked(details: String?)
     /// The user dismissed the 1Password prompt, or the request was cancelled.
-    case cancelled
-    /// `op` can't reach the 1Password app ("Integrate with 1Password CLI" is off, or the app isn't running).
-    case integrationOff
+    case cancelled(details: String?)
+    /// `op` can't reach the 1Password app ("Integrate with 1Password CLI" is off, the app isn't running,
+    /// or macOS doesn't share 1Password's data with the app: "No accounts configured").
+    case integrationOff(details: String?)
     /// Nobody approved the request in time.
-    case timedOut
+    case timedOut(details: String?)
     /// The vault, item or field doesn't exist; `op`'s explanation.
     case notFound(String)
     /// Any other failure; `op`'s explanation.
     case failed(String)
 
-    /// For the disconnected banner and the setup checklist.
+    /// `op`'s own text, for a "Details" disclosure; nil when there is none (always for `cliNotFound`).
+    public var details: String? {
+        switch self {
+        case .cliNotFound: nil
+        case .appLocked(let details), .cancelled(let details), .integrationOff(let details), .timedOut(let details):
+            details
+        case .notFound(let detail), .failed(let detail): detail
+        }
+    }
+
+    /// For the disconnected banner and the setup checklist. Never includes `details`.
     public var message: String {
         switch self {
         case .cliNotFound:
@@ -27,7 +39,7 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
         case .cancelled:
             "The 1Password request was cancelled."
         case .integrationOff:
-            "The 1Password CLI can't reach the 1Password app. Open 1Password, and in Settings \u{2192} Developer turn on \u{201C}Integrate with 1Password CLI\u{201D}."
+            "The 1Password CLI can't reach the 1Password app. In 1Password \u{2192} Settings \u{2192} Developer, turn on \u{201C}Integrate with 1Password CLI\u{201D}. On macOS 27 or later, also turn on \u{201C}Data shared by 1Password\u{201D} for Termius Reimagined in System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, then quit and reopen Termius Reimagined."
         case .timedOut:
             "1Password didn't get an answer in time. Approve the request in 1Password and try again."
         case .notFound(let detail):
