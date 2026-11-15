@@ -3,11 +3,14 @@ import AppKit
 import UniformTypeIdentifiers
 import AppCore
 
-/// The navy tab strip that replaces the window's title bar: Vaults, then one tab per terminal
-/// session of this window. The traffic lights sit over its leading inset; empty parts of the bar drag
-/// the window. Terminal tabs can be dragged to reorder them (Vaults stays first) and have a right-click
-/// menu (Cmd+Shift+[ and Cmd+Shift+] in the Session menu follow the bar order). A terminal window's bar
-/// has no Vaults tab and no "+".
+/// The navy tab strip that replaces the window's title bar: Vaults, then one item per terminal tab or
+/// workspace of this window (`SessionManager.strip(inWindow:)`; a workspace's panes are not listed on
+/// their own). The traffic lights sit over its leading inset; empty parts of the bar drag the window.
+/// Plain terminal tabs can be dragged to reorder them (Vaults stays first) or onto a terminal area to
+/// build a workspace; both kinds of item have a right-click menu (Cmd+Shift+[ and Cmd+Shift+] in the
+/// Session menu follow the bar order). A workspace item shows a grid icon, its name, and a grey dot
+/// while it differs from its saved template (a click on the dot saves). "+" opens a new connection; its
+/// menu also lists the saved workspaces. A terminal window's bar has no Vaults tab and no "+".
 struct TopBarView: View {
     let navigation: AppNavigation
     /// nil until the vault is open.
@@ -26,6 +29,18 @@ struct TopBarView: View {
     var showSnippets: (UUID) -> Void = { _ in }
     /// Duplicate in New Window.
     var duplicateInNewWindow: (UUID) -> Void = { _ in }
+    /// Saved workspaces for the "+" menu; nil hides that submenu.
+    var workspaceTemplates: WorkspaceTemplateStore? = nil
+    /// Shows a tab bar item (a workspace: its focused pane).
+    var selectItem: (StripItem) -> Void = { _ in }
+    /// Split Right / Split Down on a plain tab.
+    var splitTab: (UUID, DropEdge) throws -> Void = { _, _ in }
+    /// Save Workspace (⌘S, the grey dot).
+    var saveWorkspace: (Workspace) throws -> Void = { _ in }
+    /// Close Workspace: ends all its sessions.
+    var closeWorkspace: (UUID) -> Void = { _ in }
+    /// Opens a saved workspace (each pane connects).
+    var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
 
     /// The tab being dragged, for the drop indicator; the drop itself trusts only the dragged payload.
     @State private var draggingTabID: UUID?
@@ -35,6 +50,12 @@ struct TopBarView: View {
     @State private var dragEndWatch: Task<Void, Never>?
     @State private var renamingTabID: UUID?
     @State private var renameText = ""
+    @State private var renamingWorkspaceID: UUID?
+    @State private var templateToRename: WorkspaceTemplate?
+    @State private var templateToDelete: WorkspaceTemplate?
+    @State private var errorTitle = ""
+    @State private var errorMessage = ""
+    @State private var showsError = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -46,57 +67,14 @@ struct TopBarView: View {
             }
 
             if let sessions {
-                let windowTabs = sessions.tabs(inWindow: windowID)
-                ForEach(Array(windowTabs.enumerated()), id: \.element.id) { index, tab in
-                    SessionTabPill(
-                        tab: tab,
-                        isSelected: sessions.selectedTabID(inWindow: windowID) == tab.id,
-                        select: { sessions.select(tabID: tab.id, inWindow: windowID) },
-                        close: { closeTab(tab.id) }
-                    )
-                    .overlay(alignment: dropIndicatorEdge(for: index, in: windowTabs)) {
-                        if dropTargetID == tab.id, draggingTabID != tab.id {
-                            DropIndicator()
-                        }
-                    }
-                    .onDrag {
-                        draggingTabID = tab.id
-                        watchForDragEnd()
-                        return NSItemProvider(object: TabDragPayload.string(for: tab.id) as NSString)
-                    }
-                    .onDrop(of: [.text], delegate: TabDropDelegate(
-                        targetID: tab.id,
-                        targetIndex: index,
-                        dropTargetID: $dropTargetID,
-                        draggingTabID: $draggingTabID,
-                        move: { id, index in
-                            // Only tabs of this window reorder here.
-                            guard sessions.tabs(inWindow: windowID).contains(where: { $0.id == id }) else { return }
-                            withAnimation(.easeOut(duration: 0.15)) {
-                                sessions.moveTab(id: id, toIndex: index)
-                            }
-                        }
-                    ))
-                    .contextMenu {
-                        tabMenu(for: tab, sessions: sessions)
-                    }
+                let strip = sessions.strip(inWindow: windowID)
+                ForEach(Array(strip.enumerated()), id: \.element.id) { index, item in
+                    stripItem(item, index: index, strip: strip, sessions: sessions)
                 }
             }
 
             if showsVaults {
-                Button {
-                    selectVaults()
-                    navigation.sidebar = .hosts
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.topBarForeground)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .layoutPriority(1)
-                .help("New connection: pick a host or type user@host")
+                plusButton
             }
 
             Spacer(minLength: 0)
@@ -131,6 +109,183 @@ struct TopBarView: View {
         } message: {
             Text("Only this tab is renamed; the host keeps its name. Leave empty to use the host\u{2019}s name.")
         }
+        .alert("Rename Workspace", isPresented: workspaceRenameBinding) {
+            TextField("Workspace name", text: $renameText)
+            Button("Rename") {
+                if let id = renamingWorkspaceID, let workspace = sessions?.workspace(id) {
+                    let trimmed = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    workspace.name = trimmed.isEmpty ? "Workspace" : trimmed
+                }
+                renamingWorkspaceID = nil
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("Cancel", role: .cancel) {
+                renamingWorkspaceID = nil
+            }
+        } message: {
+            Text("Save the workspace (\u{2318}S) to keep the new name in its template.")
+        }
+        .savedWorkspaceDialogs(store: workspaceTemplates, renaming: $templateToRename,
+                               deleting: $templateToDelete) { error, title in
+            present(error, title: title)
+        }
+        .alert(errorTitle, isPresented: $showsError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage)
+        }
+    }
+
+    // MARK: Strip items
+
+    @ViewBuilder
+    private func stripItem(_ item: StripItem, index: Int, strip: [StripItem], sessions: SessionManager) -> some View {
+        let selectedTabID = sessions.selectedTabID(inWindow: windowID)
+        switch item {
+        case .tab(let id):
+            if let tab = sessions.tabs.first(where: { $0.id == id }) {
+                SessionTabPill(
+                    tab: tab,
+                    isSelected: selectedTabID == tab.id,
+                    select: { sessions.select(tabID: tab.id, inWindow: windowID) },
+                    close: { closeTab(tab.id) }
+                )
+                .overlay(alignment: dropIndicatorEdge(for: index, in: strip)) {
+                    if dropTargetID == tab.id, draggingTabID != tab.id {
+                        DropIndicator()
+                    }
+                }
+                .onDrag {
+                    draggingTabID = tab.id
+                    watchForDragEnd()
+                    return NSItemProvider(object: TabDragPayload.string(for: tab.id) as NSString)
+                }
+                .onDrop(of: [.text], delegate: dropDelegate(targetID: tab.id, index: index, sessions: sessions))
+                .contextMenu {
+                    tabMenu(for: tab, sessions: sessions)
+                }
+            }
+        case .workspace(let id):
+            if let workspace = sessions.workspace(id) {
+                WorkspaceTabPill(
+                    workspace: workspace,
+                    isSelected: selectedTabID.map { workspace.paneIDs.contains($0) } ?? false,
+                    select: { selectItem(item) },
+                    close: { closeWorkspace(workspace.id) },
+                    save: { save(workspace) }
+                )
+                .overlay(alignment: dropIndicatorEdge(for: index, in: strip)) {
+                    if dropTargetID == workspace.id {
+                        DropIndicator()
+                    }
+                }
+                // Plain tabs can be dropped before or after a workspace; a workspace itself isn't dragged.
+                .onDrop(of: [.text], delegate: dropDelegate(targetID: workspace.id, index: index, sessions: sessions))
+                .contextMenu {
+                    workspaceMenu(for: workspace)
+                }
+            }
+        }
+    }
+
+    /// Reordering by strip position: the dragged tab takes the target item's place among the window's
+    /// tabs (a workspace's place is its first pane's, or its last pane's when the tab comes from its left).
+    private func dropDelegate(targetID: UUID, index: Int, sessions: SessionManager) -> TabDropDelegate {
+        TabDropDelegate(
+            targetID: targetID,
+            targetIndex: index,
+            dropTargetID: $dropTargetID,
+            draggingTabID: $draggingTabID,
+            move: { id, stripIndex in
+                // Only plain tabs of this window reorder here.
+                let windowTabs = sessions.tabs(inWindow: windowID)
+                let strip = sessions.strip(inWindow: windowID)
+                guard windowTabs.contains(where: { $0.id == id }), strip.contains(.tab(id)),
+                      strip.indices.contains(stripIndex),
+                      let from = strip.firstIndex(of: .tab(id)) else { return }
+                let positions: [Int]
+                switch strip[stripIndex] {
+                case .tab(let target):
+                    positions = windowTabs.firstIndex(where: { $0.id == target }).map { [$0] } ?? []
+                case .workspace(let workspaceID):
+                    let paneIDs = Set(sessions.workspace(workspaceID)?.paneIDs ?? [])
+                    positions = windowTabs.indices.filter { paneIDs.contains(windowTabs[$0].id) }
+                }
+                guard let to = from < stripIndex ? positions.max() : positions.min() else { return }
+                withAnimation(.easeOut(duration: 0.15)) {
+                    sessions.moveTab(id: id, toIndex: to)
+                }
+            }
+        )
+    }
+
+    // MARK: "+"
+
+    /// Click: a new connection (Vaults → Hosts). Its menu also holds the saved workspaces.
+    private var plusButton: some View {
+        Menu {
+            Button("New Connection") { newConnection() }
+            if let workspaceTemplates {
+                Divider()
+                Menu("Saved Workspaces") {
+                    SavedWorkspacesMenuItems(store: workspaceTemplates,
+                                             open: { open($0) },
+                                             rename: { templateToRename = $0 },
+                                             delete: { templateToDelete = $0 })
+                }
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.topBarForeground)
+        } primaryAction: {
+            newConnection()
+        }
+        .menuStyle(.button)
+        .buttonStyle(.borderless)
+        .menuIndicator(.visible)
+        .tint(Theme.topBarForeground)
+        .fixedSize()
+        .frame(height: 32)
+        .layoutPriority(1)
+        .help("New connection: pick a host or type user@host. Hold for saved workspaces.")
+    }
+
+    private func newConnection() {
+        selectVaults()
+        navigation.sidebar = .hosts
+    }
+
+    // MARK: Actions
+
+    private func open(_ template: WorkspaceTemplate) {
+        do {
+            try openTemplate(template)
+        } catch {
+            present(error, title: "The workspace couldn\u{2019}t be opened")
+        }
+    }
+
+    private func save(_ workspace: Workspace) {
+        do {
+            try saveWorkspace(workspace)
+        } catch {
+            present(error, title: "The workspace couldn\u{2019}t be saved")
+        }
+    }
+
+    private func split(_ tabID: UUID, at edge: DropEdge) {
+        do {
+            try splitTab(tabID, at: edge)
+        } catch {
+            present(error, title: "The tab couldn\u{2019}t be split")
+        }
+    }
+
+    private func present(_ error: any Error, title: String) {
+        errorTitle = (error as? ConnectionPlanError)?.alertTitle ?? title
+        errorMessage = error.localizedDescription
+        showsError = true
     }
 
     // MARK: Tab menu
@@ -148,6 +303,13 @@ struct TopBarView: View {
             renamingTabID = tab.id
         }
         Divider()
+        Button("Split Right") {
+            split(tab.id, at: .right)
+        }
+        Button("Split Down") {
+            split(tab.id, at: .bottom)
+        }
+        Divider()
         Button("Duplicate") {
             sessions.duplicate(tabID: tab.id)
         }
@@ -160,16 +322,36 @@ struct TopBarView: View {
         }
     }
 
+    /// A workspace tab's menu. No "Duplicate in New Window" for workspaces (this round).
+    @ViewBuilder
+    private func workspaceMenu(for workspace: Workspace) -> some View {
+        Button("Rename\u{2026}") {
+            renameText = workspace.name
+            renamingWorkspaceID = workspace.id
+        }
+        Button("Save Workspace") {
+            save(workspace)
+        }
+        Divider()
+        Button("Close Workspace") {
+            closeWorkspace(workspace.id)
+        }
+    }
+
     private var renameBinding: Binding<Bool> {
         Binding(get: { renamingTabID != nil }, set: { if !$0 { renamingTabID = nil } })
+    }
+
+    private var workspaceRenameBinding: Binding<Bool> {
+        Binding(get: { renamingWorkspaceID != nil }, set: { if !$0 { renamingWorkspaceID = nil } })
     }
 
     // MARK: Reordering
 
     /// The indicator sits where the dragged tab will land: after the target when it comes from the
-    /// left, before it otherwise (dropping on a tab takes its place).
-    private func dropIndicatorEdge(for index: Int, in windowTabs: [TerminalTab]) -> Alignment {
-        guard let draggingTabID, let from = windowTabs.firstIndex(where: { $0.id == draggingTabID }) else {
+    /// left, before it otherwise (dropping on an item takes its place).
+    private func dropIndicatorEdge(for index: Int, in strip: [StripItem]) -> Alignment {
+        guard let draggingTabID, let from = strip.firstIndex(of: .tab(draggingTabID)) else {
             return .leading
         }
         return from < index ? .trailing : .leading
@@ -192,6 +374,7 @@ struct TopBarView: View {
 }
 
 /// What a dragged tab carries: its id, prefixed so text dragged from elsewhere is not taken for a tab.
+/// The same text as `WorkspaceDragPayload.tab`, so a tab dragged off the bar drops into a terminal area.
 private enum TabDragPayload {
     static let prefix = "termius-reimagined-tab:"
 
@@ -374,6 +557,186 @@ private struct SessionTabPill: View {
         case .connected: true
         case .connecting, .awaitingHostKey, .awaitingPassword, .disconnected: false
         }
+    }
+}
+
+/// A workspace tab: grid icon (the close button on the selected tab and while hovered, closing every
+/// session of the workspace), its name, a broadcast mark while broadcasting, and a grey dot while it
+/// differs from its saved template or was never saved; clicking the dot saves it (⌘S).
+private struct WorkspaceTabPill: View {
+    let workspace: Workspace
+    let isSelected: Bool
+    let select: () -> Void
+    let close: () -> Void
+    let save: () -> Void
+
+    @State private var isHovering = false
+
+    private static let slotSize: CGFloat = 20
+
+    private var isUnsaved: Bool { workspace.hasUnsavedChanges || workspace.templateID == nil }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            leadingSlot
+                .frame(width: Self.slotSize, height: Self.slotSize)
+
+            Text(workspace.name.isEmpty ? "Workspace" : workspace.name)
+                .font(.system(size: Theme.tabFontSize))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction(.default, select)
+
+            if workspace.isBroadcasting {
+                Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.accent)
+                    .help("Broadcasting input (\u{2318}B)")
+                    .accessibilityLabel("Broadcasting input")
+            }
+
+            if isUnsaved {
+                Button(action: save) {
+                    Circle()
+                        .fill(Color.gray)
+                        .frame(width: 7, height: 7)
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(workspace.templateID == nil ? "Not saved: click to save this workspace (\u{2318}S)"
+                                                  : "Unsaved changes: click to save (\u{2318}S)")
+                .accessibilityLabel("Save workspace")
+            }
+        }
+        .foregroundStyle(Theme.topBarForeground)
+        .padding(.leading, 7)
+        .padding(.trailing, 12)
+        .frame(maxWidth: 240, alignment: .leading)
+        .frame(height: 34)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous)
+                .fill(isSelected ? Theme.tabBackground : Color.clear)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
+        .onTapGesture(perform: select)
+        .onHover { isHovering = $0 }
+        .help(workspace.name)
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Close workspace", close)
+    }
+
+    @ViewBuilder
+    private var leadingSlot: some View {
+        if isSelected || isHovering {
+            Button(action: close) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: Self.slotSize, height: Self.slotSize)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.white.opacity(0.14))
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Close Workspace (all its sessions)")
+            .accessibilityLabel("Close workspace")
+        } else {
+            Image(systemName: "square.grid.2x2")
+                .font(.system(size: 13, weight: .semibold))
+        }
+    }
+}
+
+/// The saved workspaces as menu items: one submenu per template with Open, Rename… and Delete…
+/// ("+" menu → Saved Workspaces, the Hosts toolbar's Workspaces menu). Rename and Delete only report the
+/// template; the owner presents the dialogs (`savedWorkspaceDialogs`), since a menu can't.
+struct SavedWorkspacesMenuItems: View {
+    let store: WorkspaceTemplateStore
+    let open: (WorkspaceTemplate) -> Void
+    let rename: (WorkspaceTemplate) -> Void
+    let delete: (WorkspaceTemplate) -> Void
+
+    var body: some View {
+        if store.templates.isEmpty {
+            Button("No Saved Workspaces") {}
+                .disabled(true)
+        } else {
+            ForEach(store.templates.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { template in
+                Menu(template.name.isEmpty ? "Workspace" : template.name) {
+                    Button("Open") { open(template) }
+                    Divider()
+                    Button("Rename\u{2026}") { rename(template) }
+                    Button("Delete\u{2026}") { delete(template) }
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// The Rename and Delete dialogs for `SavedWorkspacesMenuItems`. Deleting a template leaves open
+    /// workspaces running (they just become unsaved).
+    func savedWorkspaceDialogs(store: WorkspaceTemplateStore?, renaming: Binding<WorkspaceTemplate?>,
+                               deleting: Binding<WorkspaceTemplate?>,
+                               onError: @escaping (any Error, String) -> Void) -> some View {
+        modifier(SavedWorkspaceDialogs(store: store, renaming: renaming, deleting: deleting, onError: onError))
+    }
+}
+
+private struct SavedWorkspaceDialogs: ViewModifier {
+    let store: WorkspaceTemplateStore?
+    @Binding var renaming: WorkspaceTemplate?
+    @Binding var deleting: WorkspaceTemplate?
+    let onError: (any Error, String) -> Void
+
+    @State private var name = ""
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Rename Saved Workspace", isPresented: Binding(
+                get: { renaming != nil },
+                set: { if !$0 { renaming = nil } }
+            )) {
+                TextField("Workspace name", text: $name)
+                Button("Rename") {
+                    if let template = renaming, let store {
+                        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        do {
+                            try store.rename(template.id, to: trimmed.isEmpty ? "Workspace" : trimmed)
+                        } catch {
+                            onError(error, "The workspace couldn\u{2019}t be renamed")
+                        }
+                    }
+                    renaming = nil
+                }
+                .keyboardShortcut(.defaultAction)
+                Button("Cancel", role: .cancel) { renaming = nil }
+            }
+            .onChange(of: renaming?.id) { _, _ in
+                name = renaming?.name ?? ""
+            }
+            .confirmationDialog(
+                "Delete \u{201C}\(deleting?.name ?? "")\u{201D}?",
+                isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                titleVisibility: .visible
+            ) {
+                Button("Delete", role: .destructive) {
+                    if let template = deleting, let store {
+                        do {
+                            try store.delete(template.id)
+                        } catch {
+                            onError(error, "The workspace couldn\u{2019}t be deleted")
+                        }
+                    }
+                    deleting = nil
+                }
+                Button("Cancel", role: .cancel) { deleting = nil }
+            } message: {
+                Text("Only the saved layout is deleted. Open workspaces and their sessions stay.")
+            }
     }
 }
 

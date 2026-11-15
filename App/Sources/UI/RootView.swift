@@ -73,7 +73,13 @@ struct RootView: View {
                 },
                 duplicateInNewWindow: { tabID in
                     openWindow(id: TerminalWindowRequest.sceneID, value: TerminalWindowRequest(sourceTabID: tabID))
-                }
+                },
+                workspaceTemplates: isTerminalWindow ? nil : environment.workspaceTemplates,
+                selectItem: { environment.select($0, inWindow: windowID) },
+                splitTab: { try environment.splitTab($0, at: $1) },
+                saveWorkspace: { try environment.saveWorkspace($0) },
+                closeWorkspace: { environment.closeWorkspace($0) },
+                openTemplate: { try environment.openWorkspaceTemplate($0) }
             )
             Group {
                 switch environment.state {
@@ -214,10 +220,23 @@ private struct ReadyArea: View {
     @State private var keychainModel: KeychainViewModel?
     @State private var logsModel: LogsViewModel?
     @State private var snippetsModel: SnippetsViewModel?
+    @State private var dropError: String?
 
     var body: some View {
         Group {
-            if let tab = selectedTab {
+            if let workspace = selectedWorkspace {
+                // MERGE(W2): WorkspaceView init as in the W2 report (closePane required; editHost takes the pane's tab).
+                WorkspaceView(workspace: workspace, sessions: sessions, store: environment.terminalViews,
+                              vault: vault, terminalSettings: environment.terminalSettings,
+                              sidePanel: sidePanel,
+                              closeSidePanel: { sidePanel = nil },
+                              changeTheme: { sidePanel = TerminalSidePanel(tabID: $0, kind: .theme) },
+                              showSnippets: { sidePanel = TerminalSidePanel(tabID: $0, kind: .snippets) },
+                              closePane: { environment.closeTab(tabID: $0) },
+                              editHost: isTerminalWindow ? nil : { editHost(of: $0) },
+                              editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
+                    .id(workspace.id)
+            } else if let tab = selectedTab {
                 TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews,
                                 vault: vault, terminalSettings: environment.terminalSettings,
                                 closeTab: { environment.closeTab(tabID: tab.id) },
@@ -225,12 +244,20 @@ private struct ReadyArea: View {
                                 closeSidePanel: { sidePanel = nil },
                                 editHost: isTerminalWindow ? nil : { editHost(of: tab) },
                                 editSnippet: isTerminalWindow ? nil : { editSnippet($0) })
+                    // A tab dragged from the bar, or a host card, dropped on a half of the terminal
+                    // turns this tab into a workspace with both.
+                    // MERGE(W2): `.terminalDropZone(isEnabled:acceptsNewTerminals:isMovingPane:isDragSource:onDropTab:onDropHost:onDropPane:)`.
+                    .terminalDropZone(
+                        onDropTab: { droppedID, edge in dropTab(droppedID, onto: tab, at: edge) },
+                        onDropHost: { hostID, edge in dropHost(hostID, onto: tab, at: edge) }
+                    )
                     .id(tab.id)
             } else if isTerminalWindow {
                 // Only while the window opens or closes.
                 Theme.contentBackground
             } else {
                 MainArea(
+                    environment: environment,
                     navigation: environment.navigation,
                     vault: vault,
                     sessions: sessions,
@@ -261,9 +288,18 @@ private struct ReadyArea: View {
             environment.terminalViews.retain(only: Set(openIDs))
             if let id = sidePanel?.tabID, !openIDs.contains(id) { sidePanel = nil }
         }
-        // The panel belongs to the tab it was opened on; switching tabs closes it.
-        .onChange(of: selectedTab?.id) { _, id in
-            if sidePanel?.tabID != id { sidePanel = nil }
+        // The panel belongs to the tab (or workspace pane) it was opened on; showing another tab bar
+        // item, or the pane leaving the workspace, closes it.
+        .onChange(of: shownTabIDs) { _, ids in
+            if let id = sidePanel?.tabID, !ids.contains(id) { sidePanel = nil }
+        }
+        .alert("Couldn\u{2019}t Open the Host", isPresented: Binding(
+            get: { dropError != nil },
+            set: { if !$0 { dropError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(dropError ?? "")
         }
         // Cmd+.: the snippets panel of this window's selected tab.
         .focusedSceneValue(\.snippetsPanelToggle, snippetsPanelToggle)
@@ -278,6 +314,36 @@ private struct ReadyArea: View {
         environment.showVaults()
     }
 
+    // MARK: Drops on a plain tab
+
+    /// A tab of this window dragged onto this tab's terminal: both become one workspace, the dropped
+    /// one on the half it was dropped on.
+    private func dropTab(_ droppedID: UUID, onto tab: TerminalTab, at edge: DropEdge) {
+        guard droppedID != tab.id,
+              sessions.tabs(inWindow: tab.windowID).contains(where: { $0.id == droppedID }),
+              // A pane of a workspace isn't a tab of the bar; it is never pulled out of its workspace here.
+              sessions.workspace(containing: droppedID) == nil else { return }
+        guard let workspace = sessions.makeWorkspace(from: [tab.id, droppedID], name: nil) else { return }
+        sessions.movePane(droppedID, beside: tab.id, at: edge, in: workspace.id)
+        sessions.focusPane(droppedID)
+        environment.show(workspace)
+    }
+
+    /// A host card dropped onto this tab's terminal: a new connection beside it, as one workspace.
+    /// Main window only (new connections open there).
+    private func dropHost(_ hostID: UUID, onto tab: TerminalTab, at edge: DropEdge) {
+        guard tab.windowID == nil else { return }
+        do {
+            let added = try sessions.open(hostID: hostID)
+            guard let workspace = sessions.makeWorkspace(from: [tab.id, added.id], name: nil) else { return }
+            sessions.movePane(added.id, beside: tab.id, at: edge, in: workspace.id)
+            sessions.focusPane(added.id)
+            environment.show(workspace)
+        } catch {
+            dropError = error.localizedDescription
+        }
+    }
+
     /// Edit / New Snippet in the snippets panel: Vaults → Snippets. The tab stays open. Main window only.
     /// The Snippets screen has no "select this snippet" entry point yet, so `id` only names the
     /// snippet meant (wired up at merge, see the S3 report).
@@ -287,9 +353,10 @@ private struct ReadyArea: View {
         environment.showVaults()
     }
 
-    /// Opens the snippets panel on the selected tab (closing Change Theme), or closes it.
+    /// Opens the snippets panel on the selected tab, or a workspace's focused pane (closing Change
+    /// Theme), or closes it.
     private var snippetsPanelToggle: SnippetsPanelToggle {
-        guard let tabID = selectedTab?.id else { return SnippetsPanelToggle() }
+        guard let tabID = selectedWorkspace?.focusedPaneID ?? selectedTab?.id else { return SnippetsPanelToggle() }
         let panel = TerminalSidePanel(tabID: tabID, kind: .snippets)
         let binding = $sidePanel
         return SnippetsPanelToggle(isOpen: sidePanel == panel) {
@@ -297,14 +364,27 @@ private struct ReadyArea: View {
         }
     }
 
-    /// This window's selected tab; nil while Vaults is selected.
+    /// This window's selected tab; nil while Vaults is selected. In a workspace, one of its panes.
     private var selectedTab: TerminalTab? {
         guard let id = sessions.selectedTabID(inWindow: windowID) else { return nil }
         return sessions.tabs.first { $0.id == id }
     }
+
+    /// The workspace shown in this window: the one holding the selected tab.
+    private var selectedWorkspace: Workspace? {
+        selectedTab.flatMap { sessions.workspace(containing: $0.id) }
+    }
+
+    /// The tabs whose terminals are shown: the workspace's panes, or the selected tab.
+    private var shownTabIDs: [UUID] {
+        if let workspace = selectedWorkspace { return workspace.paneIDs }
+        return selectedTab.map { [$0.id] } ?? []
+    }
 }
 
 private struct MainArea: View {
+    /// For the Hosts screen's workspace actions (saved workspaces, Open in Workspace).
+    let environment: AppEnvironment
     let navigation: AppNavigation
     let vault: LocalVault
     let sessions: SessionManager
@@ -336,7 +416,10 @@ private struct MainArea: View {
         switch navigation.sidebar {
         case .hosts:
             if let hostsModel {
-                HostsView(model: hostsModel, vault: vault, sessions: sessions, terminalSettings: terminalSettings)
+                HostsView(model: hostsModel, vault: vault, sessions: sessions, terminalSettings: terminalSettings,
+                          workspaceTemplates: environment.workspaceTemplates,
+                          openWorkspace: { try environment.openWorkspace(hostIDs: $0) },
+                          openTemplate: { try environment.openWorkspaceTemplate($0) })
             } else {
                 Theme.contentBackground
             }

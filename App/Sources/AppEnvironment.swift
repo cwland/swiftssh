@@ -43,6 +43,8 @@ final class AppEnvironment {
     private(set) var sync: SyncCoordinator?
     /// One SwiftTerm view per open tab, so switching tabs and reconnecting keep scrollback.
     @ObservationIgnored let terminalViews = TerminalViewStore()
+    /// Saved workspaces (templates), on this Mac only (never synced): `workspaces.json` next to the vault.
+    let workspaceTemplates = WorkspaceTemplateStore(fileURL: AppEnvironment.workspacesFileURL)
 
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
@@ -203,15 +205,69 @@ final class AppEnvironment {
     }
 
     /// The selected tab of the window (`scope` from the focused scene); nil for Vaults or no window.
+    /// While a workspace is shown this is one of its panes; `activeTab(in:)` is its focused pane.
     func selectedTab(in scope: WindowScope?) -> TerminalTab? {
         guard let scope, let sessions, let id = sessions.selectedTabID(inWindow: scope.windowID) else { return nil }
         return sessions.tabs.first { $0.id == id }
     }
 
-    /// Closes the tab at once, connected or not (no confirmation).
+    /// The workspace shown in the window (its selected tab is one of the workspace's panes); nil for a
+    /// plain tab or Vaults.
+    func selectedWorkspace(in scope: WindowScope?) -> Workspace? {
+        guard let sessions, let tab = selectedTab(in: scope) else { return nil }
+        return sessions.workspace(containing: tab.id)
+    }
+
+    /// The tab commands act on: the focused pane of the shown workspace, else the selected tab.
+    func activeTab(in scope: WindowScope?) -> TerminalTab? {
+        guard let sessions else { return nil }
+        if let workspace = selectedWorkspace(in: scope) {
+            return sessions.tabs.first { $0.id == workspace.focusedPaneID }
+        }
+        return selectedTab(in: scope)
+    }
+
+    /// Closes the tab at once, connected or not (no confirmation). A workspace pane closes as a pane
+    /// (the workspace turns back into a plain tab when one is left).
     func closeTab(tabID: UUID) {
-        sessions?.close(tabID: tabID)
+        guard let sessions else { return }
+        if let workspace = sessions.workspace(containing: tabID) {
+            closePane(tabID, of: workspace)
+        } else {
+            sessions.close(tabID: tabID)
+            releaseClosedTerminalViews()
+        }
+    }
+
+    /// Closes a pane; when it was the window's selected tab, the workspace's focused pane (or, after the
+    /// workspace dissolved, the tab left over) is selected, so the window stays on it.
+    private func closePane(_ paneID: UUID, of workspace: Workspace) {
+        guard let sessions, let tab = sessions.tabs.first(where: { $0.id == paneID }) else { return }
+        let windowID = tab.windowID
+        let wasSelected = sessions.selectedTabID(inWindow: windowID) == paneID
+        let workspaceID = workspace.id
+        let others = workspace.paneIDs.filter { $0 != paneID }
+        sessions.closePane(paneID)
+        if wasSelected {
+            if let remaining = sessions.workspace(workspaceID) {
+                sessions.select(tabID: remaining.focusedPaneID, inWindow: windowID)
+            } else if let left = others.first(where: { id in sessions.tabs.contains { $0.id == id } }) {
+                sessions.select(tabID: left, inWindow: windowID)
+            }
+        }
         releaseClosedTerminalViews()
+    }
+
+    /// Close Workspace: ends all its sessions.
+    func closeWorkspace(_ id: UUID) {
+        sessions?.closeWorkspace(id)
+        releaseClosedTerminalViews()
+    }
+
+    /// Shows the workspace in its window (selects its focused pane).
+    func show(_ workspace: Workspace) {
+        guard let sessions, let pane = sessions.tabs.first(where: { $0.id == workspace.focusedPaneID }) else { return }
+        sessions.select(tabID: pane.id, inWindow: pane.windowID)
     }
 
     /// Lets go of closed tabs' terminal views (and scrollback) now, even when no window is showing
@@ -229,10 +285,11 @@ final class AppEnvironment {
         return WindowScope(windowID: nil)
     }
 
-    /// Cmd+W: closes the focused window's selected terminal tab; with Vaults selected (or another kind of
-    /// window, such as Settings, focused), closes the window.
+    /// Cmd+W: closes the focused window's selected terminal tab; in a workspace, its focused pane (the
+    /// last two follow the dissolve rule: one left = a plain tab). With Vaults selected (or another kind
+    /// of window, such as Settings, focused), closes the window.
     func closeSelectedTabOrWindow(in scope: WindowScope?) {
-        if let tab = selectedTab(in: commandScope(scope)) {
+        if let tab = activeTab(in: commandScope(scope)) {
             closeTab(tabID: tab.id)
         } else {
             NSApp.keyWindow?.performClose(nil)
@@ -240,7 +297,7 @@ final class AppEnvironment {
     }
 
     /// Cmd+1 shows Vaults (main window only); Cmd+2…9 select the focused window's first eight
-    /// terminal tabs, in tab bar order.
+    /// tab bar items (plain tabs and workspaces), in tab bar order.
     func selectTab(number: Int, in scope: WindowScope?) {
         let scope = commandScope(scope)
         guard let sessions else { return }
@@ -248,20 +305,97 @@ final class AppEnvironment {
             if !scope.isTerminalWindow { showVaults() }
             return
         }
-        let windowTabs = sessions.tabs(inWindow: scope.windowID)
-        guard windowTabs.indices.contains(number - 2) else { return }
-        sessions.select(tabID: windowTabs[number - 2].id, inWindow: scope.windowID)
+        let strip = sessions.strip(inWindow: scope.windowID)
+        guard strip.indices.contains(number - 2) else { return }
+        select(strip[number - 2], inWindow: scope.windowID)
     }
 
-    /// Cmd+Shift+[ / Cmd+Shift+]: the focused window's previous or next tab, in tab bar order.
+    /// Cmd+Shift+[ / Cmd+Shift+]: the focused window's previous or next tab bar item (a workspace counts
+    /// as one), wrapping; from Vaults, the first or last.
     func selectAdjacentTab(by step: Int, in scope: WindowScope?) {
         let scope = commandScope(scope)
         guard let sessions else { return }
-        if step < 0 {
-            sessions.selectPreviousTab(inWindow: scope.windowID)
+        let strip = sessions.strip(inWindow: scope.windowID)
+        guard !strip.isEmpty else { return }
+        let next: Int
+        if let current = selectedStripItem(in: scope), let index = strip.firstIndex(of: current) {
+            next = (index + (step < 0 ? -1 : 1) + strip.count) % strip.count
         } else {
-            sessions.selectNextTab(inWindow: scope.windowID)
+            next = step < 0 ? strip.count - 1 : 0
         }
+        select(strip[next], inWindow: scope.windowID)
+    }
+
+    /// The tab bar item shown in the window: the workspace holding the selected tab, or that tab.
+    func selectedStripItem(in scope: WindowScope?) -> StripItem? {
+        guard let tab = selectedTab(in: scope) else { return nil }
+        if let workspace = sessions?.workspace(containing: tab.id) { return .workspace(workspace.id) }
+        return .tab(tab.id)
+    }
+
+    /// Shows a tab bar item: a plain tab, or a workspace (its focused pane is selected).
+    func select(_ item: StripItem, inWindow windowID: UUID?) {
+        guard let sessions else { return }
+        switch item {
+        case .tab(let id):
+            sessions.select(tabID: id, inWindow: windowID)
+        case .workspace(let id):
+            guard let workspace = sessions.workspace(id) else { return }
+            sessions.select(tabID: workspace.focusedPaneID, inWindow: windowID)
+        }
+    }
+
+    // MARK: Workspaces
+
+    /// Cmd+B: broadcast input on or off in the shown workspace.
+    func toggleBroadcast(in scope: WindowScope?) {
+        guard let workspace = selectedWorkspace(in: commandScope(scope)) else { return }
+        sessions?.toggleBroadcast(in: workspace.id)
+    }
+
+    /// Cmd+Shift+M: Split view ↔ Focus mode in the shown workspace.
+    func toggleViewMode(in scope: WindowScope?) {
+        guard let workspace = selectedWorkspace(in: commandScope(scope)) else { return }
+        sessions?.setViewMode(workspace.viewMode == .split ? .focus : .split, for: workspace.id)
+    }
+
+    /// Cmd+S: saves the shown workspace to its template (a new one the first time).
+    func saveSelectedWorkspace(in scope: WindowScope?) throws {
+        guard let workspace = selectedWorkspace(in: commandScope(scope)) else { return }
+        try saveWorkspace(workspace)
+    }
+
+    /// Save Workspace (⌘S, the tab's grey dot, its menu): name, panes' hosts, titles, layout, view mode.
+    @discardableResult
+    func saveWorkspace(_ workspace: Workspace) throws -> WorkspaceTemplate? {
+        guard let sessions else { return nil }
+        return try workspaceTemplates.save(workspace, sessions: sessions)
+    }
+
+    /// Opens a saved workspace (each pane connects) in the main window and shows it.
+    func openWorkspaceTemplate(_ template: WorkspaceTemplate) throws {
+        guard let sessions else { return }
+        let workspace = try sessions.openTemplate(template)
+        show(workspace)
+    }
+
+    /// Open in Workspace (Hosts screen): a new connection per host, as one workspace, shown.
+    func openWorkspace(hostIDs: [UUID]) throws {
+        guard let sessions else { return }
+        let workspace = try sessions.openWorkspace(hostIDs: hostIDs, name: nil)
+        show(workspace)
+    }
+
+    /// Split Right / Split Down on a plain tab: it becomes a workspace with a duplicate connection
+    /// beside it, which gets the focus.
+    func splitTab(_ tabID: UUID, at edge: DropEdge) throws {
+        guard let sessions else { return }
+        let before = Set(sessions.tabs.map(\.id))
+        let workspace = try sessions.splitTab(tabID, at: edge)
+        if let added = workspace.paneIDs.first(where: { !before.contains($0) }) {
+            sessions.focusPane(added)
+        }
+        show(workspace)
     }
 
     /// Shows Vaults in the main window.
@@ -270,10 +404,24 @@ final class AppEnvironment {
         navigation.selectedTab = .vaults
     }
 
-    /// Cmd+R: reconnects the focused window's selected tab while its disconnected banner shows.
+    /// Cmd+R: reconnects the focused window's selected tab (a workspace's focused pane) while its
+    /// disconnected banner shows.
     func reconnectSelectedTab(in scope: WindowScope?) {
-        guard let sessions, let tab = selectedTab(in: commandScope(scope)), case .disconnected = tab.state else { return }
+        guard let sessions, let tab = activeTab(in: commandScope(scope)), case .disconnected = tab.state else { return }
         sessions.reconnect(tabID: tab.id)
+    }
+
+    /// Shows an error from a menu command (no view to hold an alert): a sheet on the key window.
+    func presentCommandError(_ error: any Error, title: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .warning
+        if let window = NSApp.keyWindow {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
     }
 
     // MARK: Windows
@@ -309,6 +457,16 @@ final class AppEnvironment {
         let directory = support.appendingPathComponent("TermiusReimagined", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    /// `~/Library/Application Support/TermiusReimagined/workspaces.json`: saved workspaces, this Mac
+    /// only. The folder is created when the vault opens (before anything can be saved).
+    static var workspacesFileURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+        return support
+            .appendingPathComponent("TermiusReimagined", isDirectory: true)
+            .appendingPathComponent("workspaces.json", isDirectory: false)
     }
 
     /// `~/Library/Application Support/TermiusReimagined/vault.bin`; creates the folder if needed.

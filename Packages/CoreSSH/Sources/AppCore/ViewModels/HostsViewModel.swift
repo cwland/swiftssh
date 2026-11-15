@@ -22,7 +22,23 @@ public final class HostsViewModel {
     public var selectedTags: Set<String> = []
     public var layout: Layout = .grid
     public var currentGroupID: UUID?
-    public var selectedHostID: UUID?
+    /// The host whose Host Details panel is open. Setting it (New host, "Edit host", closing the
+    /// panel) makes it the only selected host (none for nil).
+    public var selectedHostID: UUID? {
+        didSet {
+            guard !isApplyingClick else { return }
+            selectedHostIDs = selectedHostID.map { [$0] } ?? []
+            selectionAnchor = selectedHostID
+        }
+    }
+    /// Every selected host card (⌘-click, ⇧-click). Host Details shows only while exactly one is selected.
+    public private(set) var selectedHostIDs: Set<UUID> = []
+
+    /// How a host card was clicked: plain, ⌘ (toggle) or ⇧ (extend a range from the last clicked).
+    public enum ClickModifier: Sendable { case none, toggle, extend }
+
+    @ObservationIgnored private var selectionAnchor: UUID?
+    @ObservationIgnored private var isApplyingClick = false
 
     @ObservationIgnored private let vault: LocalVault
 
@@ -107,6 +123,55 @@ public final class HostsViewModel {
         case .orderedDescending: false
         case .orderedSame: aID.uuidString < bID.uuidString
         }
+    }
+
+    // MARK: Selection
+
+    /// A click on a host card. Plain: that host only (its details open). ⌘: adds or removes it.
+    /// ⇧: the hosts from the last plain- or ⌘-clicked one to it, in the shown order (replacing the
+    /// selection; without such a host, just this one). Host Details shows while exactly one host is
+    /// selected.
+    public func click(hostID: UUID, modifier: ClickModifier) {
+        var selection = selectedHostIDs
+        switch modifier {
+        case .none:
+            selection = [hostID]
+            selectionAnchor = hostID
+        case .toggle:
+            if selection.remove(hostID) == nil { selection.insert(hostID) }
+            selectionAnchor = hostID
+        case .extend:
+            let order = visibleHosts.map(\.id)
+            if let anchor = selectionAnchor, let from = order.firstIndex(of: anchor),
+               let to = order.firstIndex(of: hostID) {
+                selection = Set(order[min(from, to)...max(from, to)])
+            } else {
+                selection = [hostID]
+                selectionAnchor = hostID
+            }
+        }
+        isApplyingClick = true
+        selectedHostIDs = selection
+        selectedHostID = selection.count == 1 ? selection.first : nil
+        isApplyingClick = false
+    }
+
+    /// Whether the card shows as selected.
+    public func isHostSelected(_ id: UUID) -> Bool {
+        selectedHostIDs.contains(id)
+    }
+
+    /// The selected hosts that are shown now (search and tag filter applied), in the shown order.
+    public var selectedVisibleHostIDs: [UUID] {
+        visibleHosts.map(\.id).filter(selectedHostIDs.contains)
+    }
+
+    /// "Open in Workspace" on the right-clicked card: the shown selected hosts, in order, when at least
+    /// two are selected and the clicked one is among them; nil otherwise (no such menu item).
+    public func workspaceHostIDs(forContextMenuOn id: UUID) -> [UUID]? {
+        let ids = selectedVisibleHostIDs
+        guard ids.count >= 2, ids.contains(id) else { return nil }
+        return ids
     }
 
     public func openGroup(_ id: UUID?) {

@@ -1,15 +1,26 @@
 import SwiftUI
+import AppKit
 import AppCore
 import CoreModels
 
 /// The Hosts screen: search bar, toolbar, breadcrumbs, group and host cards, and the Host
 /// Details panel for the selected host. All behavior comes from `HostsViewModel`.
+///
+/// Host cards: click selects one (Host Details opens), ⌘-click adds or removes, ⇧-click selects a
+/// range; with two or more selected, right-click → Open in Workspace. Cards can be dragged onto a
+/// terminal to open the host beside it. The toolbar's Workspaces menu opens saved workspaces.
 struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
     let sessions: SessionManager
     /// Per-Mac terminal settings, for the inherited "Default (…)" theme labels.
     let terminalSettings: TerminalSettings
+    /// Saved workspaces for the toolbar's Workspaces menu; nil hides the menu.
+    var workspaceTemplates: WorkspaceTemplateStore? = nil
+    /// Open in Workspace: one new connection per host, as one workspace (shown).
+    var openWorkspace: ([UUID]) throws -> Void = { _ in }
+    /// Opens a saved workspace (each pane connects).
+    var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
 
     @State private var showTagFilter = false
     @State private var showNewGroup = false
@@ -26,6 +37,8 @@ struct HostsView: View {
     @State private var showError = false
     @State private var errorMessage = ""
     @State private var errorTitle = "Something went wrong"
+    @State private var templateToRename: WorkspaceTemplate?
+    @State private var templateToDelete: WorkspaceTemplate?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -75,6 +88,10 @@ struct HostsView: View {
         }
         .sheet(item: $tmuxGroup) { group in
             GroupTmuxSheet(model: model, group: group) { tmuxGroup = nil }
+        }
+        .savedWorkspaceDialogs(store: workspaceTemplates, renaming: $templateToRename,
+                               deleting: $templateToDelete) { error, title in
+            present(error, title: title)
         }
     }
 
@@ -144,6 +161,28 @@ struct HostsView: View {
                 createHost()
             }
             .fixedSize()
+
+            if let workspaceTemplates {
+                Menu {
+                    let selected = model.selectedVisibleHostIDs
+                    Button(selected.count >= 2 ? "Open \(selected.count) Selected Hosts in Workspace"
+                                               : "Open Selected Hosts in Workspace") {
+                        openInWorkspace(selected)
+                    }
+                    .disabled(selected.count < 2)
+                    Divider()
+                    Section("Saved Workspaces") {
+                        SavedWorkspacesMenuItems(store: workspaceTemplates,
+                                                 open: { open($0) },
+                                                 rename: { templateToRename = $0 },
+                                                 delete: { templateToDelete = $0 })
+                    }
+                } label: {
+                    Label("Workspaces", systemImage: "square.grid.2x2")
+                }
+                .fixedSize()
+                .help("Saved workspaces; \u{2318}-click hosts to open several in one workspace")
+            }
 
             Spacer(minLength: 0)
 
@@ -269,19 +308,41 @@ struct HostsView: View {
                     HostCardView(
                         host: host,
                         subtitle: model.subtitle(for: host),
-                        isSelected: host.id == model.selectedHostID
+                        isSelected: model.isHostSelected(host.id)
                     )
                     .onTapGesture(count: 2) {
                         connect(hostID: host.id)
                     }
                     // Simultaneous, so selecting doesn't wait for the double-click interval.
+                    // ⌘ toggles, ⇧ extends (read from the click's modifier keys).
                     .simultaneousGesture(TapGesture().onEnded {
-                        model.selectedHostID = host.id
+                        model.click(hostID: host.id, modifier: Self.clickModifier(NSEvent.modifierFlags))
                     })
-                    .help("Double-click to connect")
+                    // Onto a terminal: opens the host beside it, as a workspace.
+                    // MERGE(W2): host payload `WorkspaceDragPayload.itemProvider(hostID:)`.
+                    .onDrag {
+                        WorkspaceDragPayload.itemProvider(hostID: host.id)
+                    }
+                    .contextMenu {
+                        Button("Connect") {
+                            connect(hostID: host.id)
+                        }
+                        if let ids = model.workspaceHostIDs(forContextMenuOn: host.id) {
+                            Button("Open in Workspace (\(ids.count) hosts)") {
+                                openInWorkspace(ids)
+                            }
+                        }
+                    }
+                    .help("Double-click to connect; \u{2318}-click to select several")
                 }
             }
         }
+    }
+
+    private static func clickModifier(_ flags: NSEvent.ModifierFlags) -> HostsViewModel.ClickModifier {
+        if flags.contains(.command) { return .toggle }
+        if flags.contains(.shift) { return .extend }
+        return .none
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -324,6 +385,24 @@ struct HostsView: View {
     private func quickConnect() {
         guard let target = model.quickConnectTarget else { return }
         sessions.open(quickConnect: target)
+    }
+
+    /// Open in Workspace: hosts that can't be planned show why; nothing opens then.
+    private func openInWorkspace(_ hostIDs: [UUID]) {
+        guard hostIDs.count >= 2 else { return }
+        do {
+            try openWorkspace(hostIDs)
+        } catch {
+            present(error)
+        }
+    }
+
+    private func open(_ template: WorkspaceTemplate) {
+        do {
+            try openTemplate(template)
+        } catch {
+            present(error, title: "The workspace couldn\u{2019}t be opened")
+        }
     }
 
     private func createHost() {
@@ -384,8 +463,8 @@ struct HostsView: View {
         }
     }
 
-    private func present(_ error: any Error) {
-        errorTitle = (error as? ConnectionPlanError)?.alertTitle ?? "Something went wrong"
+    private func present(_ error: any Error, title: String = "Something went wrong") {
+        errorTitle = (error as? ConnectionPlanError)?.alertTitle ?? title
         errorMessage = error.localizedDescription
         showError = true
     }
