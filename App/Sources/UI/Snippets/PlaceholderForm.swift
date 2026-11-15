@@ -54,19 +54,16 @@ struct PlaceholderForm: View {
                 Text("Preview")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.secondary)
-                ScrollView {
-                    Text(preview)
-                        .font(.system(size: 12, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                }
-                .frame(maxHeight: 140)
-                .fixedSize(horizontal: false, vertical: true)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Theme.searchFieldBackground)
-                }
+                Text(preview.isEmpty ? " " : preview)
+                    .font(.system(size: 12, design: .monospaced))
+                    .lineLimit(12)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Theme.searchFieldBackground)
+                    }
             }
 
             HStack {
