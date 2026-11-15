@@ -10,7 +10,7 @@ import CoreModels
 /// connects or opens the group, the pencil (or E for one selected host) edits. Right-click shows
 /// the card's actions; with several hosts selected they act on all of them. Host cards can be
 /// dragged onto a terminal to open the host beside it. Saved workspaces are tiles in their own
-/// section (top level): click selects, double-click opens, the pencil opens the Workspace panel.
+/// section after Hosts (top level): click selects, double-click opens, the pencil opens the Workspace panel.
 struct HostsView: View {
     @Bindable var model: HostsViewModel
     let vault: LocalVault
@@ -159,14 +159,14 @@ struct HostsView: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        if !visibleTemplates.isEmpty {
-                            workspacesSection
-                        }
                         if !model.visibleGroups.isEmpty {
                             groupsSection
                         }
                         if !model.visibleHosts.isEmpty {
                             hostsSection
+                        }
+                        if !visibleTemplates.isEmpty {
+                            workspacesSection
                         }
                     }
                     .padding(.bottom, 20)
