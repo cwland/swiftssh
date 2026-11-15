@@ -15,6 +15,7 @@ private final class FakeSession: TerminalSession, Sendable {
         var commands: [String] = []
         var closeCalls = 0
         var closed = false
+        var connectionChecks = 0
     }
 
     let plan: ConnectionPlan
@@ -57,6 +58,10 @@ private final class FakeSession: TerminalSession, Sendable {
     func start(cols: Int, rows: Int) async {
         state.withLock { $0.started = (cols, rows) }
         await onStart(self)
+    }
+
+    func checkConnection() async {
+        state.withLock { $0.connectionChecks += 1 }
     }
 
     func send(_ bytes: [UInt8]) async {
@@ -134,26 +139,26 @@ final class SessionManagerTests: XCTestCase {
                               initialSizeTimeout: initialSizeTimeout)
     }
 
-    func testPlansDefaultToTheNormalKeepAlive() async throws {
+    func testPlansDefaultToTheStandardKeepAlive() async throws {
         _ = try manager.open(hostID: passwordHost().id)
-        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .normal)
+        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .standard)
     }
 
     func testEachAttemptGetsThePolicyCurrentAtThatTime() async throws {
-        var current = KeepAlivePolicy.fast
+        var current = KeepAlivePolicy.standard
         manager = makeManager(initialSizeTimeout: .zero, keepAlivePolicy: { current })
         let tab = try manager.open(hostID: passwordHost().id)
         await waitUntil("connected") { tab.state == .connected }
-        XCTAssertEqual(factory.sessions[0].plan.keepAlive, .fast)
+        XCTAssertEqual(factory.sessions[0].plan.keepAlive, KeepAlivePolicy.standard)
 
-        current = .off   // changed while the tab is open; the first session was built with .fast (asserted above)
+        current = .off   // changed while the tab is open; the first session was built with KeepAlivePolicy.standard (asserted above)
         manager.reconnect(tabID: tab.id)
         await waitUntil("second session") { self.factory.sessions.count == 2 }
         XCTAssertEqual(factory.sessions[1].plan.keepAlive, .off)
 
-        current = .relaxed
+        current = KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5)
         _ = try manager.open(hostID: passwordHost(label: "Second").id)
-        XCTAssertEqual(factory.sessions[2].plan.keepAlive, .relaxed)
+        XCTAssertEqual(factory.sessions[2].plan.keepAlive, KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5))
     }
 
     func testPlansDefaultToXterm256Color() async throws {
@@ -863,7 +868,7 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
     private var sleeper: FakeSleeper!
     private var manager: SessionManager!
     private var enabled = true
-    private var policy = KeepAlivePolicy.fast
+    private var policy = KeepAlivePolicy.standard
     private let now = Date(timeIntervalSince1970: 1_000_000)
     private let broken = SessionError.connectionFailed("Broken pipe")
 
@@ -933,12 +938,18 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
     // MARK: Tests
 
     func testReconnectScheduleValues() async {
-        XCTAssertEqual(ReconnectSchedule.delays, [5, 10, 20, 30, 30])
-        XCTAssertEqual(ReconnectSchedule.maxAttempts, 5)
-        XCTAssertEqual((1...5).map { ReconnectSchedule.delay(beforeAttempt: $0) }, [5, 10, 20, 30, 30])
+        // Every 5 s for the first half minute, then every 10 s, then every 15 s: about 3 minutes in
+        // all, long enough for a server to reboot.
+        let expected: [TimeInterval] = Array(repeating: 5, count: 6) + Array(repeating: 10, count: 6)
+            + Array(repeating: 15, count: 6)
+        XCTAssertEqual(ReconnectSchedule.delays, expected)
+        XCTAssertEqual(ReconnectSchedule.maxAttempts, 18)
+        XCTAssertEqual(ReconnectSchedule.delays.reduce(0, +), 180)
+        XCTAssertEqual(ReconnectSchedule.delay(beforeAttempt: 1), 5)
+        XCTAssertEqual(ReconnectSchedule.delay(beforeAttempt: 18), 15)
         XCTAssertNil(ReconnectSchedule.delay(beforeAttempt: 0))
         XCTAssertNil(ReconnectSchedule.delay(beforeAttempt: -1))
-        XCTAssertNil(ReconnectSchedule.delay(beforeAttempt: 6))
+        XCTAssertNil(ReconnectSchedule.delay(beforeAttempt: 19))
     }
 
     func testDropAfterReadyStartsTheCountdown() async throws {
@@ -999,7 +1010,7 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
 
     func testCountdownStartsATryAndReadyClearsTheState() async throws {
         let tab = try await droppedTab()
-        policy = .relaxed // the try uses the policy current when it starts, like Reconnect
+        policy = KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5) // the try uses the policy current when it starts, like Reconnect
         factory.onStart = { @Sendable s in s.emit(.connected) } // connecting; not ready yet
         sleeper.elapseAll()
         await waitUntil("try") { self.factory.sessions.count == 2 }
@@ -1007,7 +1018,7 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
         XCTAssertEqual(manager.waitingForReconnectCount, 1)
         let attempt = factory.sessions[1]
         guard case .password("pw") = attempt.plan.credential else { return XCTFail("saved credentials") }
-        XCTAssertEqual(attempt.plan.keepAlive, .relaxed)
+        XCTAssertEqual(attempt.plan.keepAlive, KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5))
 
         attempt.emit(.ready)
         await waitUntil("cleared") { tab.autoReconnect == nil }
@@ -1021,7 +1032,7 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
         XCTAssertEqual(sleeper.requests, [.seconds(5), .seconds(5)])
     }
 
-    func testBackoffThenGiveUpAfterFiveTries() async throws {
+    func testBackoffThenGiveUpAfterAboutThreeMinutes() async throws {
         let tab = try await droppedTab()
         let refused = SessionError.connectionFailed("Connection refused")
         // Each try fails like a network error: some before, some after the session showed as connected.
@@ -1031,8 +1042,8 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
             if n.isMultiple(of: 2) { s.emit(.connected) }
             s.emit(.closed(.failed(n == 3 ? .timedOut : refused)))
         }
-        let delays: [TimeInterval] = [5, 10, 20, 30, 30]
-        for attempt in 1...5 {
+        let delays = ReconnectSchedule.delays
+        for attempt in 1...delays.count {
             await waitUntil("waiting \(attempt)") { self.isWaiting(tab, attempt: attempt) }
             XCTAssertEqual(tab.autoReconnect, .waiting(attempt: attempt, deadline: now.addingTimeInterval(delays[attempt - 1]),
                                                        delay: delays[attempt - 1]))
@@ -1041,12 +1052,12 @@ final class SessionManagerAutoReconnectTests: XCTestCase {
             sleeper.elapseAll()
             await waitUntil("try \(attempt)") { self.factory.sessions.count == attempt + 1 }
         }
-        await waitUntil("gave up") { tab.autoReconnect == .gaveUp(attempts: 5) }
+        await waitUntil("gave up") { tab.autoReconnect == .gaveUp(attempts: delays.count) }
         XCTAssertEqual(sleeper.requests, delays.map { .seconds($0) })
         XCTAssertEqual(tab.state, .disconnected(refused.localizedDescription))
         XCTAssertEqual(manager.waitingForReconnectCount, 0)
         await settle()
-        XCTAssertEqual(factory.sessions.count, 6)
+        XCTAssertEqual(factory.sessions.count, delays.count + 1)
         XCTAssertEqual(sleeper.pending, 0)
 
         // Reconnect by hand clears it.
@@ -1888,6 +1899,22 @@ final class SessionManagerConnectionLogTests: XCTestCase {
         await waitUntil("dropped") { tab.state != .connected }
         XCTAssertTrue(tab.hasEverConnected, "the screen is for attempts that never connected")
         XCTAssertEqual(statuses(tab), [.done, .failed])
+    }
+
+    func testCheckConnectionsAsksEveryLiveSession() async throws {
+        factory.onStart = { @Sendable s in
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        let a = try manager.open(hostID: host().id)
+        let b = try manager.open(hostID: host().id)
+        await waitUntil("connected") { a.state == .connected && b.state == .connected }
+        factory.sessions[1].emit(.closed(.failed(.timedOut)))
+        await waitUntil("b down") { b.state != .connected }
+        manager.checkConnections()
+        await waitUntil("checked") { self.factory.sessions[0].recorded.connectionChecks == 1 }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(factory.sessions[1].recorded.connectionChecks, 0, "an ended session isn't asked")
     }
 
     func testExitingTheShellClosesTheTab() async throws {

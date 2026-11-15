@@ -216,6 +216,21 @@ final class CitadelSessionTests: XCTestCase {
         assertNoAuthenticationAttempt(in: server.log())
     }
 
+    /// A shell killed by a signal (what a reboot or shutdown does to it) is a lost connection, so the
+    /// app reconnects instead of treating it as the user's `exit`.
+    func testShellKilledBySignalIsALostConnection() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        await session.send(Array("kill -KILL $$\n".utf8))
+        try await recorder.waitForFinish()
+        guard case .closed(.failed(.connectionFailed(let message))) = recorder.nonOutputEvents.last else {
+            return XCTFail("\(recorder.nonOutputEvents)")
+        }
+        XCTAssertEqual(message, CitadelSession.serverEndedSessionMessage)
+        XCTAssertEqual(Array(recorder.nonOutputEvents.dropLast()), [.connected, .ready])
+    }
+
     func testRemoteExitIsRemoteClosedNotError() async throws {
         for command in ["exit\n", "false; exit 3\n"] {
             let session = CitadelSession(plan: plan(.password(server.password)), hostKeys: TestEvaluator(decision: .trusted))
@@ -279,7 +294,7 @@ final class CitadelSessionTests: XCTestCase {
     }
 
     func testPlanDefaultsToTheNormalKeepAlive() {
-        XCTAssertEqual(plan(.none).keepAlive, .normal)
+        XCTAssertEqual(plan(.none).keepAlive, .standard)
     }
 
     func testKeepAliveOffSendsNoProbes() async throws {
@@ -326,6 +341,68 @@ final class CitadelSessionTests: XCTestCase {
 
         // The loop is still running after all those answers: freezing the server now ends the session.
         server.suspendSessions()
+        try await recorder.waitForFinish(timeout: 10)
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.connected, .ready, .closed(.failed(.connectionFailed(CitadelSession.unresponsiveMessage)))])
+        await session.close()
+    }
+
+    func testCheckConnectionKeepsAHealthySession() async throws {
+        let session = CitadelSession(plan: plan(.password(server.password), keepAlive: .off),
+                                     hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
+                                     quickCheckTimeout: .milliseconds(400))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        await session.checkConnection()
+        try await Task.sleep(for: .seconds(1.5))
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+        XCTAssertGreaterThanOrEqual(session.answeredKeepAliveProbes, 1)
+        await session.close()
+    }
+
+    func testCheckConnectionDetectsAFrozenServerWithoutWaitingForKeepAlive() async throws {
+        #if !os(Linux)
+        throw XCTSkip("suspendSessions() reads /proc (Linux only)")
+        #endif
+        let session = CitadelSession(plan: plan(.password(server.password), keepAlive: .off),
+                                     hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
+                                     quickCheckTimeout: .milliseconds(400))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        server.suspendSessions()
+        let clock = ContinuousClock()
+        let begin = clock.now
+        await session.checkConnection()
+        try await recorder.waitForFinish(timeout: 10)
+        XCTAssertLessThan(clock.now - begin, .seconds(4), "two quick probes, not the keep-alive interval")
+        XCTAssertEqual(recorder.nonOutputEvents,
+                       [.connected, .ready, .closed(.failed(.connectionFailed(CitadelSession.unresponsiveMessage)))])
+        await session.close()
+    }
+
+    func testTypingWithoutAnEchoChecksTheConnection() async throws {
+        #if !os(Linux)
+        throw XCTSkip("suspendSessions() reads /proc (Linux only)")
+        #endif
+        let session = CitadelSession(plan: plan(.password(server.password), keepAlive: .off),
+                                     hostKeys: TestEvaluator(decision: .trusted),
+                                     connectTimeout: .seconds(15), commandTimeout: .seconds(15),
+                                     quickCheckTimeout: .milliseconds(400), echoWait: .milliseconds(500))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForEvents([.connected, .ready])
+        // Typing with a live server: the echo arrives, nothing is checked.
+        await session.send(Array("echo ok-$((1+1))\n".utf8))
+        try await recorder.waitForOutput(containing: "ok-2")
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertEqual(recorder.nonOutputEvents, [.connected, .ready])
+
+        server.suspendSessions()
+        await session.send(Array("x".utf8))
         try await recorder.waitForFinish(timeout: 10)
         XCTAssertEqual(recorder.nonOutputEvents,
                        [.connected, .ready, .closed(.failed(.connectionFailed(CitadelSession.unresponsiveMessage)))])
@@ -605,7 +682,7 @@ final class CitadelSessionTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {
+    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .standard) -> ConnectionPlan {
         ConnectionPlan(hostID: nil, label: "test", host: server.host, port: server.port,
                        username: server.username, credential: credential, engine: .citadel, startupScript: nil,
                        keepAlive: keepAlive)

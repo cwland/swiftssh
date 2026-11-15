@@ -16,44 +16,16 @@ final class ConnectionSettingsTests: XCTestCase {
         defaults.removePersistentDomain(forName: suite)
     }
 
-    func testDisplayOrderAndCopy() async {
-        XCTAssertEqual(DroppedConnectionDetection.allCases, [.fast, .normal, .relaxed, .off])
-        XCTAssertEqual(DroppedConnectionDetection.allCases.map(\.title), ["Fast", "Normal", "Relaxed", "Off"])
-        XCTAssertEqual(DroppedConnectionDetection.fast.detail,
-                       "Checks every 15 seconds. A dropped connection shows up in about 30–45 seconds.")
-        XCTAssertEqual(DroppedConnectionDetection.normal.detail,
-                       "Checks every 30 seconds. A dropped connection shows up in about 1½–2 minutes. Recommended.")
-        XCTAssertEqual(DroppedConnectionDetection.relaxed.detail,
-                       "Checks every 60 seconds. A dropped connection shows up in about 5–6 minutes. For shaky Wi-Fi.")
-        XCTAssertEqual(DroppedConnectionDetection.off.detail,
-                       "Never checks. A dead connection can go unnoticed for a long time.")
+    /// One fixed policy (v0.10): a probe every 5 seconds, dead after 2 missed (about 10–15 seconds),
+    /// with on-demand checks for typing, network changes and wake on top.
+    func testKeepAliveIsFixedAtFiveSecondsTwice() async {
+        XCTAssertEqual(KeepAlivePolicy.standard, KeepAlivePolicy(interval: .seconds(5), maxUnanswered: 2))
+        XCTAssertEqual(ConnectionSettings(defaults: defaults).keepAlivePolicy, .standard)
     }
 
-    func testPolicies() async {
-        XCTAssertEqual(DroppedConnectionDetection.fast.policy, .fast)
-        XCTAssertEqual(DroppedConnectionDetection.normal.policy, .normal)
-        XCTAssertEqual(DroppedConnectionDetection.relaxed.policy, .relaxed)
-        XCTAssertEqual(DroppedConnectionDetection.off.policy, .off)
-    }
-
-    func testDefaultsToNormalWhenNothingStored() async {
-        XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .normal)
-    }
-
-    func testUnknownStoredValueIsNormal() async {
-        defaults.set("paranoid", forKey: "connection.droppedConnectionDetection")
-        XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .normal)
-        defaults.set(42, forKey: "connection.droppedConnectionDetection")
-        XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .normal)
-    }
-
-    func testChangesPersist() async {
-        let settings = ConnectionSettings(defaults: defaults)
-        settings.detection = .relaxed
-        XCTAssertEqual(defaults.string(forKey: "connection.droppedConnectionDetection"), "relaxed")
-        XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .relaxed)
-        settings.detection = .off
-        XCTAssertEqual(ConnectionSettings(defaults: defaults).detection, .off)
+    func testAnOldDetectionChoiceIsIgnored() async {
+        defaults.set("relaxed", forKey: "connection.droppedConnectionDetection")
+        XCTAssertEqual(ConnectionSettings(defaults: defaults).keepAlivePolicy, .standard)
     }
 
     func testAutoReconnectDefaultsToOnWhenNothingStored() async {

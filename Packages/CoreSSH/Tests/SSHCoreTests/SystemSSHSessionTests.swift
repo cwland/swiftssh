@@ -165,8 +165,8 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "ControlMaster=auto",
             "-o", "ControlPath=\"/tmp/tr-501/%C\"",
             "-o", "ControlPersist=15",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
             "-o", "ConnectTimeout=15",
         ]
         func args(_ auth: SystemSSHSession.AuthArguments, _ algorithms: String = "ssh-ed25519") -> [String] {
@@ -201,8 +201,8 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "ControlMaster=no",
             "-o", "ControlPath=\"/tmp/tr-501/abc\"",
             "-o", "ControlPersist=15",
-            "-o", "ServerAliveInterval=30",
-            "-o", "ServerAliveCountMax=3",
+            "-o", "ServerAliveInterval=5",
+            "-o", "ServerAliveCountMax=2",
             "-o", "ConnectTimeout=15",
             "-o", "HostKeyAlgorithms=ssh-ed25519",
             "-T", "-o", "BatchMode=yes", "--", "example.com", "uname -s",
@@ -225,9 +225,9 @@ final class SystemSSHSessionTests: XCTestCase {
             XCTAssertEqual(pick(interactive), pick(command))
             return pick(interactive)
         }
-        XCTAssertEqual(alive(.fast), ["ServerAliveInterval=15", "ServerAliveCountMax=2"])
-        XCTAssertEqual(alive(.normal), ["ServerAliveInterval=30", "ServerAliveCountMax=3"])
-        XCTAssertEqual(alive(.relaxed), ["ServerAliveInterval=60", "ServerAliveCountMax=5"])
+        XCTAssertEqual(alive(.standard), ["ServerAliveInterval=5", "ServerAliveCountMax=2"])
+        XCTAssertEqual(alive(KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5)),
+                       ["ServerAliveInterval=60", "ServerAliveCountMax=5"])
         XCTAssertEqual(alive(.off), ["ServerAliveInterval=0"])
         // A sub-second interval must not truncate to 0 (which means off).
         XCTAssertEqual(alive(KeepAlivePolicy(interval: .milliseconds(400), maxUnanswered: 2)),
@@ -1250,7 +1250,7 @@ final class SystemSSHSessionTests: XCTestCase {
         return KnownHostsStore(vault: vault)
     }
 
-    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .normal) -> ConnectionPlan {
+    private func plan(_ credential: SSHCredential, keepAlive: KeepAlivePolicy = .standard) -> ConnectionPlan {
         ConnectionPlan(hostID: nil, label: "test", host: server.host, port: server.port,
                        username: server.username, credential: credential, engine: .systemSSH, startupScript: nil,
                        keepAlive: keepAlive)

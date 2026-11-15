@@ -797,7 +797,7 @@ public final class SystemSSHSession: TerminalSession {
     /// `HostKeyAlgorithms` limited to the trusted key's type.
     static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                              knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String,
-                             keepAlive: KeepAlivePolicy = .normal, debugLog: URL? = nil) -> [String] {
+                             keepAlive: KeepAlivePolicy = .standard, debugLog: URL? = nil) -> [String] {
         // `-v -E`: debug output to the log file, never the terminal.
         var arguments = ["-tt"] + (debugLog.map { ["-v", "-E", $0.path] } ?? []) + optionArguments(port: port, username: username, knownHosts: knownHosts,
                                                   controlMaster: "auto", controlPath: controlPath(runtime),
@@ -843,7 +843,7 @@ public final class SystemSSHSession: TerminalSession {
     /// A command through the existing control master only (`ControlMaster=no`, the exact socket).
     static func commandArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                                  knownHosts: URL, controlSocket: String, hostKeyAlgorithms: String,
-                                 command: String, keepAlive: KeepAlivePolicy = .normal) -> [String] {
+                                 command: String, keepAlive: KeepAlivePolicy = .standard) -> [String] {
         optionArguments(port: port, username: username, knownHosts: knownHosts,
                         controlMaster: "no", controlPath: quoted(controlSocket), keepAlive: keepAlive)
             + ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]

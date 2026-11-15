@@ -349,7 +349,7 @@ public final class SessionManager {
                 makeSession: @escaping @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession,
                 deviceName: String, defaultUsername: String,
                 initialSizeTimeout: Duration = .milliseconds(500),
-                keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .normal },
+                keepAlivePolicy: @escaping @MainActor () -> KeepAlivePolicy = { .standard },
                 autoReconnectEnabled: @escaping @MainActor () -> Bool = { true },
                 now: @escaping @Sendable () -> Date = { Date() },
                 sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
@@ -384,6 +384,15 @@ public final class SessionManager {
 
     /// Opens a tab for a saved host in the window `windowID` (nil = the main window), selected there.
     /// Throws as `open(hostID:)` does; no tab is created then.
+    /// After a network change or a wake from sleep: every live session checks right away whether its
+    /// server still answers (`TerminalSession.checkConnection`); a dead one drops and reconnects.
+    public func checkConnections() {
+        for attempt in liveAttempts.values {
+            let session = attempt.session
+            Task { await session.checkConnection() }
+        }
+    }
+
     @discardableResult
     public func open(hostID: UUID, inWindow windowID: UUID?) throws -> TerminalTab {
         let plan = try ConnectionPlanner.plan(hostID: hostID, vault: vault)

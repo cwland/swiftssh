@@ -48,9 +48,10 @@ public struct KeepAlivePolicy: Sendable, Equatable {
         self.maxUnanswered = maxUnanswered
     }
 
-    public static let fast = KeepAlivePolicy(interval: .seconds(15), maxUnanswered: 2)
-    public static let normal = KeepAlivePolicy(interval: .seconds(30), maxUnanswered: 3)
-    public static let relaxed = KeepAlivePolicy(interval: .seconds(60), maxUnanswered: 5)
+    /// The app's policy: a probe every 5 seconds, dead after 2 missed in a row (about 10–15 seconds for
+    /// a server that goes dark). Typed input without an echo, a network change and a wake from sleep
+    /// check sooner (`TerminalSession.checkConnection`).
+    public static let standard = KeepAlivePolicy(interval: .seconds(5), maxUnanswered: 2)
     public static let off = KeepAlivePolicy(interval: nil, maxUnanswered: 0)
 }
 
@@ -78,7 +79,7 @@ public struct ConnectionPlan: Sendable {
     /// An `.agent` credential always gets `.systemSSH`, whatever `engine` says.
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,
                 credential: SSHCredential, engine: SSHEngine, startupScript: String?,
-                keepAlive: KeepAlivePolicy = .normal, agentKey: AgentKeyChoice? = nil,
+                keepAlive: KeepAlivePolicy = .standard, agentKey: AgentKeyChoice? = nil,
                 terminalType: TerminalType = .default) {
         self.hostID = hostID; self.label = label; self.host = host; self.port = port
         self.username = username; self.credential = credential; self.engine = engine
@@ -206,4 +207,12 @@ public protocol TerminalSession: AnyObject, Sendable {
     func runCommand(_ command: String) async throws -> String
     /// Ends the session; emits `.closed(.userClosed)` unless the session already ended.
     func close() async
+    /// Checks right away whether the server still answers (after a network change, a wake from sleep,
+    /// or typed input without an echo); a dead connection ends the session as a failure. Engines that
+    /// can't probe on demand rely on their keep-alive.
+    func checkConnection() async
+}
+
+extension TerminalSession {
+    public func checkConnection() async {}
 }

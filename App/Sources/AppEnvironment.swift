@@ -26,6 +26,8 @@ final class AppEnvironment {
     let navigation: AppNavigation
     /// Per-Mac connection preferences (Settings → Connection); read when a session is opened.
     let connectionSettings = ConnectionSettings()
+    /// Network changes and wake from sleep make every session check its server at once.
+    private var connectionWatcher: ConnectionWatcher?
     /// Per-Mac terminal preferences (Settings → Terminal).
     let terminalSettings = TerminalSettings()
     /// Per-Mac 1Password path overrides (Settings → 1Password → Advanced).
@@ -113,7 +115,11 @@ final class AppEnvironment {
             keyWasCreated = loaded.created
             let persistence = EncryptedFileVaultPersistence(fileURL: fileURL, key: loaded.key)
             let vault = try await LocalVault.open(persistence: persistence)
-            sessions = makeSessionManager(vault: vault, runtime: runtime)
+            let sessions = makeSessionManager(vault: vault, runtime: runtime)
+            self.sessions = sessions
+            let watcher = ConnectionWatcher { [weak sessions] in sessions?.checkConnections() }
+            watcher.start()
+            connectionWatcher = watcher
             state = .ready(vault)
             startSync(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {
@@ -184,7 +190,7 @@ final class AppEnvironment {
             },
             deviceName: Self.deviceName,
             defaultUsername: NSUserName(),
-            keepAlivePolicy: { connectionSettings.detection.policy },
+            keepAlivePolicy: { connectionSettings.keepAlivePolicy },
             autoReconnectEnabled: { connectionSettings.autoReconnect },
             // Looked up at each connect, so a socket or `op` that appears later (or a changed
             // override) is used without restarting the app.

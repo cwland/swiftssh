@@ -44,6 +44,14 @@ public final class CitadelSession: TerminalSession {
         var answeredProbes = 0
         /// A keep-alive probe loop was started for this session; for tests.
         var keepAliveLoopStarted = false
+        /// Sends quick probes now (`checkConnection`); set while the shell runs.
+        var quickCheck: (@Sendable () async -> Void)?
+        /// A quick check is running (another request joins it).
+        var quickCheckRunning = false
+        /// Output chunks received so far, to see whether typed input was echoed.
+        var outputCount = 0
+        /// An echo wait is pending (one at a time).
+        var echoWatchPending = false
     }
 
     private enum PTYInput: Sendable {
@@ -55,12 +63,21 @@ public final class CitadelSession: TerminalSession {
         self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
     }
 
-    /// `commandTimeout` bounds `runCommand`; only tests change it. Liveness probes follow `plan.keepAlive`.
-    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration) {
+    /// How long each of the two probes of `checkConnection` may wait for its answer.
+    let quickCheckTimeout: Duration
+    /// Typed input that gets no output back within this long makes the session check its connection.
+    let echoWait: Duration
+
+    /// `commandTimeout` bounds `runCommand`; only tests change it (and `quickCheckTimeout`, `echoWait`).
+    /// Liveness probes follow `plan.keepAlive`.
+    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration,
+         quickCheckTimeout: Duration = .milliseconds(2500), echoWait: Duration = .seconds(2)) {
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
         self.commandTimeout = commandTimeout
+        self.quickCheckTimeout = quickCheckTimeout
+        self.echoWait = echoWait
         (events, eventContinuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .unbounded)
         (input, inputContinuation) = AsyncStream.makeStream(of: PTYInput.self, bufferingPolicy: .unbounded)
     }
@@ -96,6 +113,41 @@ public final class CitadelSession: TerminalSession {
     public func send(_ bytes: [UInt8]) async {
         guard !bytes.isEmpty else { return }
         inputContinuation.yield(.bytes(bytes))
+        watchForEcho()
+    }
+
+    /// Probes the server now (two quick probes, `quickCheckTimeout` each); when neither is answered the
+    /// session ends as unresponsive. For a network change, a wake from sleep, or typed input without
+    /// an echo. Does nothing before the shell is open or after the session ended.
+    public func checkConnection() async {
+        let check = state.withLock { state -> (@Sendable () async -> Void)? in
+            guard !state.ended, !state.quickCheckRunning, let check = state.quickCheck else { return nil }
+            state.quickCheckRunning = true
+            return check
+        }
+        guard let check else { return }
+        await check()
+        state.withLock { $0.quickCheckRunning = false }
+    }
+
+    /// Typed input expects something back (an echo, a prompt). When nothing at all arrives within
+    /// `echoWait`, the connection is checked right away instead of at the next keep-alive.
+    private func watchForEcho() {
+        let seen = state.withLock { state -> Int? in
+            guard !state.ended, !state.echoWatchPending, state.quickCheck != nil else { return nil }
+            state.echoWatchPending = true
+            return state.outputCount
+        }
+        guard let seen else { return }
+        let wait = echoWait
+        Task {
+            try? await Task.sleep(for: wait)
+            let silent = self.state.withLock { state -> Bool in
+                state.echoWatchPending = false
+                return !state.ended && state.outputCount == seen
+            }
+            if silent { await self.checkConnection() }
+        }
     }
 
     public func resize(cols: Int, rows: Int) async {
@@ -443,6 +495,15 @@ public final class CitadelSession: TerminalSession {
                     }
                 }
                 defer { keepAliveTask?.cancel() }
+                if let root {
+                    let timeout = self.quickCheckTimeout
+                    self.state.withLock {
+                        $0.quickCheck = { [weak self] in
+                            await self?.runQuickCheck(on: root, connection: connection, timeout: timeout)
+                        }
+                    }
+                }
+                defer { self.state.withLock { $0.quickCheck = nil } }
 
                 // Authenticated with the PTY open: live and ready at once. `emit` drops both after `.closed`,
                 // and this closure runs once per session, so `.ready` comes at most once.
@@ -453,6 +514,7 @@ public final class CitadelSession: TerminalSession {
                     for try await chunk in inbound {
                         switch chunk {
                         case .stdout(let buffer), .stderr(let buffer):
+                            self.state.withLock { $0.outputCount &+= 1 }
                             self.emit(.output(Array(buffer.readableBytesView)))
                         }
                     }
@@ -532,6 +594,41 @@ public final class CitadelSession: TerminalSession {
                 return
             }
         }
+    }
+
+    /// Up to two probes, `timeout` each; one answer is enough. Neither answered: the session ends as
+    /// unresponsive. A failed probe means the connection itself failed (the shell task reports it).
+    private func runQuickCheck(on root: Channel, connection: Connection, timeout: Duration) async {
+        for _ in 0..<2 {
+            if isEnded { return }
+            let scheduled = (try? await connection.withClient { _ in Self.probe(root) }) ?? nil
+            guard let probe = scheduled else { return }
+            let result = OneShot<ProbeResult>()
+            probe.whenComplete { outcome in
+                switch outcome {
+                case .success: result.resolve(.replied)
+                case .failure: result.resolve(.failed)
+                }
+            }
+            let timer = Task {
+                try? await Task.sleep(for: timeout)
+                result.resolve(.noReply)
+            }
+            let outcome = await result.wait()
+            timer.cancel()
+            switch outcome {
+            case .replied:
+                state.withLock { $0.answeredProbes += 1 }
+                return
+            case .failed:
+                return
+            case .noReply:
+                continue
+            }
+        }
+        if isEnded { return }
+        finish(.failed(.connectionFailed(Self.unresponsiveMessage)))
+        await connection.closeClient()
     }
 
     /// Sends one keep-alive probe. Succeeds when the server answered, whether it accepted or refused.
@@ -779,6 +876,9 @@ public final class CitadelSession: TerminalSession {
         return channel
     }
 
+    /// Why a session the server ended (shell killed, no exit status) closed: shown on the tab.
+    static let serverEndedSessionMessage = "The server ended the session (it may be restarting)."
+
     private func endReason(for error: Error) -> SessionEndReason {
         switch error {
         case let error as ChannelError:
@@ -796,6 +896,10 @@ public final class CitadelSession: TerminalSession {
         case is SSHClient.CommandFailed:
             // The remote shell exited with a non-zero status: still a normal end of session.
             return .remoteClosed
+        case is SSHClient.CommandSignaled, is SSHClient.EndedWithoutExitStatus:
+            // Killed by a signal, or ended without any status (vendored Citadel patch): the server shut
+            // down, rebooted or restarted sshd. A lost connection (reconnect), not the user's `exit`.
+            return .failed(.connectionFailed(Self.serverEndedSessionMessage))
         case CitadelError.channelFailure:
             return .failed(.connectionFailed("The server refused to open a terminal."))
         default:
