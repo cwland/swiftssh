@@ -417,6 +417,23 @@ final class ConnectionPlannerTests: XCTestCase {
                        "a dead explicit identity falls back to the group default, not the kept username")
     }
 
+    func testPrefersDirectIgnoresALinkedIdentity() async throws {
+        let vault = try await makeVault()
+        let linked = try await vault.save(Identity(label: "e", username: "explicitUser", password: "e"))
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                  identityID: linked.id, prefersIdentity: false))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "root")
+        let bare = try await vault.save(SavedHost(label: "B", address: "b", groupID: group.id,
+                                                  identityID: linked.id, prefersIdentity: false))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: bare.id, vault: vault).username, "groupUser",
+                       "no own credentials: the group default, never the unused linked identity")
+        let legacy = try await vault.save(SavedHost(label: "L", address: "l", username: "root", identityID: linked.id))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: legacy.id, vault: vault).username, "explicitUser",
+                       "an older record with a link and no recorded choice uses the identity")
+    }
+
     func testPrefersDirectAndLegacyUseTheHostsOwnFields() async throws {
         let vault = try await makeVault()
         let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))

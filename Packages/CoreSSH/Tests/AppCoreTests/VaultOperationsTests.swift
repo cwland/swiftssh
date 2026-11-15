@@ -99,6 +99,18 @@ final class VaultOperationsTests: XCTestCase {
         XCTAssertEqual(groups.map(\.count), [3, 2])
     }
 
+    nonisolated func testCredentialReuseCountsDirectModeHostsWithAKeptIdentity() {
+        let kept = UUID()
+        let a = CoreModels.Host(label: "a", address: "a", username: "root", identityID: kept, password: "pw",
+                                prefersIdentity: false)
+        let b = CoreModels.Host(label: "b", address: "b", username: "root", password: "pw")
+        let identityMode = CoreModels.Host(label: "c", address: "c", username: "root", identityID: kept,
+                                           password: "pw", prefersIdentity: true)
+        let legacyLinked = CoreModels.Host(label: "d", address: "d", username: "root", identityID: kept, password: "pw")
+        XCTAssertEqual(CredentialReuse.groups(in: [a, b, identityMode, legacyLinked]).map { $0.map(\.label) },
+                       [["a", "b"]])
+    }
+
     func testCredentialReuseLeavesOutIdentityModeHosts() async {
         let a = CoreModels.Host(label: "a", address: "a", username: "cory", password: "pw")
         let b = CoreModels.Host(label: "b", address: "b", username: "cory", password: "pw")
