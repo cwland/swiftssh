@@ -211,7 +211,7 @@ public final class TerminalSettings {
   - `testEveryThirdPartyThemeHasACreditAndOriginalsHaveNone` (originals: reimagined-*, hacker-*)
   - `testEveryCreditIsMITAndAppearsInNotices` (each `credit.copyright` and `credit.url` is a substring of `noticesText`)
   - `testAutomaticPicksReimaginedLightOrDark`
-  - `testSpotCheckUpstreamValues`: dracula bg `#282A36`, ansi[5] `#FF79C6`; nord ansi[14] `#8FBCBB`; solarized-dark ansi[8] `#002B36`, fg `#839496`; night-owl ansi[3] `#C5E478`; flexoki-light bg `#FFFCF0`; kanagawa-wave cursor `#C8C093`; everforest-dark ansi[0] `#475258`.
+  - `testSpotCheckUpstreamValues`: dracula bg `#282A36`, ansi[5] `#FF79C6`; nord ansi[14] `#8FBCBB`; solarized-dark ansi[8] `#586E75` (Addendum fix; upstream `#002B36` equals the background), fg `#839496`; night-owl ansi[3] `#C5E478`; flexoki-light bg `#FFFCF0`; kanagawa-wave cursor `#C8C093`; everforest-dark ansi[0] `#475258`.
   Implement with private `Decodable` file structs read field by field (as `BadgeSettings` does). Commit `feat(core): bundled terminal theme catalog (20 themes)`.
 - [ ] **1.4 Notices.** Create `terminal-themes-notices.txt` per Appendix B. Test from 1.3 (`testEveryCreditIsMITAndAppearsInNotices`) now passes. Commit `docs: third-party notices for bundled terminal themes`.
 - [ ] **1.5 Resolver.** `TerminalThemeResolverTests` (pure; build `SavedHost`/`HostGroup` values directly):
