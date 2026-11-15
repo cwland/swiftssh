@@ -509,6 +509,8 @@ private struct SessionTabPill: View {
                 .fill(isSelected ? Theme.tabBackground : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
+        // Dragging the pill moves the tab, never the window.
+        .background(WindowDragBlocker())
         // A click anywhere on the pill selects the tab; the close button in the leading slot
         // handles its own clicks first.
         .onTapGesture(perform: select)
@@ -608,6 +610,8 @@ private struct WorkspaceTabPill: View {
                 .fill(isSelected ? Theme.tabBackground : Color.clear)
         )
         .contentShape(RoundedRectangle(cornerRadius: Theme.tabCornerRadius, style: .continuous))
+        // Dragging the pill moves the tab, never the window.
+        .background(WindowDragBlocker())
         .onTapGesture(perform: select)
         .onHover { isHovering = $0 }
         .help(workspace.name)
