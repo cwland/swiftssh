@@ -86,7 +86,7 @@ struct TerminalTabView: View {
     private var resolvedAppearance: TerminalAppearance {
         _ = vault.revision
         if let overrideID = tab.themeOverrideID, let theme = TerminalThemeCatalog.shared.theme(id: overrideID) {
-            return TerminalAppearance(theme: theme, fontSize: terminalSettings.fontSize)
+            return terminalSettings.appearance(theme: theme)
         }
         var host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
         if let id = host?.id, let pending = sessions.pendingTheme(forHost: id) { host?.themeID = pending.themeID }
