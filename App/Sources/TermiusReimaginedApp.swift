@@ -24,11 +24,13 @@ struct TermiusReimaginedApp: App {
             SessionCommands(environment: environment)
         }
 
-        // Cmd+, — Termius-style sidebar of panes (Connection, 1Password, OS Icons).
+        // Cmd+, — Termius-style sidebar of panes (Connection, Sync, 1Password, OS Icons).
         Settings {
             SettingsView(connectionSettings: environment.connectionSettings,
                          navigation: environment.settingsNavigation,
-                         onePassword: environment.onePassword)
+                         onePassword: environment.onePassword,
+                         sync: environment.sync,
+                         vault: environment.vault)
                 .environment(environment.settingsNavigation)
                 .environment(environment.onePassword)
         }

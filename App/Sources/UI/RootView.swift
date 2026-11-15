@@ -11,6 +11,7 @@ struct RootView: View {
             TopBarView(
                 navigation: environment.navigation,
                 sessions: environment.sessions,
+                sync: environment.sync,
                 selectVaults: { environment.showVaults() },
                 closeTab: { environment.closeTab(tabID: $0) }
             )

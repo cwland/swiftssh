@@ -8,6 +8,10 @@ struct SettingsView: View {
     let connectionSettings: ConnectionSettings
     let navigation: SettingsNavigation
     let onePassword: OnePasswordSetup
+    /// nil until the vault is open.
+    let sync: SyncCoordinator?
+    /// nil until the vault is open (Sync's join step asks whether to merge this Mac's data).
+    let vault: LocalVault?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -38,6 +42,7 @@ struct SettingsView: View {
     private func pane(for pane: SettingsPane) -> some View {
         switch pane {
         case .connection: ConnectionSettingsPane(settings: connectionSettings)
+        case .sync: SyncSettingsPane(sync: sync, vault: vault)
         case .onePassword: OnePasswordSettingsPane(setup: onePassword)
         case .osIcons: OSIconsSettingsPane()
         }
