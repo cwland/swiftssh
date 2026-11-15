@@ -10,6 +10,8 @@ The example server and the tests are left out.
 Upstream records a shell's `exit-status` but ignores `exit-signal`, and finishes the output stream
 normally both when the user typed `exit` and when the server killed the shell (reboot, shutdown, sshd
 restart). The app closes the tab for the first and reconnects for the second, so it needs to know.
+(`CitadelSession` treats `CommandSignaled` as a lost connection and `EndedWithoutExitStatus` as a
+normal logout, since some appliances never send an exit status.)
 
 ## What changed
 

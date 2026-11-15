@@ -122,6 +122,7 @@ public struct TemplatePane: Codable, Equatable, Sendable {
 public final class WorkspaceTemplateStore {
     public private(set) var templates: [WorkspaceTemplate] = []
     @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored private weak var sessions: SessionManager?
     @ObservationIgnored private var fileIsCorrupt = false
 
     private struct FileContents: Codable {
@@ -182,6 +183,16 @@ public final class WorkspaceTemplateStore {
         var updated = templates
         updated[index].name = trimmed
         try write(updated)
+        // Open copies follow, so a later ⌘S on one doesn't write the old name back.
+        for workspace in sessions?.openWorkspaces ?? [] where workspace.templateID == id {
+            workspace.name = trimmed
+            workspace.markNameSaved()
+        }
+    }
+
+    /// The app's sessions, so renaming a saved workspace also renames its open copies.
+    public func attach(_ sessions: SessionManager) {
+        self.sessions = sessions
     }
 
     /// Whether saving the workspace updates an existing template (else it is a first save, which asks

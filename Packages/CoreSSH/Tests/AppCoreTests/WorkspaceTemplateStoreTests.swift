@@ -297,6 +297,19 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertFalse(store.hasSavedCopy(of: ws), "its template was deleted: saving makes a new one")
     }
 
+    func testRenamingASavedWorkspaceRenamesItsOpenCopies() async throws {
+        let (ws, _, _) = try sampleWorkspace()
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        store.attach(manager)
+        let template = try store.save(ws, sessions: manager)
+        let opened = try manager.openTemplate(template)
+        try store.rename(template.id, to: "Renamed")
+        XCTAssertEqual(ws.name, "Renamed")
+        XCTAssertEqual(opened.name, "Renamed")
+        XCTAssertFalse(opened.hasUnsavedChanges, "the saved copy has that name too")
+        XCTAssertEqual(try store.save(opened, sessions: manager).name, "Renamed", "⌘S keeps the new name")
+    }
+
     func testRenamingANeverSavedWorkspaceOnlyRenamesIt() async throws {
         let (ws, _, _) = try sampleWorkspace()
         let store = WorkspaceTemplateStore(fileURL: fileURL)

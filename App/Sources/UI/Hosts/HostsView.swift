@@ -588,10 +588,12 @@ struct HostsView: View {
     }
 
     /// E: Host Details for the one selected host.
-    private func editSelectedHost() {
+    /// Whether a host was edited (otherwise the key press goes on as usual).
+    private func editSelectedHost() -> Bool {
         let ids = model.selectedVisibleHostIDs
-        guard ids.count == 1, let id = ids.first else { return }
+        guard ids.count == 1, let id = ids.first else { return false }
         model.edit(hostID: id)
+        return true
     }
 
     private func duplicateHost(_ id: UUID) {
@@ -764,12 +766,8 @@ private struct TagToggleRow: View {
 /// field or text view has the keyboard focus (so typing is never taken). Consumes the press.
 private struct PlainKeyWatch: NSViewRepresentable {
     let key: String
+    /// Returns whether it handled the press (only then is it consumed).
     let action: @MainActor () -> Bool
-
-    init(key: String, action: @escaping @MainActor () -> Void) {
-        self.key = key
-        self.action = { action(); return true }
-    }
 
     func makeNSView(context: Context) -> WatchView {
         let view = WatchView()
@@ -802,11 +800,11 @@ private struct PlainKeyWatch: NSViewRepresentable {
             super.viewDidMoveToWindow()
             guard window != nil, monitor == nil else { return }
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                let eventWindow = event.window
-                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                    .subtracting([.capsLock, .numericPad, .function])
-                let characters = event.charactersIgnoringModifiers?.lowercased()
                 let handled = MainActor.assumeIsolated { () -> Bool in
+                    let eventWindow = event.window
+                    let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                        .subtracting([.capsLock, .numericPad, .function])
+                    let characters = event.charactersIgnoringModifiers?.lowercased()
                     guard let self, let window = self.window, eventWindow === window, window.isKeyWindow,
                           !self.isHiddenOrHasHiddenAncestor, flags.isEmpty, characters == self.key,
                           !(window.firstResponder is NSText) else { return false }

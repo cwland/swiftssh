@@ -257,6 +257,11 @@ extension SessionManager {
         return tab
     }
 
+    /// Every open workspace, in any window.
+    public var openWorkspaces: [Workspace] {
+        Array(workspacesByID.values)
+    }
+
     /// The window's workspaces, in tab bar order.
     public func workspaces(inWindow windowID: UUID?) -> [Workspace] {
         strip(inWindow: windowID).compactMap { item in

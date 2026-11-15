@@ -572,9 +572,13 @@ public final class CitadelSession: TerminalSession {
             }
             let clock = ContinuousClock()
             let sent = clock.now
-            let outcome = await result.wait()
+            let outputBefore = state.withLock { $0.outputCount }
+            var outcome = await result.wait()
             timer.cancel()
             if Task.isCancelled || isEnded { return }
+            // Output arriving while the reply waits (behind it, on a slow link) proves the connection
+            // is alive too.
+            if outcome == .noReply, state.withLock({ $0.outputCount }) != outputBefore { outcome = .replied }
             switch outcome {
             case .replied:
                 state.withLock { $0.answeredProbes += 1 }
@@ -614,8 +618,11 @@ public final class CitadelSession: TerminalSession {
                 try? await Task.sleep(for: timeout)
                 result.resolve(.noReply)
             }
-            let outcome = await result.wait()
+            let outputBefore = state.withLock { $0.outputCount }
+            var outcome = await result.wait()
             timer.cancel()
+            // Output arriving meanwhile proves the connection is alive too (a slow, busy link).
+            if outcome == .noReply, state.withLock({ $0.outputCount }) != outputBefore { outcome = .replied }
             switch outcome {
             case .replied:
                 state.withLock { $0.answeredProbes += 1 }
@@ -896,10 +903,15 @@ public final class CitadelSession: TerminalSession {
         case is SSHClient.CommandFailed:
             // The remote shell exited with a non-zero status: still a normal end of session.
             return .remoteClosed
-        case is SSHClient.CommandSignaled, is SSHClient.EndedWithoutExitStatus:
-            // Killed by a signal, or ended without any status (vendored Citadel patch): the server shut
-            // down, rebooted or restarted sshd. A lost connection (reconnect), not the user's `exit`.
+        case is SSHClient.CommandSignaled:
+            // Killed by a signal (vendored Citadel patch): the server shut down, rebooted or restarted
+            // sshd. A lost connection (reconnect), not the user's `exit`.
             return .failed(.connectionFailed(Self.serverEndedSessionMessage))
+        case is SSHClient.EndedWithoutExitStatus:
+            // The server closed the shell's channel without saying how it ended: some appliances
+            // never send an exit status, even for a normal logout, so this counts as one. (A server
+            // that goes away without closing the channel ends in `tcpShutdown` above.)
+            return .remoteClosed
         case CitadelError.channelFailure:
             return .failed(.connectionFailed("The server refused to open a terminal."))
         default:

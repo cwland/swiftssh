@@ -117,6 +117,7 @@ final class AppEnvironment {
             let vault = try await LocalVault.open(persistence: persistence)
             let sessions = makeSessionManager(vault: vault, runtime: runtime)
             self.sessions = sessions
+            workspaceTemplates.attach(sessions)
             let watcher = ConnectionWatcher { [weak sessions] in sessions?.checkConnections() }
             watcher.start()
             connectionWatcher = watcher

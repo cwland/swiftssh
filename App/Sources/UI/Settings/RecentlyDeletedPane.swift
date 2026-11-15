@@ -56,7 +56,8 @@ struct RecentlyDeletedPane: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .onAppear {
+        // The vault may open after the pane appears.
+        .task(id: vault != nil) {
             if model == nil, let vault { model = RecentlyDeletedViewModel(vault: vault) }
         }
         .confirmationDialog(pendingRemoval.count == 1 ? "Delete this host permanently?"

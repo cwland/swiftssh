@@ -28,7 +28,8 @@ struct ThemeSidePanel: View {
             Divider()
             ScrollView {
                 ThemeGallery(catalog: .shared,
-                             selectedThemeID: sessions.themeChoice(tabID: tab.id),
+                             // A pane without its own theme shows Default (it follows its host).
+                             selectedThemeID: isPane ? tab.themeOverrideID : sessions.themeChoice(tabID: tab.id),
                              inheritedTheme: inheritedTheme,
                              showsDefault: true,
                              columns: 1) { themeID in

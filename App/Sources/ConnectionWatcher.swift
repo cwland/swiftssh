@@ -33,7 +33,7 @@ final class ConnectionWatcher {
         wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.onChange() }
+            MainActor.assumeIsolated { self?.woke() }
         }
     }
 
@@ -43,10 +43,21 @@ final class ConnectionWatcher {
         wakeObserver = nil
     }
 
-    /// The first report is the starting state; later ones that differ mean the network changed.
+    /// The first report is the starting state; a later one that differs means the network changed.
+    /// Sessions are checked once the network works again (checking while it is down would end
+    /// sessions that survive a quick Wi-Fi switch; a lasting outage is caught by the keep-alive).
     private func pathChanged(_ summary: PathSummary) {
         defer { lastPath = summary }
-        guard let lastPath, lastPath != summary else { return }
+        guard let lastPath, lastPath != summary, summary.satisfied else { return }
         onChange()
+    }
+
+    /// After a wake the network takes a moment to come back: check a few seconds later, when it works.
+    private func woke() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.lastPath?.satisfied ?? true else { return }
+            self.onChange()
+        }
     }
 }
