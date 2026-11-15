@@ -146,6 +146,14 @@ public final class HostsViewModel {
         return TerminalThemeResolver.inheritedThemeID(forGroupID: id, groups: vault.all(HostGroup.self))
     }
 
+    /// The theme "Default" draws with for the group: its parents' theme, else the app default
+    /// (`appDefaultThemeID`, when this build knows it), else nil = Automatic.
+    public func defaultTheme(ofGroup id: UUID, appDefaultThemeID: String?,
+                             catalog: TerminalThemeCatalog = .shared) -> TerminalTheme? {
+        if let inherited = inheritedThemeID(ofGroup: id), let theme = catalog.theme(id: inherited) { return theme }
+        return appDefaultThemeID.flatMap { catalog.theme(id: $0) }
+    }
+
     /// nil = Default. Saves through the vault (syncs). A missing or deleted group is left alone.
     public func setTheme(_ themeID: String?, forGroup id: UUID) async throws {
         guard var group = vault.get(HostGroup.self, id: id), group.defaultThemeID != themeID else { return }

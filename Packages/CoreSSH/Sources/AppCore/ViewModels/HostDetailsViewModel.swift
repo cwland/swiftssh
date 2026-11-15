@@ -302,11 +302,38 @@ public final class HostDetailsViewModel {
     /// What "Default" resolves to from the host's groups: a theme id this build knows, or nil = the
     /// app default. The host's own theme is not considered.
     public var inheritedThemeID: String? {
-        guard var host else { return nil }
-        host.themeID = nil
-        let others = vault.all(SavedHost.self).filter { $0.id != hostID }
-        return TerminalThemeResolver.inheritedThemeID(forHostID: hostID, hosts: others + [host],
+        guard let host else { return nil }
+        // Only this host's group chain matters, so the other hosts are not read.
+        return TerminalThemeResolver.inheritedThemeID(forHostID: hostID, hosts: [host],
                                                       groups: vault.all(HostGroup.self))
+    }
+
+    /// The theme "Default" draws with for this host: the groups' theme, else the app default
+    /// (`appDefaultThemeID`, when this build knows it), else nil = Automatic.
+    public func defaultTheme(appDefaultThemeID: String?,
+                             catalog: TerminalThemeCatalog = .shared) -> TerminalTheme? {
+        if let id = inheritedThemeID, let theme = catalog.theme(id: id) { return theme }
+        return appDefaultThemeID.flatMap { catalog.theme(id: $0) }
+    }
+
+    /// What "Default" means for this host: "Nord — from group", the app default's name, or
+    /// "Automatic".
+    public func defaultThemeLabel(appDefaultThemeID: String?,
+                                  catalog: TerminalThemeCatalog = .shared) -> String {
+        if let id = inheritedThemeID, let theme = catalog.theme(id: id) {
+            return "\(theme.name) \u{2014} from group"
+        }
+        return appDefaultThemeID.flatMap { catalog.theme(id: $0) }?.name ?? "Automatic"
+    }
+
+    /// The Theme row's text: the host's own theme name, "Unknown theme (<id>)" for an id this
+    /// build doesn't know, or "Default (<defaultThemeLabel>)".
+    public func themeSummary(appDefaultThemeID: String?,
+                             catalog: TerminalThemeCatalog = .shared) -> String {
+        if let id = themeID {
+            return catalog.theme(id: id)?.name ?? "Unknown theme (\(id))"
+        }
+        return "Default (\(defaultThemeLabel(appDefaultThemeID: appDefaultThemeID, catalog: catalog)))"
     }
 
     /// The stored theme id when this build's catalog doesn't know it (a newer build synced it).
