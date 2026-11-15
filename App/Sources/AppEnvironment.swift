@@ -182,45 +182,102 @@ final class AppEnvironment {
         SCDynamicStoreCopyComputerName(nil, nil).map { $0 as String } ?? ProcessInfo.processInfo.hostName
     }
 
-    /// The selected terminal tab, nil while Vaults is selected.
+    /// The main window's selected terminal tab, nil while Vaults is selected.
     var selectedTab: TerminalTab? {
-        guard let sessions, let id = sessions.selectedTabID else { return nil }
+        selectedTab(in: WindowScope(windowID: nil))
+    }
+
+    /// The selected tab of the window (`scope` from the focused scene); nil for Vaults or no window.
+    func selectedTab(in scope: WindowScope?) -> TerminalTab? {
+        guard let scope, let sessions, let id = sessions.selectedTabID(inWindow: scope.windowID) else { return nil }
         return sessions.tabs.first { $0.id == id }
     }
 
     /// Closes the tab at once, connected or not (no confirmation).
     func closeTab(tabID: UUID) {
         sessions?.close(tabID: tabID)
+        releaseClosedTerminalViews()
     }
 
-    /// Cmd+W: closes the selected terminal tab; with Vaults selected, closes the window.
-    func closeSelectedTabOrWindow() {
-        if let tab = selectedTab {
+    /// Lets go of closed tabs' terminal views (and scrollback) now, even when no window is showing
+    /// tabs. Open tabs keep theirs, including the main tabs while no main window is open.
+    private func releaseClosedTerminalViews() {
+        terminalViews.retain(only: Set(sessions?.tabs.map(\.id) ?? []))
+    }
+
+    /// The window commands act on: the focused scene's, else the key window's (a window that showed a
+    /// `RootView`), else the main window's tabs. So a nil focused value never turns a Cmd+W meant for
+    /// a tab into closing a window (with Settings key, Cmd+W acts on the main tabs, as in v0.6.0).
+    func commandScope(_ focused: WindowScope?) -> WindowScope {
+        if let focused { return focused }
+        if let key = NSApp.keyWindow, let scope = windowScopes[ObjectIdentifier(key)] { return scope }
+        return WindowScope(windowID: nil)
+    }
+
+    /// Cmd+W: closes the focused window's selected terminal tab; with Vaults selected (or another kind of
+    /// window, such as Settings, focused), closes the window.
+    func closeSelectedTabOrWindow(in scope: WindowScope?) {
+        if let tab = selectedTab(in: commandScope(scope)) {
             closeTab(tabID: tab.id)
         } else {
             NSApp.keyWindow?.performClose(nil)
         }
     }
 
-    /// Cmd+1 shows Vaults; Cmd+2…9 select the first eight terminal tabs.
-    func selectTab(number: Int) {
+    /// Cmd+1 shows Vaults (main window only); Cmd+2…9 select the focused window's first eight
+    /// terminal tabs, in tab bar order.
+    func selectTab(number: Int, in scope: WindowScope?) {
+        let scope = commandScope(scope)
+        guard let sessions else { return }
         if number == 1 {
-            showVaults()
+            if !scope.isTerminalWindow { showVaults() }
             return
         }
-        guard let sessions, sessions.tabs.indices.contains(number - 2) else { return }
-        sessions.selectedTabID = sessions.tabs[number - 2].id
+        let windowTabs = sessions.tabs(inWindow: scope.windowID)
+        guard windowTabs.indices.contains(number - 2) else { return }
+        sessions.select(tabID: windowTabs[number - 2].id, inWindow: scope.windowID)
     }
 
+    /// Cmd+Shift+[ / Cmd+Shift+]: the focused window's previous or next tab, in tab bar order.
+    func selectAdjacentTab(by step: Int, in scope: WindowScope?) {
+        let scope = commandScope(scope)
+        guard let sessions else { return }
+        if step < 0 {
+            sessions.selectPreviousTab(inWindow: scope.windowID)
+        } else {
+            sessions.selectNextTab(inWindow: scope.windowID)
+        }
+    }
+
+    /// Shows Vaults in the main window.
     func showVaults() {
         sessions?.selectedTabID = nil
         navigation.selectedTab = .vaults
     }
 
-    /// Cmd+R: reconnects the selected tab while its disconnected banner shows.
-    func reconnectSelectedTab() {
-        guard let sessions, let tab = selectedTab, case .disconnected = tab.state else { return }
+    /// Cmd+R: reconnects the focused window's selected tab while its disconnected banner shows.
+    func reconnectSelectedTab(in scope: WindowScope?) {
+        guard let sessions, let tab = selectedTab(in: commandScope(scope)), case .disconnected = tab.state else { return }
         sessions.reconnect(tabID: tab.id)
+    }
+
+    // MARK: Windows
+
+    /// The scope of every open window that shows a `RootView`, by window (see `commandScope`).
+    @ObservationIgnored private var windowScopes: [ObjectIdentifier: WindowScope] = [:]
+
+    func windowAttached(_ window: NSWindow, scope: WindowScope) {
+        windowScopes[ObjectIdentifier(window)] = scope
+    }
+
+    /// A window closed. Main windows (the launch window, Cmd+N ones) leave the main tabs running, as in
+    /// v0.6.0: they come back when a main window opens again. A terminal window ("Duplicate in New
+    /// Window") ends its own sessions, without asking (as closing a tab does).
+    func windowClosed(_ window: NSWindow, scope: WindowScope) {
+        windowScopes[ObjectIdentifier(window)] = nil
+        guard let windowID = scope.windowID else { return }
+        sessions?.closeWindow(windowID)
+        releaseClosedTerminalViews()
     }
 
     // MARK: Files

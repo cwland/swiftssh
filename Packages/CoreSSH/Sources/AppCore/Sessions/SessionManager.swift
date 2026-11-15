@@ -31,6 +31,16 @@ public final class TerminalTab: Identifiable {
     public fileprivate(set) var autoReconnect: AutoReconnectState?
     /// A next step to offer next to the current `.disconnected` message; cleared when a new attempt starts.
     public fileprivate(set) var suggestedAction: SuggestedAction?
+    /// A name the user gave this tab (Rename…); nil = the host's label. Never saved.
+    public fileprivate(set) var customTitle: String?
+    /// What the tab bar shows: the custom title, else `title`.
+    public var displayTitle: String { customTitle ?? title }
+    /// A theme for this tab only (quick connect, or a host that is gone); nil = resolved as usual.
+    /// Never saved.
+    public fileprivate(set) var themeOverrideID: String?
+    /// The window the tab belongs to; nil = the main window. New connections open in the main window;
+    /// "Duplicate in New Window" and duplicates of its tabs open in another.
+    public fileprivate(set) var windowID: UUID?
 
     /// Set by the terminal view. Output received while it is nil is kept (up to 4 MB) and
     /// delivered, in order, as soon as it is set.
@@ -173,8 +183,21 @@ fileprivate final class SessionAttempt {
 /// way; with "save", the reference as typed is stored, never its value.
 @MainActor @Observable
 public final class SessionManager {
+    /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
     public private(set) var tabs: [TerminalTab] = []
-    public var selectedTabID: UUID?
+    /// The main window's selected tab; nil = Vaults. Setting a tab of another window is ignored.
+    /// Other windows: `selectedTabID(inWindow:)` / `select(tabID:inWindow:)`.
+    public var selectedTabID: UUID? {
+        get { selectedTabID(inWindow: nil) }
+        set { select(tabID: newValue, inWindow: nil) }
+    }
+    /// Each window's selected tab (nil key = the main window); a window without an entry shows Vaults.
+    private var selections: [UUID?: UUID] = [:]
+    /// Theme choices for saved hosts waiting for their debounced save (`applyTheme`), by host id.
+    public private(set) var pendingHostThemes: [UUID: PendingThemeChoice] = [:]
+    @ObservationIgnored private var themeSaveTasks: [UUID: Task<Void, Never>] = [:]
+    /// How long a host theme choice waits for another click before it is saved.
+    @ObservationIgnored var themeSaveDelay: Duration = .milliseconds(300)
 
     /// How long `closeAll()` waits for sessions to end.
     @ObservationIgnored var closeAllTimeout: Duration = .seconds(3)
@@ -254,9 +277,7 @@ public final class SessionManager {
         guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return }
         let tab = tabs.remove(at: index)
         endAutoReconnect(of: tab)
-        if selectedTabID == tabID {
-            selectedTabID = tabs.isEmpty ? nil : tabs[min(index, tabs.count - 1)].id
-        }
+        reselect(afterRemoving: tab, at: index)
         if let attempt = detachAttempt(of: tab) {
             let session = attempt.session
             Task { await session.close() }
@@ -274,9 +295,10 @@ public final class SessionManager {
     /// Closes every session concurrently and returns when all have ended, or after 3 s.
     /// Every tab is removed. Used at quit.
     public func closeAll() async {
+        flushPendingThemeSaves()
         let open = tabs
         tabs = []
-        selectedTabID = nil
+        selections = [:]
         for tab in open {
             endAutoReconnect(of: tab)
             _ = detachAttempt(of: tab)
@@ -304,9 +326,182 @@ public final class SessionManager {
         }
     }
 
+    // MARK: Tab order, windows, rename, duplicate, theme
+
+    /// The tabs of one window (nil = the main window), in tab bar order.
+    public func tabs(inWindow windowID: UUID?) -> [TerminalTab] {
+        tabs.filter { $0.windowID == windowID }
+    }
+
+    /// The window's selected tab id; nil = Vaults.
+    public func selectedTabID(inWindow windowID: UUID?) -> UUID? {
+        selections[windowID]
+    }
+
+    /// Selects a tab of the window, or Vaults (nil). A tab that is not open in that window is ignored.
+    public func select(tabID: UUID?, inWindow windowID: UUID?) {
+        guard let tabID else {
+            selections[windowID] = nil
+            return
+        }
+        guard let tab = tab(tabID), tab.windowID == windowID else { return }
+        selections[windowID] = tabID
+    }
+
+    /// Moves the tab to `index` among its window's tabs (clamped), the others keeping their order.
+    /// Sessions and the selection are untouched. Unknown ids are ignored.
+    public func moveTab(id: UUID, toIndex index: Int) {
+        guard let tab = tab(id) else { return }
+        var windowTabs = tabs(inWindow: tab.windowID)
+        guard let from = windowTabs.firstIndex(where: { $0 === tab }) else { return }
+        let to = max(0, min(index, windowTabs.count - 1))
+        guard from != to else { return }
+        windowTabs.remove(at: from)
+        windowTabs.insert(tab, at: to)
+        // The window's tabs fill the same places in `tabs`, in their new order.
+        var reordered = windowTabs.makeIterator()
+        tabs = tabs.map { $0.windowID == tab.windowID ? reordered.next()! : $0 }
+    }
+
+    /// Selects the window's next tab, wrapping; from Vaults, the first.
+    public func selectNextTab(inWindow windowID: UUID?) { selectAdjacentTab(by: 1, inWindow: windowID) }
+
+    /// Selects the window's previous tab, wrapping; from Vaults, the last.
+    public func selectPreviousTab(inWindow windowID: UUID?) { selectAdjacentTab(by: -1, inWindow: windowID) }
+
+    private func selectAdjacentTab(by step: Int, inWindow windowID: UUID?) {
+        let windowTabs = tabs(inWindow: windowID)
+        guard !windowTabs.isEmpty else { return }
+        let next: Int
+        if let current = selections[windowID], let index = windowTabs.firstIndex(where: { $0.id == current }) {
+            next = (index + step + windowTabs.count) % windowTabs.count
+        } else {
+            next = step > 0 ? 0 : windowTabs.count - 1
+        }
+        selections[windowID] = windowTabs[next].id
+    }
+
+    /// Renames the tab only (the host keeps its label); a blank name goes back to the host's label.
+    public func rename(tabID: UUID, to name: String) {
+        guard let tab = tab(tabID) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        tab.customTitle = trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Opens a new tab with a new session to the same host or quick connect target, right after the
+    /// source in its window, and selects it. It keeps the source's theme override, not its custom
+    /// title or a typed password. Nil when the source is not open.
+    @discardableResult
+    public func duplicate(tabID: UUID) -> TerminalTab? {
+        guard let source = tab(tabID), let index = tabs.firstIndex(where: { $0 === source }) else { return nil }
+        return openCopy(of: source, inWindow: source.windowID, at: index + 1)
+    }
+
+    /// The same, as the first tab of the window `windowID` (a new window), selected there.
+    @discardableResult
+    public func duplicate(tabID: UUID, inWindow windowID: UUID) -> TerminalTab? {
+        guard let source = tab(tabID) else { return nil }
+        return openCopy(of: source, inWindow: windowID, at: tabs.count)
+    }
+
+    private func openCopy(of source: TerminalTab, inWindow windowID: UUID?, at index: Int) -> TerminalTab {
+        let copy = TerminalTab(target: source.target, title: source.title, badge: source.badge)
+        copy.themeOverrideID = source.themeOverrideID
+        copy.windowID = windowID
+        tabs.insert(copy, at: index)
+        selections[windowID] = copy.id
+        connect(copy, plan: nil) // plans afresh; a host that can't be planned shows as disconnected
+        return copy
+    }
+
+    /// Closes every tab of the window (nil = the main window): its window was closed. Other windows'
+    /// tabs keep running.
+    public func closeWindow(_ windowID: UUID?) {
+        for tab in tabs(inWindow: windowID) { close(tabID: tab.id) }
+        selections[windowID] = nil
+    }
+
+    /// Tabs of the window counting down to a try or trying now.
+    public func waitingForReconnectCount(inWindow windowID: UUID?) -> Int {
+        tabs(inWindow: windowID).filter { Self.isWaitingForReconnect($0) }.count
+    }
+
+    /// Every tab of the window that is counting down starts its try now.
+    public func reconnectWaitingNow(inWindow windowID: UUID?) {
+        for tab in tabs(inWindow: windowID) {
+            if case .waiting(let attempt, _, _) = tab.autoReconnect { startTry(tab, attempt: attempt) }
+        }
+    }
+
+    private static func isWaitingForReconnect(_ tab: TerminalTab) -> Bool {
+        switch tab.autoReconnect {
+        case .waiting, .reconnecting: true
+        case .gaveUp, nil: false
+        }
+    }
+
+    /// The theme the tab is drawn with, as chosen (nil = Default), the one rule the panel and the
+    /// terminal both follow: the tab's override (quick connect, or set while its host was gone) wins;
+    /// else its saved host's choice, a pending (not yet saved) one first.
+    public func themeChoice(tabID: UUID) -> String? {
+        guard let tab = tab(tabID) else { return nil }
+        if let overrideID = tab.themeOverrideID { return overrideID }
+        guard let hostID = tab.hostID else { return nil }
+        if let pending = pendingHostThemes[hostID] { return pending.themeID }
+        return vault.get(SavedHost.self, id: hostID)?.themeID
+    }
+
+    /// A host's theme choice that is shown already but not saved yet; nil = nothing pending.
+    public func pendingTheme(forHost hostID: UUID) -> PendingThemeChoice? {
+        pendingHostThemes[hostID]
+    }
+
+    /// Applies a theme from the tab's theme panel (nil = Default). A saved host's tab shows it at once in
+    /// all the host's tabs (`pendingTheme(forHost:)`) and saves it to the host (it syncs) once no other
+    /// click came for `themeSaveDelay`, so browsing the gallery writes once; the tab's override is
+    /// dropped. Other tabs (quick connect, a deleted host) get a per-tab override.
+    public func applyTheme(_ themeID: String?, tabID: UUID) {
+        guard let tab = tab(tabID) else { return }
+        guard let hostID = tab.hostID, vault.get(SavedHost.self, id: hostID) != nil else {
+            tab.themeOverrideID = themeID
+            return
+        }
+        tab.themeOverrideID = nil
+        pendingHostThemes[hostID] = PendingThemeChoice(themeID: themeID)
+        themeSaveTasks[hostID]?.cancel()
+        let delay = themeSaveDelay
+        themeSaveTasks[hostID] = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            self?.commitPendingTheme(hostID: hostID)
+        }
+    }
+
+    /// Saves every pending host theme now (the panel closed, or the app quits).
+    public func flushPendingThemeSaves() {
+        for hostID in Array(pendingHostThemes.keys) { commitPendingTheme(hostID: hostID) }
+    }
+
+    private func commitPendingTheme(hostID: UUID) {
+        themeSaveTasks.removeValue(forKey: hostID)?.cancel()
+        guard let pending = pendingHostThemes.removeValue(forKey: hostID),
+              var host = vault.get(SavedHost.self, id: hostID), host.themeID != pending.themeID else { return }
+        host.themeID = pending.themeID
+        vault.saveNow(host)
+    }
+
+    /// After `tab` was removed from `tabs` at `index`: if it was its window's selection, selects the
+    /// window's tab that took its place, else the one before it, else Vaults.
+    private func reselect(afterRemoving tab: TerminalTab, at index: Int) {
+        guard selections[tab.windowID] == tab.id else { return }
+        let siblings = tabs(inWindow: tab.windowID)
+        let place = tabs[..<index].filter { $0.windowID == tab.windowID }.count
+        selections[tab.windowID] = siblings.isEmpty ? nil : siblings[min(place, siblings.count - 1)].id
+    }
+
     // MARK: Auto-reconnect
 
-    /// Tabs counting down to a try or trying now (`.waiting` or `.reconnecting`).
+    /// Tabs (of every window) counting down to a try or trying now (`.waiting` or `.reconnecting`).
     public var waitingForReconnectCount: Int {
         tabs.filter { tab in
             switch tab.autoReconnect {
@@ -852,5 +1047,14 @@ private final class ResumeOnce: Sendable {
 
     func resume() {
         continuation.withLock { $0.take() }?.resume()
+    }
+}
+
+/// A theme chosen for a saved host that is not saved yet (nil = Default).
+public struct PendingThemeChoice: Equatable, Sendable {
+    public let themeID: String?
+
+    public init(themeID: String?) {
+        self.themeID = themeID
     }
 }
