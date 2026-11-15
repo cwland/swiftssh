@@ -30,6 +30,7 @@ struct TermiusReimaginedApp: App {
             SettingsView(connectionSettings: environment.connectionSettings,
                          terminalSettings: environment.terminalSettings,
                          navigation: environment.settingsNavigation,
+                         appearance: environment.appAppearance,
                          onePassword: environment.onePassword,
                          sync: environment.sync,
                          vault: environment.vault)
