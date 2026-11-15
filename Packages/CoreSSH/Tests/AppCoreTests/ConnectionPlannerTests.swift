@@ -337,4 +337,52 @@ final class ConnectionPlannerTests: XCTestCase {
         XCTAssertNil(resolved.key)
         XCTAssertNil(resolved.password)
     }
+
+    // MARK: prefersIdentity
+
+    func testIdentityModeHostWithKeptUsernameUsesTheGroupDefaultIdentity() async throws {
+        let vault = try await makeVault()
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser", password: "groupPW"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                  password: "ownPW", prefersIdentity: true))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "groupUser")
+        guard case .password("groupPW") = plan.credential else { return XCTFail("\(plan.credential)") }
+    }
+
+    func testIdentityModeHostWithoutAGroupDefaultIgnoresItsOwnFields() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "H", address: "h", username: "root", password: "pw",
+                                                  prefersIdentity: true))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: host.id, vault: vault),
+                             "no identity is in effect, and the kept username isn't used")
+    }
+
+    func testExplicitIdentityStillWinsOverPrefersIdentity() async throws {
+        let vault = try await makeVault()
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let explicit = try await vault.save(Identity(label: "e", username: "explicitUser", password: "e"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                  identityID: explicit.id, prefersIdentity: true))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "explicitUser")
+        try await vault.deleteIdentity(id: explicit.id)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "groupUser",
+                       "a dead explicit identity falls back to the group default, not the kept username")
+    }
+
+    func testPrefersDirectAndLegacyUseTheHostsOwnFields() async throws {
+        let vault = try await makeVault()
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        for preference in [false, nil] as [Bool?] {
+            let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                      prefersIdentity: preference))
+            XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "root")
+            let bare = try await vault.save(SavedHost(label: "B", address: "b", groupID: group.id,
+                                                      prefersIdentity: preference))
+            XCTAssertEqual(try ConnectionPlanner.plan(hostID: bare.id, vault: vault).username, "groupUser")
+        }
+    }
 }

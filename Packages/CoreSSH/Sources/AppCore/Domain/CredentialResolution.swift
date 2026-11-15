@@ -5,8 +5,10 @@ import Foundation
 /// keychain usage counts go through it so they cannot drift.
 ///
 /// Precedence: (a) the host's explicit `identityID`, if it resolves to a live identity, always
-/// applies; (b) otherwise, if the host has any direct credential (username, non-empty password or
-/// a live key), the host's own fields are used; (c) otherwise the group-inherited default identity
+/// applies; (b) otherwise, when the host prefers an identity (`prefersIdentity == true`), the
+/// group-inherited default identity applies, or nothing does: the host's own username and secrets
+/// are ignored; (c) otherwise, if the host has any direct credential (username, non-empty password or
+/// a live key), the host's own fields are used; (d) otherwise the group-inherited default identity
 /// applies. A deleted or missing identity or key counts as absent.
 ///
 /// Within the source that applies, a 1Password agent key (`agentKey`) wins over the key and password:
@@ -31,6 +33,16 @@ struct CredentialResolution {
         if let explicit = host.identityID.flatMap({ vault.get(Identity.self, id: $0) }) {
             return from(explicit)
         }
+        func groupDefault() -> CredentialResolution {
+            // Ignore the host's own (dead) link so the group default is reached.
+            var inheriting = host
+            inheriting.identityID = nil
+            if let inherited = directory.effectiveIdentityID(for: inheriting).flatMap({ vault.get(Identity.self, id: $0) }) {
+                return from(inherited)
+            }
+            return CredentialResolution(identity: nil, username: nil, password: nil, key: nil)
+        }
+        if host.prefersIdentity == true { return groupDefault() }
         let username = nonEmpty(host.username)
         let password = nonEmpty(host.password)
         let key = host.sshKeyID.flatMap { vault.get(SSHKey.self, id: $0) }
@@ -38,13 +50,7 @@ struct CredentialResolution {
             return CredentialResolution(identity: nil, username: username, password: password, key: key)
                 .applyingAgentKey(host.agentKey)
         }
-        // Ignore the host's own (dead) link so the group default is reached.
-        var inheriting = host
-        inheriting.identityID = nil
-        if let inherited = directory.effectiveIdentityID(for: inheriting).flatMap({ vault.get(Identity.self, id: $0) }) {
-            return from(inherited)
-        }
-        return CredentialResolution(identity: nil, username: nil, password: nil, key: nil)
+        return groupDefault()
     }
 
     /// The agent key, when set, replaces the key and password.

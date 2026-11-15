@@ -139,15 +139,17 @@ public final class HostDetailsViewModel {
         }
     }
 
-    /// `.identity` when the host links an identity, or when the user picked identity mode and
-    /// the host has neither an identity nor a direct password, key or agent key yet (the username is
-    /// kept across modes, so it doesn't count); otherwise `.direct`. Switching to `.identity` clears
-    /// the direct password, key and agent key, never the username; switching to `.direct` clears the
-    /// identity.
+    /// `.identity` when the host links an identity or prefers one (`prefersIdentity == true`); `.direct`
+    /// when it prefers its own credentials (`false`). For older records (`nil`): `.identity` when the user
+    /// picked identity mode here and the host has no direct password, key or agent key yet (the username
+    /// is kept across modes, so it doesn't count), otherwise `.direct`. The choice is stored in
+    /// `prefersIdentity` (synced). Switching to `.identity` clears the direct password, key and agent key,
+    /// never the username; switching to `.direct` clears the identity and keeps the username.
     public var credentialMode: CredentialMode {
         get {
             guard let host else { return .direct }
-            if host.identityID != nil { return .identity }
+            if host.identityID != nil || host.prefersIdentity == true { return .identity }
+            if host.prefersIdentity == false { return .direct }
             let hasDirect = host.password != nil || host.sshKeyID != nil || host.agentKey != nil
             return identityModePicked && !hasDirect ? .identity : .direct
         }
@@ -156,10 +158,16 @@ public final class HostDetailsViewModel {
             switch newValue {
             case .identity:
                 identityModePicked = true
-                update(Self.clearDirectCredentials)
+                update {
+                    Self.clearDirectCredentials(&$0)
+                    $0.prefersIdentity = true
+                }
             case .direct:
                 identityModePicked = false
-                update { $0.identityID = nil }
+                update {
+                    $0.identityID = nil
+                    $0.prefersIdentity = false
+                }
             }
         }
     }
@@ -171,23 +179,31 @@ public final class HostDetailsViewModel {
         host.agentKey = nil
     }
 
-    /// Linking an identity clears the direct password, key and agent key; the username is kept.
+    /// Linking an identity clears the direct password, key and agent key and records identity mode;
+    /// the username is kept.
     public var identityID: UUID? {
         get { host?.identityID }
         set {
             update {
                 $0.identityID = newValue
-                if newValue != nil { Self.clearDirectCredentials(&$0) }
+                if newValue != nil {
+                    Self.clearDirectCredentials(&$0)
+                    $0.prefersIdentity = true
+                }
             }
         }
     }
 
-    /// Sets a direct credential field; a non-empty value unlinks any identity.
+    /// Sets a direct credential field; a non-empty value unlinks any identity and records direct mode
+    /// (an older record without a recorded choice keeps none).
     private func updateDirect(isEmpty: Bool, _ change: (inout SavedHost) -> Void) {
         if !isEmpty { identityModePicked = false }
         update {
             change(&$0)
-            if !isEmpty { $0.identityID = nil }
+            if !isEmpty {
+                $0.identityID = nil
+                if $0.prefersIdentity == true { $0.prefersIdentity = false }
+            }
         }
     }
 
@@ -324,6 +340,7 @@ public final class HostDetailsViewModel {
                   current.username == username, current.password == password else { continue }
             // The identity becomes the host's single credential source.
             current.identityID = identity.id
+            current.prefersIdentity = true
             current.password = nil
             current.sshKeyID = nil
             vault.saveNow(current)

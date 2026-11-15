@@ -395,4 +395,19 @@ final class KeychainViewModelTests: XCTestCase {
         vm.updateNow(edited)
         XCTAssertEqual(vault.get(Identity.self, id: identity.id)?.username, "cory")
     }
+
+    func testUsageCountsFollowPrefersIdentity() async throws {
+        let vault = try await makeVault()
+        let vm = KeychainViewModel(vault: vault)
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "p", privateKey: "s"))
+        _ = try await vault.save(SavedHost(label: "pref", address: "a", groupID: group.id, username: "root",
+                                           sshKeyID: key.id, prefersIdentity: true))
+        _ = try await vault.save(SavedHost(label: "direct", address: "b", groupID: group.id, username: "root",
+                                           prefersIdentity: false))
+        _ = try await vault.save(SavedHost(label: "legacy", address: "c", groupID: group.id, username: "root"))
+        XCTAssertEqual(vm.usageCount(identityID: groupIdentity.id), 1)
+        XCTAssertEqual(vm.usageCount(sshKeyID: key.id), 0, "the identity-mode host's own key isn't used")
+    }
 }

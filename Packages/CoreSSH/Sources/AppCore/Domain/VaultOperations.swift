@@ -66,14 +66,14 @@ extension LocalVault {
 
 public enum CredentialReuse {
     /// Groups of two or more hosts without an identity that share the same non-empty
-    /// username and password. Hosts that log in with the 1Password agent (`agentKey` set) are left
-    /// out: they keep a stored password only for switching back. Largest group first; ties keep
+    /// username and password. Hosts that log in with the 1Password agent (`agentKey` set) or prefer an
+    /// identity (`prefersIdentity == true`) are left out: they keep a stored password only for switching back. Largest group first; ties keep
     /// first-seen order.
     public static func groups(in hosts: [CoreModels.Host]) -> [[CoreModels.Host]] {
         struct Key: Hashable { var username: String; var password: String }
         var order: [Key] = []
         var buckets: [Key: [CoreModels.Host]] = [:]
-        for host in hosts where host.identityID == nil && host.agentKey == nil {
+        for host in hosts where host.identityID == nil && host.agentKey == nil && host.prefersIdentity != true {
             guard let username = host.username, !username.isEmpty,
                   let password = host.password, !password.isEmpty else { continue }
             let key = Key(username: username, password: password)

@@ -543,8 +543,8 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.credentialMode = .identity
         XCTAssertEqual(vm.credentialMode, .identity)
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.username, "root")
-        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .direct,
-                       "a fresh editor sees a host with only a username as direct")
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .identity,
+                       "the choice is stored, so a fresh editor sees identity mode too")
         vm.credentialMode = .direct
         XCTAssertEqual(vm.username, "root")
     }
@@ -713,5 +713,85 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertTrue(ReplacedSecrets(password: false, keyLink: false).isEmpty)
         XCTAssertFalse(ReplacedSecrets(password: true, keyLink: false).isEmpty)
         XCTAssertFalse(ReplacedSecrets(password: false, keyLink: true).isEmpty)
+    }
+
+    // MARK: Persisted login-method choice
+
+    func testIdentityModeIsPersistedAndUsesTheGroupDefaultWhileKeepingTheUsername() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser", password: "gpw"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", groupID: group.id,
+                                                  username: "root", password: "pw"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        vm.credentialMode = .identity
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, true)
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertNil(stored.password)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .identity,
+                       "a fresh editor (another Mac) sees identity mode")
+        var plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "groupUser")
+        guard case .password("gpw") = plan.credential else { return XCTFail("\(plan.credential)") }
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, groupUser")
+
+        vm.credentialMode = .direct
+        stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, false)
+        XCTAssertEqual(vm.username, "root")
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .direct)
+        plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "root", "back in direct mode the kept username is used")
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, root")
+
+        await vault.flush()
+        let persisted = try await persistedHost(p, id: host.id)
+        XCTAssertEqual(persisted.prefersIdentity, false, "synced with the record")
+    }
+
+    func testLegacyHostKeepsInferredMode() async throws {
+        let vault = try await makeVault()
+        let bare = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        let withUser = try await vault.save(SavedHost(label: "u", address: "u.example", username: "root"))
+        XCTAssertNil(bare.prefersIdentity)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: bare.id).credentialMode, .direct)
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: withUser.id).credentialMode, .direct)
+    }
+
+    func testDirectEditsAndLinkingUpdateThePersistedChoice() async throws {
+        let vault = try await makeVault()
+        let identity = try await vault.save(Identity(label: "i", username: "u"))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  prefersIdentity: true))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.credentialMode, .identity)
+        vm.password = "pw"
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.prefersIdentity, false, "a direct secret means direct")
+        XCTAssertEqual(vm.credentialMode, .direct)
+
+        vm.identityID = identity.id
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.prefersIdentity, true)
+        vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: true)
+        let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.prefersIdentity, false)
+        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.username, "root")
+        XCTAssertEqual(vm.credentialMode, .direct)
+    }
+
+    func testRecordFromAnotherDeviceDrivesTheMode() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.credentialMode, .direct)
+        var synced = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        synced.prefersIdentity = true
+        try await vault.save(synced)
+        XCTAssertEqual(vm.credentialMode, .identity)
+        synced.prefersIdentity = false
+        try await vault.save(synced)
+        XCTAssertEqual(vm.credentialMode, .direct)
     }
 }

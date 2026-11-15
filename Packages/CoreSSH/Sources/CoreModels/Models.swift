@@ -54,6 +54,10 @@ public struct Host: SyncableModel {
     public var sshKeyID: UUID?
     /// Non-nil = log in with the 1Password SSH agent (wins over `sshKeyID` and `password`).
     public var agentKey: AgentKeyChoice?
+    /// The login method the user chose: true = an identity (the explicit one, else the group's default;
+    /// the host's own username and secrets are kept but not used), false = the host's own credentials,
+    /// nil = not recorded (older records): inferred from which fields are set.
+    public var prefersIdentity: Bool?
     public var osBadge: OSBadge?
     public var osBadgeIsManual: Bool
     public var themeID: String?
@@ -66,14 +70,14 @@ public struct Host: SyncableModel {
 
     public init(id: UUID = UUID(), label: String, address: String, port: Int? = nil, groupID: UUID? = nil,
                 tags: [String] = [], username: String? = nil, identityID: UUID? = nil, password: String? = nil,
-                sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil,
+                sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil, prefersIdentity: Bool? = nil,
                 osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
                 themeID: String? = nil, startupSnippetID: UUID? = nil, lastConnectedAt: Date? = nil,
                 useSystemSSH: Bool? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.address = address; self.port = port
         self.groupID = groupID; self.tags = tags; self.username = username
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
-        self.agentKey = agentKey
+        self.agentKey = agentKey; self.prefersIdentity = prefersIdentity
         self.osBadge = osBadge; self.osBadgeIsManual = osBadgeIsManual; self.themeID = themeID
         self.startupSnippetID = startupSnippetID; self.lastConnectedAt = lastConnectedAt
         self.useSystemSSH = useSystemSSH
