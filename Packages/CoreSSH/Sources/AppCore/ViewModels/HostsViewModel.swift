@@ -4,10 +4,12 @@ import CoreModels
 
 public enum HostsError: Error, Equatable, Sendable, LocalizedError {
     case emptyGroupName
+    case invalidTmuxSessionName
 
     public var errorDescription: String? {
         switch self {
         case .emptyGroupName: "A group name can't be empty."
+        case .invalidTmuxSessionName: TmuxLabels.invalidNameMessage
         }
     }
 }
@@ -158,6 +160,40 @@ public final class HostsViewModel {
     public func setTheme(_ themeID: String?, forGroup id: UUID) async throws {
         guard var group = vault.get(HostGroup.self, id: id), group.defaultThemeID != themeID else { return }
         group.defaultThemeID = themeID
+        try await vault.save(group)
+    }
+
+    // MARK: Attach to tmux
+
+    /// The group's own choice; `.inherit` for none (or a missing or deleted group).
+    public func tmuxChoice(ofGroup id: UUID) -> TmuxChoice {
+        _ = vault.revision
+        return vault.get(HostGroup.self, id: id)?.defaultTmuxSession ?? .inherit
+    }
+
+    /// What "Default" means for the group: its parents' choice, e.g. "Default (group: on, ops)".
+    public func inheritedTmuxSummary(ofGroup id: UUID) -> String {
+        _ = vault.revision
+        let directory = HostDirectory(hosts: [], groups: vault.all(HostGroup.self))
+        let parentID = vault.get(HostGroup.self, id: id)?.parentID
+        return TmuxLabels.defaultSummary(directory.inheritedTmux(fromGroup: parentID))
+    }
+
+    /// `.inherit` is stored as nil. A session name is trimmed and must pass
+    /// `TmuxChoice.isValidSessionName`, else `HostsError.invalidTmuxSessionName` is thrown and nothing
+    /// is saved. Saves through the vault (syncs) only when it changes; a missing group is left alone.
+    public func setTmux(_ choice: TmuxChoice, forGroup id: UUID) async throws {
+        let stored: TmuxChoice?
+        switch choice {
+        case .inherit: stored = nil
+        case .off: stored = .off
+        case .session(let name):
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard TmuxChoice.isValidSessionName(trimmed) else { throw HostsError.invalidTmuxSessionName }
+            stored = .session(trimmed)
+        }
+        guard var group = vault.get(HostGroup.self, id: id), group.defaultTmuxSession != stored else { return }
+        group.defaultTmuxSession = stored
         try await vault.save(group)
     }
 

@@ -19,6 +19,76 @@ public struct AgentKeyChoice: Codable, Hashable, Sendable {
     }
 }
 
+/// Attaching to a tmux session after login ("Attach to tmux"). Stored on hosts and groups as an
+/// optional, where nil means the same as `.inherit` (older records have no value).
+///
+/// Encoded as `{"kind": "inherit" | "off" | "session", "name": …}`. A kind this build doesn't know,
+/// or a session without a name, decodes as `.inherit`, so a newer build's value never makes the whole
+/// record unreadable.
+public enum TmuxChoice: Codable, Hashable, Sendable {
+    /// Use the nearest group's choice; off when no group has one.
+    case inherit
+    /// Never attach (also stops the walk up the groups).
+    case off
+    /// Run `tmux new -A -s <name>` after login.
+    case session(String)
+
+    /// The name used when the user switches attaching on.
+    public static let defaultSessionName = "main"
+
+    /// `[A-Za-z0-9._-]{1,64}`: safe to put on a command line and accepted by tmux.
+    public static func isValidSessionName(_ name: String) -> Bool {
+        guard (1...64).contains(name.utf8.count) else { return false }
+        return name.utf8.allSatisfy { byte in
+            switch byte {
+            case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"),
+                 UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "."), UInt8(ascii: "_"), UInt8(ascii: "-"):
+                true
+            default:
+                false
+            }
+        }
+    }
+
+    /// The session name for `.session`, else nil.
+    public var sessionName: String? {
+        if case .session(let name) = self { return name }
+        return nil
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, name }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try? container.decodeIfPresent(String.self, forKey: .kind)
+        switch kind {
+        case "off":
+            self = .off
+        case "session":
+            if let name = try? container.decodeIfPresent(String.self, forKey: .name) {
+                self = .session(name)
+            } else {
+                self = .inherit
+            }
+        default:
+            self = .inherit
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .inherit:
+            try container.encode("inherit", forKey: .kind)
+        case .off:
+            try container.encode("off", forKey: .kind)
+        case .session(let name):
+            try container.encode("session", forKey: .kind)
+            try container.encode(name, forKey: .name)
+        }
+    }
+}
+
 public struct HostGroup: SyncableModel {
     public static let recordType = SyncRecordType.hostGroup
     public var id: UUID
@@ -27,15 +97,18 @@ public struct HostGroup: SyncableModel {
     public var defaultIdentityID: UUID?
     public var defaultPort: Int?
     public var defaultThemeID: String?
+    /// Attach to tmux for the group's hosts that inherit; nil (or `.inherit`) = the parent's choice.
+    public var defaultTmuxSession: TmuxChoice?
     public var updatedAt: Date
     public var deleted: Bool
 
     public init(id: UUID = UUID(), name: String, parentID: UUID? = nil, defaultIdentityID: UUID? = nil,
-                defaultPort: Int? = nil, defaultThemeID: String? = nil,
+                defaultPort: Int? = nil, defaultThemeID: String? = nil, defaultTmuxSession: TmuxChoice? = nil,
                 updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.name = name; self.parentID = parentID
         self.defaultIdentityID = defaultIdentityID; self.defaultPort = defaultPort
-        self.defaultThemeID = defaultThemeID; self.updatedAt = updatedAt; self.deleted = deleted
+        self.defaultThemeID = defaultThemeID; self.defaultTmuxSession = defaultTmuxSession
+        self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
 
@@ -65,6 +138,8 @@ public struct Host: SyncableModel {
     public var lastConnectedAt: Date?
     /// nil/false = built-in engine unless the credential forces system ssh; true = always use /usr/bin/ssh.
     public var useSystemSSH: Bool?
+    /// Attach to tmux after login; nil (or `.inherit`) = the nearest group's choice, else off.
+    public var tmuxSession: TmuxChoice?
     public var updatedAt: Date
     public var deleted: Bool
 
@@ -73,14 +148,15 @@ public struct Host: SyncableModel {
                 sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil, prefersIdentity: Bool? = nil,
                 osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
                 themeID: String? = nil, startupSnippetID: UUID? = nil, lastConnectedAt: Date? = nil,
-                useSystemSSH: Bool? = nil, updatedAt: Date = Date(), deleted: Bool = false) {
+                useSystemSSH: Bool? = nil, tmuxSession: TmuxChoice? = nil,
+                updatedAt: Date = Date(), deleted: Bool = false) {
         self.id = id; self.label = label; self.address = address; self.port = port
         self.groupID = groupID; self.tags = tags; self.username = username
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
         self.agentKey = agentKey; self.prefersIdentity = prefersIdentity
         self.osBadge = osBadge; self.osBadgeIsManual = osBadgeIsManual; self.themeID = themeID
         self.startupSnippetID = startupSnippetID; self.lastConnectedAt = lastConnectedAt
-        self.useSystemSSH = useSystemSSH
+        self.useSystemSSH = useSystemSSH; self.tmuxSession = tmuxSession
         self.updatedAt = updatedAt; self.deleted = deleted
     }
 }
