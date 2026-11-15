@@ -86,7 +86,7 @@ private struct TerminalBehaviourSection: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 SettingToggle(title: "Open links with \u{2318}-click",
-                              detail: "Hold \u{2318} to underline web, ssh and mail links; \u{2318}-click opens them in their default app.",
+                              detail: "Hold \u{2318} to underline web and mail links; \u{2318}-click opens them in your browser or mail app.",
                               isOn: Binding(get: { settings.opensLinksWithCommandClick },
                                             set: { settings.opensLinksWithCommandClick = $0 }))
                 SettingToggle(title: "Select text to copy & right-click to paste",

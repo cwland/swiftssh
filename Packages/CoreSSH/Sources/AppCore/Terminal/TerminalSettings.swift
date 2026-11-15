@@ -67,7 +67,7 @@ public final class TerminalSettings {
         }
     }
 
-    /// ⌘-click opens http, https, ssh and mailto links (`TerminalLinkFilter`). Default on.
+    /// ⌘-click opens http, https and mailto links (`TerminalLinkFilter`). Default on.
     public var opensLinksWithCommandClick: Bool {
         didSet { defaults.set(opensLinksWithCommandClick, forKey: Self.openLinksKey) }
     }
