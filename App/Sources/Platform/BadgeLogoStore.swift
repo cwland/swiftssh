@@ -46,6 +46,7 @@ final class BadgeLogoStore {
     @ObservationIgnored private var autoTask: Task<Void, Never>?
     /// Tokens of the launch downloads; their failures stay quiet (no error on the row).
     @ObservationIgnored private var autoTokens: Set<UUID> = []
+    @ObservationIgnored private var autoSuccesses = 0
     /// Per badge id: the modification date of the `<id>.png` our last download wrote. A logo whose
     /// file doesn't match wasn't (or is no longer) a plain download of its link.
     @ObservationIgnored private var downloadStamps: [String: Date] = [:]
@@ -195,8 +196,11 @@ final class BadgeLogoStore {
             guard let url = try? BadgeImageRules.webURL(from: target.link) else { return nil }
             return (target.badge, url)
         }
-        UserDefaults.standard.set(true, forKey: firstRunKey)
-        guard !targets.isEmpty else { return }
+        guard !targets.isEmpty else {
+            if isFirstRun { UserDefaults.standard.set(true, forKey: firstRunKey) }
+            return
+        }
+        autoSuccesses = 0
         autoTask = Task { [weak self] in
             guard let self else { return }
             for start in stride(from: 0, to: targets.count, by: Self.batchConcurrency) {
@@ -209,6 +213,10 @@ final class BadgeLogoStore {
                         }
                     }
                 }
+            }
+            // Done only once something downloaded, so an offline first launch plans "all" again.
+            if isFirstRun, BadgeFetchPlanner.firstRunCompleted(planned: targets.count, succeeded: self.autoSuccesses) {
+                UserDefaults.standard.set(true, forKey: firstRunKey)
             }
             self.autoTask = nil
         }
@@ -279,6 +287,7 @@ final class BadgeLogoStore {
         case .success(let png):
             do throws(BadgeImageError) {
                 try writeInstalledLogo(png, for: badge, fromDownload: source != nil)
+                if isAutomatic { autoSuccesses += 1 }
                 rowStatus[badge] = nil
                 recordSource(source, for: badge)
             } catch {

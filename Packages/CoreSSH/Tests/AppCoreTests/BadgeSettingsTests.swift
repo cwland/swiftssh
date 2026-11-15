@@ -89,17 +89,6 @@ final class BadgeSettingsTests: XCTestCase {
         XCTAssertEqual(settings, BadgeSettings())
     }
 
-    func testDefaultDownloadTargets() throws {
-        var settings = BadgeSettings()
-        XCTAssertTrue(settings.wantsDefaultDownload(.ubuntu, hasLogo: false))
-        settings.setImageSource(ubuntuDefault, for: .ubuntu)
-        XCTAssertTrue(settings.wantsDefaultDownload(.ubuntu, hasLogo: true), "refreshes an image from the default link")
-        XCTAssertFalse(settings.wantsDefaultDownload(.debian, hasLogo: true), "a chosen or hand-dropped image is kept")
-        _ = try settings.setLink("https://example.com/f.svg", for: .fedora)
-        XCTAssertFalse(settings.wantsDefaultDownload(.fedora, hasLogo: false), "a custom link is not a default")
-        XCTAssertFalse(settings.wantsDefaultDownload(OSBadge(rawValue: "plan9"), hasLogo: false))
-    }
-
     func testJSONRoundTripUsesCatalogIDsAsKeys() throws {
         var settings = BadgeSettings()
         settings.setShowsInWhite(false, for: .homeAssistant)

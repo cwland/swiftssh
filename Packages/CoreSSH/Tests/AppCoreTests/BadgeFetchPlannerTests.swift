@@ -68,4 +68,10 @@ final class BadgeFetchPlannerTests: XCTestCase {
     func testNoLinkMeansNothingToFetch() {
         XCTAssertTrue(BadgeFetchPlanner.plan([candidate(.ubuntu, defaultLink: "")], isFirstRun: true).isEmpty)
     }
+
+    func testFirstRunCountsAsDoneOnlyAfterASuccess() {
+        XCTAssertFalse(BadgeFetchPlanner.firstRunCompleted(planned: 90, succeeded: 0), "offline first launch retries all")
+        XCTAssertTrue(BadgeFetchPlanner.firstRunCompleted(planned: 90, succeeded: 1))
+        XCTAssertTrue(BadgeFetchPlanner.firstRunCompleted(planned: 0, succeeded: 0))
+    }
 }

@@ -67,14 +67,6 @@ public struct BadgeSettings: Equatable, Sendable {
         appearances[badge] != nil
     }
 
-    /// Whether Download All Defaults should fetch this entry: it has a default link, no custom
-    /// link, and either no image or an image that came from the default link.
-    public func wantsDefaultDownload(_ badge: OSBadge, hasLogo: Bool) -> Bool {
-        guard let entry = OSCatalog.shared.entry(for: badge), !entry.defaultLink.isEmpty,
-              !hasCustomLink(for: badge) else { return false }
-        return !hasLogo || imageSource(for: badge) == entry.defaultLink
-    }
-
     public mutating func setShowsInWhite(_ showsInWhite: Bool, for badge: OSBadge) {
         update(badge) { $0.showsInWhite = showsInWhite }
     }

@@ -52,4 +52,11 @@ public enum BadgeFetchPlanner {
         }
         return targets
     }
+
+    /// Whether the first-run download has done its job: nothing needed fetching, or at least one
+    /// download of the first batch succeeded. An offline first launch (all failed) is not done, so
+    /// the next launch plans "everything" again.
+    public static func firstRunCompleted(planned: Int, succeeded: Int) -> Bool {
+        planned == 0 || succeeded > 0
+    }
 }

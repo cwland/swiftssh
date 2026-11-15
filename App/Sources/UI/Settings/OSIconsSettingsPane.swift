@@ -5,15 +5,12 @@ import AppCore
 import CoreModels
 
 /// Settings → OS Icons: the OS catalog grouped by category, each group an adaptive grid of tiles
-/// (badge and name). Clicking a tile opens a popup with that OS's settings (`OSIconPopup`). Icons
+/// (badge and name). Clicking a tile opens a sheet with that OS's settings (`OSIconPopup`). Icons
 /// download automatically in the background (see `BadgeLogoStore.startAutomaticDownloads`).
 /// Every change goes through `BadgeLogoStore.shared`, so all badges in the app update at once.
 struct OSIconsSettingsPane: View {
     private var store: BadgeLogoStore { .shared }
-    @State private var importTarget: OSBadge?
-    @State private var popupBadge: OSBadge?
-    @State private var isImporting = false
-    @State private var alertMessage: String?
+    @State private var sheetEntry: OSCatalog.Entry?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -28,22 +25,7 @@ struct OSIconsSettingsPane: View {
                             LazyVGrid(columns: [GridItem(.adaptive(minimum: 120, maximum: 160), spacing: 12)],
                                       alignment: .leading, spacing: 12) {
                                 ForEach(category.entries) { entry in
-                                    OSIconTile(entry: entry, store: store) { popupBadge = entry.id }
-                                        .popover(isPresented: popupBinding(for: entry.id), arrowEdge: .bottom) {
-                                            OSIconPopup(
-                                                entry: entry,
-                                                store: store,
-                                                chooseImage: {
-                                                    importTarget = entry.id
-                                                    isImporting = true
-                                                },
-                                                reset: {
-                                                    if let message = store.reset(entry.id) {
-                                                        alertMessage = message
-                                                    }
-                                                }
-                                            )
-                                        }
+                                    OSIconTile(entry: entry, store: store) { sheetEntry = entry }
                                 }
                             }
                             .padding(.bottom, 8)
@@ -71,27 +53,9 @@ struct OSIconsSettingsPane: View {
         // Picks up logos added to or removed from the folder by hand since launch.
         .onAppear { store.reload() }
         .onDisappear { store.flushPendingSave() }
-        .fileImporter(isPresented: $isImporting, allowedContentTypes: Self.imageTypes) { result in
-            guard let badge = importTarget else { return }
-            importTarget = nil
-            switch result {
-            case .success(let url):
-                store.installFile(at: url, for: badge)
-            case .failure(let error):
-                alertMessage = "Couldn't open that file: \(error.localizedDescription)"
-            }
+        .sheet(item: $sheetEntry) { entry in
+            OSIconPopup(entry: entry, store: store) { sheetEntry = nil }
         }
-        .alert("OS Icons", isPresented: Binding(get: { alertMessage != nil },
-                                                set: { if !$0 { alertMessage = nil } })) {
-            Button("OK") { alertMessage = nil }
-        } message: {
-            Text(alertMessage ?? "")
-        }
-    }
-
-    private func popupBinding(for badge: OSBadge) -> Binding<Bool> {
-        Binding(get: { popupBadge == badge },
-                set: { if !$0, popupBadge == badge { popupBadge = nil } })
     }
 
     private var header: some View {
@@ -127,15 +91,4 @@ struct OSIconsSettingsPane: View {
             }
         }
     }
-
-    /// svg, png, jpeg and pdf.
-    private static let imageTypes: [UTType] = {
-        var types: [UTType] = []
-        for fileExtension in BadgeImageRules.allowedFileExtensions {
-            if let type = UTType(filenameExtension: fileExtension), !types.contains(type) {
-                types.append(type)
-            }
-        }
-        return types
-    }()
 }

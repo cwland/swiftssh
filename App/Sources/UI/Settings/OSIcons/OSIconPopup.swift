@@ -1,16 +1,19 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import AppCore
 import CoreModels
 
-/// The popup for one OS: icon link (editing saves and downloads at once), Download, Choose Image…,
+/// The sheet for one OS (a sheet, not a popover, so the color panel and the file picker can't
+/// dismiss it; the file importer and alert live on this view so they present from the sheet itself): icon link (editing saves and downloads at once), Download, Choose Image…,
 /// Show in white, badge color and Reset. All changes go through `BadgeLogoStore`, so every badge
 /// in the app updates at once.
 struct OSIconPopup: View {
     let entry: OSCatalog.Entry
     let store: BadgeLogoStore
-    let chooseImage: () -> Void
-    let reset: () -> Void
+    let done: () -> Void
     @State private var draft = ""
+    @State private var isImporting = false
+    @State private var alertMessage: String?
     @FocusState private var linkFocused: Bool
 
     private var badge: OSBadge { entry.id }
@@ -65,7 +68,7 @@ struct OSIconPopup: View {
             }
 
             HStack {
-                Button("Choose Image…", action: chooseImage)
+                Button("Choose Image…") { isImporting = true }
                     .disabled(store.isWorking(badge))
                 Spacer(minLength: 0)
             }
@@ -87,15 +90,36 @@ struct OSIconPopup: View {
             }
 
             HStack {
-                Spacer(minLength: 0)
                 Button("Reset to Default", action: resetRow)
                     .disabled(!store.isCustomized(badge) && store.status(for: badge) == nil)
                     .help("Standard symbol, color, white drawing and default link")
+                Spacer(minLength: 0)
+                Button("Done") {
+                    commitLink()
+                    done()
+                }
+                .keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: 400)
         .onAppear { draft = store.link(for: badge) }
+        // Esc or any other dismissal must not lose a typed link.
+        .onDisappear { commitLink() }
+        .fileImporter(isPresented: $isImporting, allowedContentTypes: Self.imageTypes) { result in
+            switch result {
+            case .success(let url):
+                store.installFile(at: url, for: badge)
+            case .failure(let error):
+                alertMessage = "Couldn't open that file: \(error.localizedDescription)"
+            }
+        }
+        .alert("OS Icons", isPresented: Binding(get: { alertMessage != nil },
+                                                set: { if !$0 { alertMessage = nil } })) {
+            Button("OK") { alertMessage = nil }
+        } message: {
+            Text(alertMessage ?? "")
+        }
         .onChange(of: store.link(for: badge)) { _, link in
             // Reset, or a link saved elsewhere; never while the user is typing.
             if !linkFocused { draft = link }
@@ -118,7 +142,9 @@ struct OSIconPopup: View {
     }
 
     private func resetRow() {
-        reset()
+        if let message = store.reset(badge) {
+            alertMessage = message
+        }
         draft = store.link(for: badge)
     }
 
@@ -149,4 +175,15 @@ struct OSIconPopup: View {
                     }
                 })
     }
+
+    /// svg, png, jpeg and pdf.
+    private static let imageTypes: [UTType] = {
+        var types: [UTType] = []
+        for fileExtension in BadgeImageRules.allowedFileExtensions {
+            if let type = UTType(filenameExtension: fileExtension), !types.contains(type) {
+                types.append(type)
+            }
+        }
+        return types
+    }()
 }
