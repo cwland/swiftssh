@@ -74,10 +74,15 @@ Remove its key from `SYNC_API_KEYS` and run `docker compose up -d` again (add
 The server speaks plain HTTP on port 8080 and terminates no TLS, so put it behind your
 reverse proxy for HTTPS (for example Nginx Proxy Manager, reached over Tailscale).
 
+The compose file publishes `8080:8080` on all interfaces so a proxy on another host can reach
+it. If your proxy runs on the same host, publish only to localhost: `127.0.0.1:8080:8080`.
+
 The server has no path-prefix support of its own: routes are mounted at `/health` and
 `/v1/...`. If you publish it under a prefix such as `https://host/sync/`, the proxy must
-strip the prefix before forwarding to `termius-sync:8080` (for Nginx: `location /sync/ {
-proxy_pass http://termius-sync:8080/; }`, with the trailing slash). Serving it on its own
+strip the prefix before forwarding to the server (for Nginx: `location /sync/ {
+proxy_pass http://<server-ip>:8080/; }`, with the trailing slash). Use an address the proxy
+can reach: the server's IP or hostname, or `termius-sync:8080` only if the proxy shares a
+Docker network with the container. Serving it on its own
 hostname needs no rewriting. Forward the `Authorization` header unchanged, and allow request
 bodies of at least 10 MB (the server's limit; Nginx defaults to 1 MB, so set
 `client_max_body_size 10m`).
@@ -95,4 +100,4 @@ docker compose start termius-sync
 ```
 
 (The volume name is prefixed with the Compose project name; check `docker volume ls`.)
-Records are encrypted client-side, so the backup is useless without your vault password.
+Records are encrypted client-side, so the backup is useless without your sync passphrase.

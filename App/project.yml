@@ -34,6 +34,8 @@ targets:
         PRODUCT_NAME: TermiusReimagined
         PRODUCT_BUNDLE_IDENTIFIER: com.cwland.TermiusReimagined
         GENERATE_INFOPLIST_FILE: YES
+        # Fragment merged with the generated Info.plist (carries NSAppTransportSecurity only).
+        INFOPLIST_FILE: Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: "Termius Reimagined"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         MARKETING_VERSION: "0.5.0"

@@ -6,6 +6,8 @@ services:
   termius-sync:
     image: ghcr.io/cwland/termius-reimagined-sync:${SYNC_IMAGE_TAG:-latest}
     ports:
+      # Published on all interfaces because the reverse proxy may run on another host.
+      # If your proxy runs on the same host, publish only to localhost: "127.0.0.1:8080:8080".
       - "8080:8080"
     environment:
       SYNC_API_KEYS: ${SYNC_API_KEYS:?set SYNC_API_KEYS (comma-separated)}

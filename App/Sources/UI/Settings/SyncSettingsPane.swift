@@ -307,7 +307,7 @@ private struct SyncJoinVaultForm: View {
         var detail: String {
             switch self {
             case .merge: "Hosts with the same address, port and username, identities with the same label and username, and keys with the same public key become one. Everything else is uploaded."
-            case .replace: "This Mac\u{2019}s hosts, identities, keys and snippets are removed and the vault\u{2019}s are downloaded."
+            case .replace: "Everything synced on this Mac (hosts, groups, identities, keys, snippets, known hosts, logs and history) is removed and replaced with the vault\u{2019}s."
             }
         }
 
@@ -367,7 +367,7 @@ private struct SyncJoinVaultForm: View {
             Button("Cancel", role: .cancel) {}
             Button("Replace", role: .destructive) { join(.replace) }
         } message: {
-            Text("This Mac\u{2019}s hosts, identities, keys and snippets are replaced with the vault\u{2019}s. Items that are only on this Mac are removed.")
+            Text("This removes everything synced on this Mac \u{2014} hosts, groups, identities, keys, snippets, known hosts, logs and history \u{2014} and replaces it with the vault\u{2019}s. Items that are only on this Mac are lost.")
         }
     }
 
@@ -412,10 +412,28 @@ private struct SyncStatusSection: View {
     @State private var isChangingPassphrase = false
     @State private var isConfirmingDisconnect = false
     @State private var passphraseChanged = false
+    @State private var isUpdatingKey = false
+    @State private var keyUpdated = false
+
+    /// The server rejected this Mac's API key (the coordinator's `.failed` message for it).
+    private var isKeyRejected: Bool {
+        if case .failed(let message) = sync.phase {
+            return message == SyncSetupError.unauthorized.message
+        }
+        return false
+    }
 
     var body: some View {
         SyncCard {
             SyncStatusLine(sync: sync, fontSize: Theme.cardTitleFontSize)
+            if isKeyRejected {
+                SyncNote("The API key saved on this Mac is no longer accepted \u{2014} it may have been revoked or replaced in the server\u{2019}s SYNC_API_KEYS. Enter a current key to resume syncing.")
+                Button("Update API key\u{2026}") {
+                    keyUpdated = false
+                    isUpdatingKey = true
+                }
+                .buttonStyle(.borderedProminent)
+            }
             if let report = sync.lastReport {
                 Text("Last sync: \(SyncTime.reportText(report))")
                     .font(.system(size: Theme.cardSubtitleFontSize))
@@ -437,6 +455,10 @@ private struct SyncStatusSection: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             HStack(spacing: 8) {
+                Button("Update API key\u{2026}") {
+                    keyUpdated = false
+                    isUpdatingKey = true
+                }
                 Button("Change passphrase\u{2026}") {
                     passphraseChanged = false
                     isChangingPassphrase = true
@@ -446,12 +468,22 @@ private struct SyncStatusSection: View {
                 }
             }
             .padding(.top, 4)
+            if keyUpdated {
+                Label("API key updated.", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.green)
+            }
             if passphraseChanged {
                 Label("Sync passphrase changed. Your other Macs keep syncing; use the new passphrase when you set up another Mac.",
                       systemImage: "checkmark.circle.fill")
                     .font(.system(size: 12))
                     .foregroundStyle(.green)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .sheet(isPresented: $isUpdatingKey) {
+            UpdateAPIKeySheet(sync: sync) {
+                keyUpdated = true
             }
         }
         .sheet(isPresented: $isChangingPassphrase) {
@@ -464,6 +496,76 @@ private struct SyncStatusSection: View {
             Button("Disconnect", role: .destructive) { sync.disconnect() }
         } message: {
             Text("This Mac stops syncing. Your data on this Mac is kept.")
+        }
+    }
+}
+
+/// A new API key for the same server (after the old one was revoked or replaced).
+private struct UpdateAPIKeySheet: View {
+    let sync: SyncCoordinator
+    let onUpdated: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var apiKey = ""
+    @State private var isWorking = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Update API key")
+                .font(.system(size: 17, weight: .semibold))
+            Text("Enter one of the keys in the server\u{2019}s SYNC_API_KEYS. The key is checked against the server, then saved in this Mac\u{2019}s Keychain. Your sync passphrase and data are not affected.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SyncField("API key") {
+                SecureField("API key", text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(update)
+            }
+            if let errorMessage {
+                SyncErrorText(errorMessage)
+            }
+
+            HStack(spacing: 8) {
+                if isWorking {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer(minLength: 0)
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                    .disabled(isWorking)
+                Button("Update", action: update)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canUpdate)
+            }
+            .padding(.top, 4)
+        }
+        .padding(20)
+        .frame(width: 420)
+        .interactiveDismissDisabled(isWorking)
+        .onChange(of: apiKey) { _, _ in errorMessage = nil }
+    }
+
+    private var trimmedKey: String { apiKey.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var canUpdate: Bool { !isWorking && !trimmedKey.isEmpty }
+
+    private func update() {
+        guard canUpdate else { return }
+        isWorking = true
+        errorMessage = nil
+        let key = trimmedKey
+        Task {
+            do throws(SyncSetupError) {
+                try await sync.updateAPIKey(key)
+                isWorking = false
+                onUpdated()
+                dismiss()
+            } catch {
+                errorMessage = error.message
+                isWorking = false
+            }
         }
     }
 }

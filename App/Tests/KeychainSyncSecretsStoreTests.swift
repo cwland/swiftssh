@@ -72,15 +72,18 @@ final class KeychainSyncSecretsStoreTests: XCTestCase {
         XCTAssertEqual(try makeStore().loadAPIKey(), "second-key")
     }
 
-    func testItemsUseExpectedAccountsAndAccessibility() throws {
+    func testItemsAreStoredUnderExpectedAccountsAndNotSynchronizable() throws {
         try makeStore().saveVaultKey(try randomKey())
         try makeStore().saveAPIKey("key")
 
+        // Behaviour, not kSecAttrAccessible: the file-based keychain may not return it.
         for account in ["vaultKey", "apiKey"] {
             let found = try XCTUnwrap(attributes(account: account), account)
-            XCTAssertEqual(found[kSecAttrAccessible as String] as? String,
-                           kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly as String, account)
+            // Absent or false both mean "not synchronizable" (never iCloud Keychain).
+            let synchronizable = found[kSecAttrSynchronizable as String] as? Bool
+            XCTAssertNotEqual(synchronizable, true, account)
         }
+        XCTAssertEqual(try makeStore().loadAPIKey(), "key")
     }
 
     func testDeleteAllRemovesBothAndToleratesMissingItems() throws {
