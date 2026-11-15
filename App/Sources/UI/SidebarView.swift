@@ -3,11 +3,14 @@ import AppCore
 
 struct SidebarView: View {
     let navigation: AppNavigation
+    /// For the count beside each section.
+    let vault: LocalVault
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             ForEach(SidebarItem.allCases, id: \.self) { item in
-                SidebarRow(item: item, isSelected: navigation.sidebar == item) {
+                SidebarRow(item: item, count: SidebarCounts(vault: vault).count(for: item),
+                           isSelected: navigation.sidebar == item) {
                     navigation.sidebar = item
                 }
             }
@@ -29,6 +32,7 @@ struct SidebarView: View {
 
 private struct SidebarRow: View {
     let item: SidebarItem
+    let count: Int
     let isSelected: Bool
     let action: () -> Void
 
@@ -38,7 +42,11 @@ private struct SidebarRow: View {
                 Image(systemName: item.systemImage)
                     .frame(width: 24)
                 Text(item.title)
-                Spacer(minLength: 0)
+                Spacer(minLength: 4)
+                Text("\(count)")
+                    .font(.system(size: 12))
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
             }
             .font(.system(size: Theme.sidebarFontSize))
             .foregroundStyle(Color.primary)
@@ -52,6 +60,7 @@ private struct SidebarRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(item.title), \(count)")
     }
 }
 

@@ -73,6 +73,12 @@ public final class LocalVault {
     }
 
     /// Non-deleted records of type `M`, in insertion order.
+    /// How many records of `types` are not deleted (sidebar counts). Observed through `revision`.
+    public func liveCount(of types: Set<SyncRecordType>) -> Int {
+        _ = revision
+        return records.values.reduce(0) { $0 + (types.contains($1.type) && !$1.deleted ? 1 : 0) }
+    }
+
     public func all<M: SyncableModel>(_: M.Type) -> [M] {
         order.compactMap { id in
             guard let record = records[id], record.type == M.recordType, !record.deleted else { return nil }

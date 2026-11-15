@@ -430,7 +430,7 @@ private struct MainArea: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(navigation: navigation)
+            SidebarView(navigation: navigation, vault: vault)
             Divider()
             VStack(spacing: 0) {
                 if let error = vault.lastSaveError {
