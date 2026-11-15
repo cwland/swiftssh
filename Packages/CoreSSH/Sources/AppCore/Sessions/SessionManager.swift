@@ -866,9 +866,9 @@ public final class SessionManager {
     /// tab is not open or not connected (`.connected` with a live session). Placeholders must already
     /// be filled. When the tab is the focused pane of a broadcasting workspace, the same bytes also go to
     /// the workspace's other included, connected panes (as typed input does, `sendInput`).
-    @discardableResult
     /// `bracketedPaste`: the terminal has bracketed paste on (the shell asked for it), so a `.paste`
     /// is wrapped in its markers and a multi-line paste is inserted, not run line by line.
+    @discardableResult
     public func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID,
                         bracketedPaste: Bool = false) -> Bool {
         deliver(text, as: delivery, toTab: tabID, bracketedPaste: bracketedPaste, broadcasting: true)
@@ -876,6 +876,7 @@ public final class SessionManager {
 
     /// `broadcasting: false` types into this tab only, even when it is a broadcasting workspace's
     /// focused pane ("Run in all tabs" already reaches every pane itself).
+    @discardableResult
     private func deliver(_ text: String, as delivery: SnippetDelivery, toTab tabID: UUID,
                          bracketedPaste: Bool, broadcasting: Bool) -> Bool {
         guard let tab = tab(tabID), let attempt = Self.liveAttempt(of: tab) else { return false }
