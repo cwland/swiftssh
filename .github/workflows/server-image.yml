@@ -29,11 +29,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # No `-Xlinker --allow-shlib-undefined`: that flag only works around the Linux
-      # sandbox used during development. The official swift image links normally.
+      # Swift 6.0 on Linux: libswiftObservation.so references swift::threading::fatal, which
+      # isn't exported, so test binaries that use Observation (AppCore) fail to link. The flag
+      # is passed here only (never in a manifest); the server image doesn't use Observation.
       - name: Test CoreSSH
         working-directory: Packages/CoreSSH
-        run: swift test
+        run: swift test -Xlinker --allow-shlib-undefined
 
       - name: Test Server
         working-directory: Server
