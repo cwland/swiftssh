@@ -966,6 +966,33 @@ public final class SessionManager {
         if let script = plan.startupScript, !script.isEmpty {
             attempt.inputs.yield(.bytes(Array((script + "\n").utf8)))
         }
+        attachTmuxIfChosen(attempt, tab: tab)
+    }
+
+    // MARK: Attach to tmux
+
+    /// After `.ready` (every attempt: first connect, Reconnect, each automatic try), when the saved
+    /// host's effective tmux choice (host, then nearest group) is a session with a valid name: notes the
+    /// step in the connection log and types the attach line. It comes after the startup script, so the
+    /// script runs in the login shell each time and is never typed into a reattached session. Quick
+    /// connect tabs never attach.
+    private func attachTmuxIfChosen(_ attempt: SessionAttempt, tab: TerminalTab) {
+        guard let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) else { return }
+        let directory = HostDirectory(hosts: [host], groups: vault.all(HostGroup.self))
+        guard let name = directory.effectiveTmuxSession(for: host), TmuxChoice.isValidSessionName(name) else { return }
+        noteTmuxAttachProgress(session: name, tab: tab)
+        attempt.inputs.yield(.bytes(Array(Self.tmuxAttachCommand(session: name).utf8)))
+    }
+
+    /// MERGE(P1): ConnectionStep is not in this branch. At merge this appends the step to the tab's
+    /// connection log the way `.progress` events do: `noteProgress(.attachingTmux(session: name), tab: tab)`.
+    private func noteTmuxAttachProgress(session name: String, tab: TerminalTab) {}
+
+    /// Attaches to (or creates) the session, or says tmux is missing. `name` must already pass
+    /// `TmuxChoice.isValidSessionName`; it is single-quoted all the same. Ends with a carriage return
+    /// (Return), as typed.
+    static func tmuxAttachCommand(session name: String) -> String {
+        "command -v tmux >/dev/null 2>&1 && tmux new -A -s '\(name)' || echo 'tmux is not installed on this server - skipping attach.'\r"
     }
 
     private func probeOS(of hostID: UUID, over session: any TerminalSession) {

@@ -6,6 +6,27 @@ public enum CredentialMode: Sendable, Equatable {
     case identity, direct
 }
 
+/// The "Attach to tmux" setting as the Host Details row (and the group sheet) shows it.
+public enum TmuxMode: Sendable, Equatable, CaseIterable {
+    /// Default: the nearest group's choice (stored as nil).
+    case inherit
+    case on
+    case off
+}
+
+public enum TmuxLabels {
+    /// "Default (group: on, ops)", "Default (group: off)", or "Default (off)" when no group sets one.
+    public static func defaultSummary(_ inherited: InheritedTmux) -> String {
+        switch inherited.choice {
+        case .session(let name): "Default (group: on, \(name))"
+        case .off: "Default (group: off)"
+        case .inherit: "Default (off)"
+        }
+    }
+
+    public static let invalidNameMessage = "Use 1\u{2013}64 letters, digits, dots, underscores or hyphens"
+}
+
 public enum HostDetailsError: Error, Equatable, Sendable {
     case noReusedCredentials
 }
@@ -29,6 +50,10 @@ public final class HostDetailsViewModel {
     private var portInput: PortInput?
     /// True after the user picked identity mode; honored only until an identity is linked.
     private var identityModePicked = false
+    /// A tmux session name typed that is not valid (shown back with `tmuxNameError`, not saved).
+    private var invalidTmuxName: String?
+    /// The last session name used while on, so switching off and on again keeps it.
+    private var lastTmuxName: String?
 
     public init(vault: LocalVault, hostID: UUID) {
         self.vault = vault
@@ -119,6 +144,78 @@ public final class HostDetailsViewModel {
     public var themeID: String? {
         get { host?.themeID }
         set { update { $0.themeID = newValue } }
+    }
+
+    // MARK: Attach to tmux
+
+    /// `.inherit` for nil (older records) and a stored `.inherit`. Saves at once; the username and
+    /// credentials are never touched. Switching on keeps a stored name, else uses the last name used
+    /// here, else the groups' session name, else "main". An invalid typed name is dropped on any change.
+    public var tmuxMode: TmuxMode {
+        get {
+            switch host?.tmuxSession ?? .inherit {
+            case .inherit: .inherit
+            case .off: .off
+            case .session: .on
+            }
+        }
+        set {
+            guard let host else { return }
+            invalidTmuxName = nil
+            if let name = host.tmuxSession?.sessionName { lastTmuxName = name }
+            let choice: TmuxChoice?
+            switch newValue {
+            case .inherit: choice = nil
+            case .off: choice = .off
+            case .on:
+                if case .session = host.tmuxSession { return }
+                choice = .session(lastTmuxName ?? directory.inheritedTmux(for: host).choice.sessionName
+                                  ?? TmuxChoice.defaultSessionName)
+            }
+            update { $0.tmuxSession = choice }
+        }
+    }
+
+    /// The session name field (shown while `.on`): what was typed when it is invalid, else the stored
+    /// name. A valid name (whitespace trimmed) is saved at once, only while on.
+    public var tmuxNameText: String {
+        get { invalidTmuxName ?? host?.tmuxSession?.sessionName ?? "" }
+        set {
+            guard let host, case .session = host.tmuxSession else { return }
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard TmuxChoice.isValidSessionName(trimmed) else {
+                invalidTmuxName = newValue
+                return
+            }
+            invalidTmuxName = nil
+            lastTmuxName = trimmed
+            update { $0.tmuxSession = .session(trimmed) }
+        }
+    }
+
+    public var tmuxNameError: String? {
+        invalidTmuxName == nil ? nil : TmuxLabels.invalidNameMessage
+    }
+
+    /// The session attached to after login, or nil = off (what the host and its groups add up to).
+    public var effectiveTmuxSession: String? {
+        guard let host else { return nil }
+        return directory.effectiveTmuxSession(for: host)
+    }
+
+    /// What "Default" means for this host, e.g. "Default (group: on, ops)".
+    public var inheritedTmuxSummary: String {
+        guard let host else { return TmuxLabels.defaultSummary(InheritedTmux(choice: .inherit, groupName: nil)) }
+        return TmuxLabels.defaultSummary(directory.inheritedTmux(for: host))
+    }
+
+    /// The row's text: "On (main)", "Off", or `inheritedTmuxSummary`.
+    public var tmuxSummary: String {
+        switch host?.tmuxSession ?? .inherit {
+        case .session(let name): "On (\(name))"
+        case .off: "Off"
+        case .inherit: inheritedTmuxSummary
+        }
     }
 
     /// Setting a badge marks it as chosen by the user.
