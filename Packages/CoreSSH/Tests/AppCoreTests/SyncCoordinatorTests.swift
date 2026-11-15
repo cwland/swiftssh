@@ -482,6 +482,142 @@ final class SyncCoordinatorTests: XCTestCase {
         mini.coordinator.stop()
     }
 
+    // MARK: Round 2: failed joins, relaunch, markers
+
+    /// The Mac mini syncs its own vault; the server is then replaced by the MacBook's vault and the
+    /// Mac mini's merge re-join fails on page 2.
+    private func failedRejoin(_ transport: ScriptedTransport, persistence: InMemoryVaultPersistence)
+        async throws -> (mini: Mac, vaultHosts: (nas: UUID, pi: UUID)) {
+        let mini = try await mac("Mac mini", transport: transport, persistence: persistence)
+        try await saveDuplicates(in: mini.vault)
+        try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await mini.coordinator.createVault(passphrase: passphrase)
+        await transport.server.replaceVault(nil)
+        let vaultHosts = try await macBookVault(transport)
+        await mini.coordinator.syncNow()
+        await transport.failFetch(afterSuccessfulCalls: 1, with: SyncTransportError.unreachable("the connection was lost"))
+        do {
+            try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTFail("expected the join to fail on page 2")
+        } catch {}
+        mini.coordinator.stop()
+        await mini.vault.flush()
+        return (mini, vaultHosts)
+    }
+
+    func testRelaunchAfterAFailedRejoinNeverUnlocksWithTheOldKey() async throws {
+        let transport = ScriptedTransport()
+        let persistence = InMemoryVaultPersistence()
+        let (mini, vaultHosts) = try await failedRejoin(transport, persistence: persistence)
+        XCTAssertNotNil(try mini.secrets.loadVaultKey(), "the old vault key is still in the Keychain")
+        let upsertsBefore = await transport.server.upsertCallCount
+
+        let relaunched = try await mac("Mac mini", transport: transport, persistence: persistence,
+                                       secrets: mini.secrets, defaults: mini.defaults)
+        relaunched.coordinator.start()
+        XCTAssertEqual(relaunched.coordinator.phase, .needsVault(exists: true))
+        await relaunched.coordinator.syncNow()
+        try? await Task.sleep(for: .milliseconds(50))
+        let upsertsAfter = await transport.server.upsertCallCount
+        XCTAssertEqual(upsertsAfter, upsertsBefore, "nothing pushed with the old key")
+        XCTAssertEqual(relaunched.coordinator.phase, .needsVault(exists: true))
+
+        try await relaunched.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        let stored = await storedHostIDs(transport)
+        XCTAssertEqual(stored, [vaultHosts.nas, vaultHosts.pi])
+        XCTAssertEqual(relaunched.coordinator.phase, .idle)
+        relaunched.coordinator.stop()
+
+        // The key saved by the successful join unlocks the next relaunch.
+        let again = try await mac("Mac mini", transport: transport, persistence: persistence,
+                                  secrets: mini.secrets, defaults: mini.defaults)
+        again.coordinator.start()
+        XCTAssertEqual(again.coordinator.phase, .idle)
+        await eventually("synced") { again.coordinator.lastReport != nil }
+        again.coordinator.stop()
+    }
+
+    func testFailedJoinFromLockedStaysLocked() async throws {
+        let transport = ScriptedTransport()
+        let a = try await mac("mbp", transport: transport)
+        try await a.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await a.coordinator.createVault(passphrase: passphrase)
+        a.coordinator.stop()
+        let b = try await mac("mini", transport: transport)
+        try await b.coordinator.connect(serverURL: url, apiKey: apiKey)
+        let relaunched = try await mac("mini", transport: transport, secrets: b.secrets, defaults: b.defaults)
+        relaunched.coordinator.start()
+        XCTAssertEqual(relaunched.coordinator.phase, .locked)
+        do {
+            try await relaunched.coordinator.joinVault(passphrase: "wrong passphrase!", mode: .merge)
+            XCTFail("expected wrongPassphrase")
+        } catch {
+            XCTAssertEqual(error, .wrongPassphrase)
+        }
+        XCTAssertEqual(relaunched.coordinator.phase, .locked)
+        relaunched.coordinator.stop()
+    }
+
+    func testPhaseSwapsKeepTheErrorInLastErrorUntilTheNextSuccess() async throws {
+        let transport = ScriptedTransport()
+        let a = try await mac("mbp", transport: transport)
+        try await a.coordinator.connect(serverURL: url, apiKey: apiKey)
+        let b = try await mac("mini", transport: transport)
+        try await b.coordinator.connect(serverURL: url, apiKey: apiKey)
+        try await b.coordinator.createVault(passphrase: passphrase)
+        b.coordinator.stop()
+        do { try await a.coordinator.createVault(passphrase: passphrase) } catch {}
+        XCTAssertEqual(a.coordinator.phase, .needsVault(exists: true))
+        XCTAssertEqual(a.coordinator.lastError, .vaultAlreadyExists)
+        try await a.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        XCTAssertNil(a.coordinator.lastError)
+        a.coordinator.stop()
+
+        let c = try await mac("third", transport: transport)
+        try await c.coordinator.connect(serverURL: url, apiKey: apiKey)
+        await transport.server.replaceVault(nil)
+        do { try await c.coordinator.joinVault(passphrase: passphrase, mode: .merge) } catch {}
+        XCTAssertEqual(c.coordinator.phase, .needsVault(exists: false))
+        XCTAssertEqual(c.coordinator.lastError, .noVault)
+        try await c.coordinator.createVault(passphrase: passphrase)
+        XCTAssertNil(c.coordinator.lastError)
+        c.coordinator.stop()
+    }
+
+    func testRetriedMergeJoinDoesNotReuploadAlreadyPulledVaultRecords() async throws {
+        let transport = ScriptedTransport()
+        _ = try await macBookVault(transport)
+        let seqsBefore = Dictionary(uniqueKeysWithValues: await transport.server.storedRecords.map { ($0.id, $0.seq) })
+        let mini = try await mac("Mac mini", transport: transport)
+        try await mini.vault.save(Host(label: "router", address: "router.lan"))
+        try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+        await transport.failFetch(afterSuccessfulCalls: 1, with: SyncTransportError.unreachable("the connection was lost"))
+        do { try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge) } catch {}
+        try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+        for record in await transport.server.storedRecords where seqsBefore[record.id] != nil {
+            XCTAssertEqual(record.seq, seqsBefore[record.id], "vault record \(record.id) re-uploaded")
+        }
+        XCTAssertEqual(mini.coordinator.lastReport?.pushed, 1, "only the Mac mini's own host")
+        mini.coordinator.stop()
+    }
+
+    func testCreateVaultAndConnectClearAStaleMergeJoinMarker() async throws {
+        let stale = VaultFileContents(deviceID: "mbp", mergeJoinLocalIDs: [UUID()])
+        let persistence = InMemoryVaultPersistence(contents: stale)
+        let m = try await mac("mbp", transport: ScriptedTransport(), persistence: persistence)
+        try await m.coordinator.connect(serverURL: url, apiKey: apiKey)
+        await m.vault.flush()
+        var marker = await persistence.contents?.mergeJoinLocalIDs
+        XCTAssertNil(marker, "connect clears it")
+
+        _ = try await m.vault.syncBeginMergeJoin()
+        try await m.coordinator.createVault(passphrase: passphrase)
+        await m.vault.flush()
+        marker = await persistence.contents?.mergeJoinLocalIDs
+        XCTAssertNil(marker, "createVault clears it")
+        m.coordinator.stop()
+    }
+
     // MARK: start / stop
 
     func testStartWithoutConfigurationIsNotConfigured() async throws {

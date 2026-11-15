@@ -278,17 +278,31 @@ extension LocalVault {
         return ids
     }
 
+    /// Forgets a pending merge join (a new vault was created or another server connected); the
+    /// write is queued, `flush()` waits for it.
+    func syncClearMergeJoin() {
+        guard mergeJoinLocalIDs != nil else { return }
+        mergeJoinLocalIDs = nil
+        enqueuePersist()
+    }
+
     /// Applies a join de-duplication plan: drops `plan.removedIDs` without tombstones and stores
     /// `plan.updated` as local, dirty edits (new `updatedAt`). Doesn't call `localChangeHandler`.
     /// Ends the pending merge join (clears the `syncBeginMergeJoin` marker) in the same write.
-    func applyJoinPlan(_ plan: JoinDeduplicator.Plan) async throws {
-        guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty else {
+    ///
+    /// Records outside `localIDs` that came from other devices are vault records pulled by this or
+    /// an earlier, interrupted attempt; the join's `markAllDirty` flagged them, so they are marked
+    /// clean again here and not re-uploaded. (Records this Mac wrote stay dirty.)
+    func applyJoinPlan(_ plan: JoinDeduplicator.Plan, localIDs: Set<UUID> = []) async throws {
+        let pulled = dirty.filter { !localIDs.contains($0) && records[$0].map { $0.deviceID != deviceID } == true }
+        guard !plan.removedIDs.isEmpty || !plan.updated.isEmpty || !pulled.isEmpty else {
             if mergeJoinLocalIDs != nil {
                 mergeJoinLocalIDs = nil
                 try await enqueuePersist().value
             }
             return
         }
+        dirty.subtract(pulled)
         for id in plan.removedIDs {
             records[id] = nil
             dirty.remove(id)

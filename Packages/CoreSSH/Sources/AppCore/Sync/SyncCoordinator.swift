@@ -34,6 +34,8 @@ public final class SyncCoordinator {
 
     static let serverURLKey = "sync.serverURL"
     static let lastSyncedAtKey = "sync.lastSyncedAt"
+    /// The vault id the saved vault key belongs to; a key is only used for that vault.
+    static let vaultKeyVaultIDKey = "sync.vaultKeyVaultID"
     static let firstBackoff: Duration = .seconds(5)
     static let maxBackoff: Duration = .seconds(300)
 
@@ -149,6 +151,7 @@ public final class SyncCoordinator {
         defaults.set(serverURL.absoluteString, forKey: Self.serverURLKey)
         self.serverURL = serverURL
         makeEngine(serverURL: serverURL, apiKey: apiKey)
+        vault.syncClearMergeJoin()
         secretsReadFailed = false
         lastError = nil
         phase = .needsVault(exists: exists)
@@ -169,9 +172,15 @@ public final class SyncCoordinator {
             await engine.lock()
             unlocked = false
             pendingUnlockKey = nil
-            if setupError == .vaultAlreadyExists { phase = .needsVault(exists: true) }
+            if setupError == .vaultAlreadyExists {
+                // The view switches to the join form; keep the reason visible there.
+                lastError = setupError
+                phase = .needsVault(exists: true)
+            }
             throw setupError
         }
+        vault.syncClearMergeJoin()
+        lastError = nil
         await beginSyncing()
     }
 
@@ -182,9 +191,11 @@ public final class SyncCoordinator {
     /// A merge join remembers (with the vault) which records were local before it started, so a
     /// retry after a failure or a relaunch still de-duplicates against everything pulled. If the
     /// join fails, nothing syncs with the new key: the engine is locked again and the phase is
-    /// `.needsVault(exists: true)` (`exists: false` when the server has no vault).
+    /// `.needsVault(exists: true)` (it stays `.locked` when it was), or `.needsVault(exists: false)`
+    /// with `lastError = .noVault` when the server has no vault.
     public func joinVault(passphrase: String, mode: JoinMode) async throws(SyncSetupError) {
         let engine = try requireEngine()
+        let wasLocked = phase == .locked
         stopLoop()
         unlocked = false
         pendingUnlockKey = nil
@@ -197,7 +208,7 @@ public final class SyncCoordinator {
                 let all = vault.allRecords
                 let plan = JoinDeduplicator.plan(local: all.filter { localIDs.contains($0.id) },
                                                  vault: all.filter { !localIDs.contains($0.id) })
-                try await vault.applyJoinPlan(plan)
+                try await vault.applyJoinPlan(plan, localIDs: localIDs)
             }
             try saveVaultKey(key)
         } catch {
@@ -205,9 +216,16 @@ public final class SyncCoordinator {
             await engine.lock()
             unlocked = false
             pendingUnlockKey = nil
-            phase = .needsVault(exists: setupError != .noVault)
+            if setupError == .noVault {
+                // The view switches to the create form; keep the reason visible there.
+                lastError = setupError
+                phase = .needsVault(exists: false)
+            } else if !wasLocked {
+                phase = .needsVault(exists: true)
+            }
             throw setupError
         }
+        lastError = nil
         await beginSyncing()
     }
 
@@ -220,7 +238,7 @@ public final class SyncCoordinator {
         let exists = try await testConnection(serverURL: serverURL, apiKey: key).get()
         let vaultKey: VaultKey?
         do {
-            vaultKey = try secrets.loadVaultKey()
+            vaultKey = try loadVaultKeyForCurrentVault()
         } catch {
             throw .keychainUnreadable
         }
@@ -260,6 +278,9 @@ public final class SyncCoordinator {
     /// one → `.locked` (or `.needsVault(exists: false)` once the server says it has no vault).
     /// Idempotent: a second call without `stop()` does nothing; after `stop()` it starts again.
     ///
+    /// A saved vault key is used only for the vault it was saved with (`sync.vaultKeyVaultID`);
+    /// otherwise the phase is `.needsVault(exists: true)` and nothing syncs until a join succeeds.
+    ///
     /// If the Keychain can't be read, the phase is `.failed(SyncSetupError.keychainUnreadable.message)`
     /// (not "not configured"); `start()` or `syncNow()` tries again.
     public func start() {
@@ -290,13 +311,19 @@ public final class SyncCoordinator {
             startLoop(syncFirst: syncFirst)
             return
         }
-        let key: VaultKey?
+        let savedKey: VaultKey?
         do {
-            key = try secrets.loadVaultKey()
+            savedKey = try secrets.loadVaultKey()
         } catch {
             return secretsUnreadable()
         }
-        guard let key else {
+        if savedKey != nil, !savedKeyBelongsToCurrentVault {
+            // A key for another vault (a join was interrupted or failed after the vault id
+            // changed): never unlock with it; ask for the passphrase again.
+            phase = .needsVault(exists: true)
+            return
+        }
+        guard let key = savedKey else {
             phase = .locked
             checkForMissingVault(serverURL: serverURL, apiKey: apiKey)
             return
@@ -352,6 +379,7 @@ public final class SyncCoordinator {
         }
         defaults.removeObject(forKey: Self.serverURLKey)
         defaults.removeObject(forKey: Self.lastSyncedAtKey)
+        defaults.removeObject(forKey: Self.vaultKeyVaultIDKey)
         serverURL = nil
         engine = nil
         transport = nil
@@ -392,14 +420,32 @@ public final class SyncCoordinator {
         return engine
     }
 
+    /// Saves the key and records which vault it belongs to (the vault id create/join just stored).
     private func saveVaultKey(_ key: VaultKey) throws(SyncSetupError) {
+        defaults.removeObject(forKey: Self.vaultKeyVaultIDKey)
         do {
             try secrets.saveVaultKey(key)
         } catch {
             throw .other("The vault key couldn't be saved in the Keychain.")
         }
+        if let vaultID = vault.currentSyncState.vaultID {
+            defaults.set(vaultID.uuidString, forKey: Self.vaultKeyVaultIDKey)
+        }
         unlocked = true
         pendingUnlockKey = nil
+    }
+
+    /// True when the saved vault key was saved for the vault this Mac's sync state names.
+    private var savedKeyBelongsToCurrentVault: Bool {
+        guard let vaultID = vault.currentSyncState.vaultID,
+              let bound = defaults.string(forKey: Self.vaultKeyVaultIDKey) else { return false }
+        return UUID(uuidString: bound) == vaultID
+    }
+
+    /// The saved vault key if it belongs to the current vault, else nil. Throws on a Keychain error.
+    private func loadVaultKeyForCurrentVault() throws -> VaultKey? {
+        guard let key = try secrets.loadVaultKey(), savedKeyBelongsToCurrentVault else { return nil }
+        return key
     }
 
     /// After a create or join: first sync, then the loop.
