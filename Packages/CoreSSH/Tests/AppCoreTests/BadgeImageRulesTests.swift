@@ -120,7 +120,9 @@ final class BadgeImageRulesTests: XCTestCase {
     }
 
     func testSettingsPanes() {
-        XCTAssertEqual(SettingsPane.allCases, [.connection, .sync, .onePassword, .osIcons])
+        XCTAssertEqual(SettingsPane.allCases, [.connection, .terminal, .sync, .onePassword, .osIcons])
+        XCTAssertEqual(SettingsPane.terminal.title, "Terminal")
+        XCTAssertEqual(SettingsPane.terminal.systemImage, "terminal")
         XCTAssertEqual(SettingsPane.sync.title, "Sync")
         XCTAssertEqual(SettingsPane.sync.systemImage, "arrow.triangle.2.circlepath.icloud")
         XCTAssertEqual(SettingsPane.onePassword.title, "1Password")
