@@ -53,6 +53,7 @@ private struct ReadyArea: View {
         Group {
             if let tab = environment.selectedTab {
                 TerminalTabView(tab: tab, sessions: sessions, store: environment.terminalViews,
+                                vault: vault, terminalSettings: environment.terminalSettings,
                                 closeTab: { environment.closeTab(tabID: tab.id) })
                     .id(tab.id)
             } else {
