@@ -6,8 +6,15 @@ struct OnePasswordErrorDetails: View {
     let error: OnePasswordError
     @State private var isExpanded = false
 
+    /// `op`'s text, unless it is empty or already shown in the message above (notFound / failed).
+    private var visibleDetails: String? {
+        guard let details = error.details?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !details.isEmpty, !error.message.contains(details) else { return nil }
+        return error.details
+    }
+
     var body: some View {
-        if let details = error.details, !details.isEmpty {
+        if let details = visibleDetails {
             DisclosureGroup("Details", isExpanded: $isExpanded) {
                 Text(details)
                     .font(.system(size: 11, design: .monospaced))
@@ -85,8 +92,8 @@ struct KeyInstallCommandButton: View {
     private var command: String {
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
         let host = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        return OnePasswordLinks.keyInstallCommand(port: String(port),
-                                                  user: (user?.isEmpty ?? true) ? nil : user,
-                                                  host: host.isEmpty ? "HOST" : host)
+        return KeyInstallCommand.make(port: port,
+                                      user: (user?.isEmpty ?? true) ? nil : user,
+                                      host: host.isEmpty ? nil : host)
     }
 }

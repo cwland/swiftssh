@@ -28,14 +28,6 @@ enum OnePasswordLinks {
     /// The agent socket as the shell sees it, for the key-install command (Terminal runs it, not the app).
     static let agentSocketShellPath = "$HOME/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-    /// Puts the public keys 1Password's agent offers into `~/.ssh/authorized_keys` on a server.
-    /// With no arguments it is the template with PORT, USER and HOST to replace by hand.
-    static func keyInstallCommand(port: String = "PORT", user: String? = "USER", host: String = "HOST") -> String {
-        let target = user.map { "\($0)@\(host)" } ?? host
-        return "SSH_AUTH_SOCK=\"\(agentSocketShellPath)\" ssh-add -L | ssh -p \(shellWord(port)) \(shellWord(target)) "
-            + "'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'"
-    }
-
     /// Creates 1Password's SSH agent config file (which picks the vaults the agent offers) and opens it
     /// in TextEdit. Shown for the user to run in Terminal.
     static let agentConfigCommand = "mkdir -p ~/.config/1Password/ssh && touch ~/.config/1Password/ssh/agent.toml && open -e ~/.config/1Password/ssh/agent.toml"
@@ -48,11 +40,4 @@ enum OnePasswordLinks {
     [[ssh-keys]]
     vault = "Your vault name"
     """
-
-    /// Bare when it holds only safe characters, else single-quoted for zsh.
-    static func shellWord(_ text: String) -> String {
-        let safe = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@%+:,./_-")
-        if !text.isEmpty, text.unicodeScalars.allSatisfy(safe.contains) { return text }
-        return "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
 }

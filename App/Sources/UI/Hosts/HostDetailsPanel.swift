@@ -16,7 +16,7 @@ struct HostDetailsPanel: View {
     var body: some View {
         ZStack {
             if let details {
-                HostDetailsContent(details: details, onClose: onClose, onConnect: onConnect)
+                HostDetailsContent(details: details, vault: vault, onClose: onClose, onConnect: onConnect)
             } else {
                 Theme.sidebarBackground
                     .frame(width: Theme.detailsPanelWidth)
@@ -33,6 +33,7 @@ struct HostDetailsPanel: View {
 
 private struct HostDetailsContent: View {
     @Bindable var details: HostDetailsViewModel
+    let vault: LocalVault
     let onClose: () -> Void
     let onConnect: () -> Void
 
@@ -305,15 +306,19 @@ private struct HostDetailsContent: View {
                     .foregroundStyle(.secondary)
             }
         }
-        if let identity = selectedIdentity, identity.agentKey != nil {
-            KeyInstallCommandButton(port: details.effectivePort, username: identity.username,
+        if let resolved = effectiveCredentials, resolved.agentKey != nil {
+            KeyInstallCommandButton(port: details.effectivePort, username: resolved.username,
                                     address: details.address)
         }
     }
 
-    private var selectedIdentity: Identity? {
-        guard let id = details.identityID else { return nil }
-        return details.availableIdentities.first { $0.id == id }
+    /// What the app will actually log in with for this host (explicit identity, or the group default),
+    /// through the same `CredentialResolution` the connection uses.
+    private var effectiveCredentials: CredentialResolution? {
+        _ = vault.revision
+        guard let host = vault.get(SavedHost.self, id: details.hostID) else { return nil }
+        let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
+        return CredentialResolution.resolve(host: host, directory: directory, vault: vault)
     }
 
     @ViewBuilder
