@@ -20,6 +20,10 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
     case noImportedKeys(hostLabel: String)
     /// iPhone/iPad: the host signs in with an RSA key, which the built-in engine can't use.
     case rsaUnsupported(hostLabel: String)
+    /// iPhone/iPad: the host's key has its passphrase in 1Password, which the app can't read there.
+    case passphraseInOnePassword(hostLabel: String)
+    /// iPhone/iPad: reading the imported keys needs Face ID / the passcode, which wasn't given.
+    case importedKeysLocked(hostLabel: String)
 
     /// Title for the alert that shows this error.
     public var alertTitle: String { "Can't connect" }
@@ -38,6 +42,10 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
             "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} signs in with an SSH key from 1Password. Import that key on this device first: export it from 1Password, then use Import Key in Keys."
         case .rsaUnsupported:
             "RSA keys aren't supported on iPhone/iPad yet; use an Ed25519 key."
+        case .passphraseInOnePassword(let label):
+            "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} signs in with a key whose passphrase is in 1Password, which SwiftSSH can\u{2019}t read on iPhone/iPad. Connect to this host from your Mac."
+        case .importedKeysLocked(let label):
+            "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} signs in with a key imported on this device, and SwiftSSH needs Face ID or your passcode to use it. Tap Start Over to try again."
         }
     }
 
@@ -69,6 +77,9 @@ public enum ConnectionPlanner {
     ///   only): the one matching the pinned public key first, then the others in order, at most
     ///   `SSHKeyCandidate.maxAttempts`; `agentKey` stays nil. None usable → `.noImportedKeys`.
     /// - an RSA private key → `.rsaUnsupported`.
+    /// - a password that is a 1Password reference → `.none` (the app asks for it; iOS AutoFill can
+    ///   fill it from 1Password): there is no `op` CLI to read it.
+    /// - a key whose passphrase is a 1Password reference → `.passphraseInOnePassword`.
     @MainActor
     public static func plan(hostID: UUID, vault: LocalVault, platform: ConnectionPlatform,
                             importedKeys: [SSHKeyCandidate]) throws -> ConnectionPlan {
@@ -129,8 +140,11 @@ public enum ConnectionPlanner {
             credential = .privateKeys(Array(ordered(usable, pinned: agentKey.publicKey).prefix(SSHKeyCandidate.maxAttempts)))
         } else if let key = resolved.key {
             guard key.keyType != .rsa else { throw ConnectionPlanError.rsaUnsupported(hostLabel: host.label) }
+            if let passphrase = key.passphrase, SecretReference.isReference(passphrase) {
+                throw ConnectionPlanError.passphraseInOnePassword(hostLabel: host.label)
+            }
             credential = .privateKey(type: key.keyType, pem: key.privateKey, passphrase: key.passphrase)
-        } else if let password = resolved.password {
+        } else if let password = resolved.password, !SecretReference.isReference(password) {
             credential = .password(password)
         } else {
             credential = .none

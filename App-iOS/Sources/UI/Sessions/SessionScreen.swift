@@ -1,26 +1,173 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SSHCore
 import SwiftSSHUI
 
-/// A session, full screen. (The terminal arrives with the sessions work; for now its state.)
+/// A session, full screen: a header (iPhone: back to Hosts, the session switcher pill and close;
+/// iPad: the session's name), then the terminal with the key bar above the keyboard. The connection
+/// screen covers the terminal while connecting and after a failed first attempt; a dropped live
+/// session keeps its scrollback under a banner. Host key and password questions come as sheets.
+/// The terminal follows the host's (or its groups') theme and this device's text size.
 struct SessionScreen: View {
     let tab: TerminalTab
     let sessions: SessionManager
     let vault: LocalVault
+    @Environment(IOSEnvironment.self) private var environment
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        VStack(spacing: 16) {
-            SessionStatusDot(tab: tab)
-            Text(tab.displayTitle)
-                .font(.title2.weight(.semibold))
-            HStack {
-                Button("Hosts") { sessions.selectedTabID = nil }
-                Button("Close", role: .destructive) { sessions.close(tabID: tab.id) }
+        let appearance = resolvedAppearance
+        VStack(spacing: 0) {
+            header
+            if let banner = TerminalTabPresentation.banner(state: tab.state, autoReconnect: tab.autoReconnect,
+                                                           hadLiveSession: tab.hadLiveSession) {
+                DisconnectedBanner(message: banner, suggestedAction: tab.suggestedAction,
+                                   reconnect: reconnect, importKey: importKey)
             }
-            .buttonStyle(.bordered)
+            TerminalContainerView(tab: tab, sessions: sessions, store: environment.terminalViews,
+                                  appearance: appearance,
+                                  changeFontSize: { environment.terminalSettings.fontSize = $0 })
+                .padding(.leading, 4)
+                .background(appearance.theme.background.swiftUIColor)
+                .overlay {
+                    if showsConnectionScreen {
+                        ConnectionScreen(tab: tab, vault: vault, startOver: reconnect,
+                                         close: { sessions.close(tabID: tab.id) }, importKey: importKey)
+                            .transition(.opacity)
+                    }
+                }
+                .animation(.easeOut(duration: 0.3), value: showsConnectionScreen)
+                .overlay(alignment: .bottom) {
+                    if case .waiting(_, let deadline, _) = tab.autoReconnect {
+                        ReconnectCountdown(deadline: deadline,
+                                           reconnectNow: { sessions.reconnectWaitingNow(inWindow: nil) },
+                                           stop: { sessions.stopAutoReconnect(tabID: tab.id) })
+                            .padding(12)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.contentBackground)
+        .sheet(item: promptBinding) { prompt in
+            promptSheet(prompt)
+                .interactiveDismissDisabled()
+        }
+    }
+
+    // MARK: Header
+
+    private var header: some View {
+        HStack(spacing: 12) {
+            if sizeClass != .regular {
+                Button {
+                    sessions.selectedTabID = nil
+                } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.system(size: 17, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                }
+                .accessibilityLabel("Hosts")
+                Spacer(minLength: 0)
+                Menu {
+                    SessionMenuItems(sessions: sessions)
+                } label: {
+                    HStack(spacing: 6) {
+                        SessionStatusDot(tab: tab)
+                        Text(tab.displayTitle)
+                            .font(.system(size: 15, weight: .semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Theme.tabBackground))
+                }
+                .accessibilityLabel("Switch session")
+                Spacer(minLength: 0)
+            } else {
+                SessionStatusDot(tab: tab)
+                Text(tab.displayTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            trailingButtons
+        }
+        .foregroundStyle(Theme.topBarForeground)
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(Theme.topBarBackground)
+    }
+
+    @ViewBuilder
+    private var trailingButtons: some View {
+        if sizeClass != .regular {
+            Button {
+                sessions.close(tabID: tab.id)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .frame(width: 32, height: 32)
+            }
+            .accessibilityLabel("Close session")
+        }
+    }
+
+    // MARK: State
+
+    private var showsConnectionScreen: Bool {
+        TerminalTabPresentation.showsConnectionScreen(state: tab.state, autoReconnect: tab.autoReconnect,
+                                                      hadLiveSession: tab.hadLiveSession)
+    }
+
+    private func reconnect() {
+        Task { await environment.reconnect(tabID: tab.id) }
+    }
+
+    private func importKey() {
+        sessions.selectedTabID = nil
+        environment.navigation.show(.keys)
+    }
+
+    /// The host's theme, then its groups', then this device's default, then Automatic (by the colour
+    /// scheme); and this device's text size. Reading the vault, the settings and the colour scheme
+    /// here re-applies them live.
+    private var resolvedAppearance: TerminalAppearance {
+        _ = vault.revision
+        let settings = environment.terminalSettings
+        let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
+        let theme = TerminalThemeResolver.theme(forHostID: tab.savedHostID,
+                                                hosts: host.map { [$0] } ?? [],
+                                                groups: host == nil ? [] : vault.all(HostGroup.self),
+                                                defaultThemeID: settings.defaultThemeID,
+                                                prefersDark: colorScheme == .dark)
+        return settings.appearance(theme: theme)
+    }
+
+    // MARK: Prompts
+
+    /// The sheet follows the session's state; it closes when the state moves on. Only the sheet's
+    /// own buttons answer.
+    private var promptBinding: Binding<SessionPrompt?> {
+        Binding(get: { SessionPrompt(state: tab.state) }, set: { _ in })
+    }
+
+    @ViewBuilder
+    private func promptSheet(_ prompt: SessionPrompt) -> some View {
+        switch prompt {
+        case .hostKey(let candidate, let check):
+            HostKeyPromptSheet(candidate: candidate, check: check) { decision in
+                sessions.answerHostKey(tabID: tab.id, decision)
+            }
+        case .password(let text):
+            PasswordPromptSheet(prompt: text,
+                                info: CompanionConnect.passwordPrompt(hostID: tab.savedHostID, vault: vault)) { password in
+                sessions.providePassword(tabID: tab.id, password, save: false)
+            } cancel: {
+                sessions.cancelPasswordPrompt(tabID: tab.id)
+            }
+        }
     }
 }

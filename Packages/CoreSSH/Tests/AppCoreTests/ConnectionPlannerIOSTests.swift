@@ -131,4 +131,34 @@ final class ConnectionPlannerIOSTests: XCTestCase {
             XCTAssertFalse(text.contains("PUBLICBLOB"), text)
         }
     }
+    // MARK: 1Password references (no op CLI on iOS)
+
+    func testOnePasswordPasswordIsAskedForOnIOS() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "Web", address: "h", username: "root",
+                                                  password: "op://Private/Web/password"))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault, platform: .ios, importedKeys: [])
+        guard case .none = plan.credential else { return XCTFail("\(plan.credential)") }
+        let mac = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        guard case .password("op://Private/Web/password") = mac.credential else { return XCTFail("\(mac.credential)") }
+    }
+
+    func testKeyWithAOnePasswordPassphraseThrowsOnIOS() async throws {
+        let vault = try await makeVault()
+        let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "PEM-ed",
+                                              passphrase: " op://Private/Key/passphrase"))
+        let host = try await vault.save(SavedHost(label: "Box", address: "h", username: "root", sshKeyID: key.id))
+        XCTAssertThrowsError(try ConnectionPlanner.plan(hostID: host.id, vault: vault, platform: .ios, importedKeys: [])) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .passphraseInOnePassword(hostLabel: "Box"))
+        }
+        let message = ConnectionPlanError.passphraseInOnePassword(hostLabel: "Box").errorDescription ?? ""
+        XCTAssertTrue(message.contains("Box"), message)
+        XCTAssertFalse(message.contains("op://"), message)
+    }
+
+    func testLockedKeysErrorExplainsWhatToDo() async {
+        let message = ConnectionPlanError.importedKeysLocked(hostLabel: "Pi").errorDescription ?? ""
+        XCTAssertTrue(message.contains("Face ID"), message)
+        XCTAssertTrue(message.contains("Start Over"), message)
+    }
 }

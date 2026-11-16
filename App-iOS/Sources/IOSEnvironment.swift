@@ -39,6 +39,8 @@ final class IOSEnvironment {
     let terminalSettings = TerminalSettings()
     /// Why the last host couldn't be opened; the root view shows it.
     var connectProblem: ConnectProblem?
+    /// One terminal view per open session, kept while it is open.
+    @ObservationIgnored let terminalViews = TerminalViewStore()
 
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
@@ -126,27 +128,53 @@ final class IOSEnvironment {
     }
 
     /// Plans without reading any private key first: only a host that signs in with a key from
-    /// 1Password needs the imported keys, and reading them asks for Face ID.
+    /// 1Password needs the imported keys. Reading them never prompts (`KeychainImportedKeyStorage`):
+    /// without a recent Face ID / passcode check it fails, and the plan says the keys are locked
+    /// (`connect` and `reconnect` ask first, off the main thread's way).
     private static func plan(hostID: UUID, vault: LocalVault, library: ImportedKeyLibrary) throws -> ConnectionPlan {
         do {
             return try ConnectionPlanner.plan(hostID: hostID, vault: vault, platform: .ios, importedKeys: [])
-        } catch ConnectionPlanError.noImportedKeys(_) where !library.keys.isEmpty {
-            return try ConnectionPlanner.plan(hostID: hostID, vault: vault, platform: .ios,
-                                              importedKeys: library.candidates())
+        } catch ConnectionPlanError.noImportedKeys(let label) where !library.keys.isEmpty {
+            let candidates: [SSHKeyCandidate]
+            do {
+                candidates = try library.candidates()
+            } catch let error where KeychainImportedKeyStorage.isLockedError(error) {
+                throw ConnectionPlanError.importedKeysLocked(hostLabel: label)
+            }
+            return try ConnectionPlanner.plan(hostID: hostID, vault: vault, platform: .ios, importedKeys: candidates)
         }
     }
 
     // MARK: Connecting
 
-    /// Opens a session for the saved host and shows it. When the host can't be planned (no
-    /// address, a key that isn't imported, an RSA key…) no session opens and `connectProblem` says why.
+    /// Opens a session for the saved host and shows it. A host that signs in with an imported key
+    /// asks for Face ID / the passcode first (cancelling opens nothing); password hosts never do.
+    /// When the host can't be planned (no address, a key that isn't imported, an RSA key…) no session
+    /// opens and `connectProblem` says why.
     func connect(hostID: UUID) async {
         guard let sessions else { return }
+        guard await unlockKeysIfNeeded(hostID: hostID) else { return }
         do {
             try sessions.open(hostID: hostID)
         } catch {
             connectProblem = ConnectProblem(error)
         }
+    }
+
+    /// Start Over / Reconnect: the same Face ID check first, for a host that needs it.
+    func reconnect(tabID: UUID) async {
+        guard let sessions, let tab = sessions.tabs.first(where: { $0.id == tabID }) else { return }
+        if let hostID = tab.savedHostID {
+            guard await unlockKeysIfNeeded(hostID: hostID) else { return }
+        }
+        sessions.reconnect(tabID: tabID)
+    }
+
+    /// True when the host needs no imported keys, there are none to read, or the check passed.
+    private func unlockKeysIfNeeded(hostID: UUID) async -> Bool {
+        guard let vault, !importedKeys.keys.isEmpty,
+              CompanionConnect.needsImportedKeys(hostID: hostID, vault: vault) else { return true }
+        return await keyStorage.authorize(reason: "Use your imported SSH key")
     }
 
     // MARK: Lifecycle

@@ -23,6 +23,10 @@ struct RootView: View {
                 }
             }
         }
+        // Let go of the terminal views of sessions that were closed.
+        .onChange(of: environment.sessions?.tabs.map(\.id) ?? []) { _, ids in
+            environment.terminalViews.retain(only: Set(ids))
+        }
         .sheet(isPresented: $navigation.isQuickConnectShown) {
             QuickConnectSheet()
         }

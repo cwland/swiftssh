@@ -10,7 +10,8 @@ import AppCore
 /// more item without that check, so listing never prompts.
 ///
 /// One successful check covers reading keys for `reuseDuration`: call `authorize(reason:)` before a
-/// connection so the reads that follow don't ask again (and don't block the main thread on a prompt).
+/// connection. Reads never prompt: without a recent check they fail with `errSecInteractionNotAllowed`
+/// (`isLockedError`), so nothing blocks the main thread behind the system sheet.
 final class KeychainImportedKeyStorage: ImportedKeyStorage, @unchecked Sendable {
     static let defaultService = "com.cwland.SwiftSSH.mobile.importedKeys"
     static let indexAccount = "index"
@@ -20,7 +21,7 @@ final class KeychainImportedKeyStorage: ImportedKeyStorage, @unchecked Sendable 
     let service: String
     /// Guards `context` and `authorizedAt`.
     private let lock = NSLock()
-    private var context = LAContext()
+    private var context = KeychainImportedKeyStorage.nonInteractiveContext()
     private var authorizedAt: Date?
 
     init(service: String = KeychainImportedKeyStorage.defaultService) {
@@ -71,32 +72,51 @@ final class KeychainImportedKeyStorage: ImportedKeyStorage, @unchecked Sendable 
     // MARK: Authorization
 
     /// Asks for Face ID / Touch ID / the passcode once, so the key reads of the next `reuseDuration`
-    /// don't. Returns false when the user cancelled or the check failed.
+    /// don't. Returns false when the user cancelled or the check failed. Call it before a connection
+    /// that reads keys: the reads themselves never show a prompt (they fail instead), so planning on
+    /// the main actor can't block behind the system sheet.
     func authorize(reason: String) async -> Bool {
-        let context = currentContext()
         if lock.withLock({ authorizedAt.map { Date().timeIntervalSince($0) < Self.reuseDuration } ?? false }) {
             return true
         }
+        let fresh = LAContext()
+        fresh.localizedReason = reason
         do {
-            let ok = try await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)
-            if ok { lock.withLock { authorizedAt = Date() } }
-            return ok
+            guard try await fresh.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) else { return false }
         } catch {
             return false
         }
+        fresh.interactionNotAllowed = true
+        lock.withLock {
+            context.invalidate()
+            context = fresh
+            authorizedAt = Date()
+        }
+        return true
     }
 
-    /// The shared context; a new one once the last check is older than `reuseDuration`.
+    /// Whether a check is recent enough that reading keys won't fail for want of one.
+    var isAuthorized: Bool {
+        lock.withLock { authorizedAt.map { Date().timeIntervalSince($0) < Self.reuseDuration } ?? false }
+    }
+
+    /// The shared context (never interactive); a new, unauthorized one once the last check is older
+    /// than `reuseDuration`.
     private func currentContext() -> LAContext {
         lock.withLock {
             if let authorizedAt, Date().timeIntervalSince(authorizedAt) >= Self.reuseDuration {
                 context.invalidate()
-                context = LAContext()
+                context = Self.nonInteractiveContext()
                 self.authorizedAt = nil
             }
-            context.localizedReason = "Use your imported SSH key"
             return context
         }
+    }
+
+    private static func nonInteractiveContext() -> LAContext {
+        let context = LAContext()
+        context.interactionNotAllowed = true
+        return context
     }
 
     // MARK: Keychain
@@ -156,6 +176,18 @@ final class KeychainImportedKeyStorage: ImportedKeyStorage, @unchecked Sendable 
         default:
             throw KeychainError.status(status)
         }
+    }
+
+    /// Whether a failed read only means no recent Face ID / passcode check (or it was cancelled).
+    static func isLockedError(_ error: any Error) -> Bool {
+        guard case KeychainError.status(let status) = error else { return false }
+        return status == errSecInteractionNotAllowed || status == errSecUserCanceled || status == errSecAuthFailed
+    }
+
+    /// Deletes every imported key and the list (Settings → Leave sync).
+    func deleteAll() throws {
+        for info in try list() { try deleteItem(account: info.id.uuidString) }
+        try deleteItem(account: Self.indexAccount)
     }
 
     private func deleteItem(account: String) throws {
