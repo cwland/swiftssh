@@ -25,6 +25,16 @@ public enum OnePasswordPaths {
         "~/.1password/agent.sock",
     ]
 
+    /// 1Password's group container: the agent socket and the app's settings live here, and macOS 27
+    /// guards it ("Data shared by 1Password" in Privacy & Security → Files & Folders).
+    public static let groupContainer = "~/Library/Group Containers/2BUA8C4S2C.com.1password"
+
+    /// The file `op` reads first to find the desktop app (research: "settings.json: operation not
+    /// permitted" when macOS blocks the container). Only opened to see whether access is allowed;
+    /// never read.
+    public static let groupContainerProbeFile =
+        groupContainer + "/Library/Application Support/1Password/Data/settings/settings.json"
+
     /// Homebrew on Apple silicon, then Homebrew on Intel / the official installer.
     public static let cliCandidates = ["/opt/homebrew/bin/op", "/usr/local/bin/op"]
 
@@ -45,6 +55,23 @@ public enum OnePasswordPaths {
     public static func probe(_ path: String) -> Probe {
         var info = stat()
         return stat(path, &info) == 0 ? .exists : Probe(statErrno: errno)
+    }
+
+    /// Opens `path` read-only and closes it at once (nothing is read): exists, missing, or denied.
+    /// Unlike `stat`, this is refused when macOS guards the folder the file is in.
+    public static func probeOpen(_ path: String) -> Probe {
+        let fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        if fd >= 0 {
+            close(fd)
+            return .exists
+        }
+        return Probe(statErrno: errno)
+    }
+
+    /// Whether this app may look into 1Password's group container (`groupContainerProbeFile`). macOS
+    /// may ask the user to allow access the first time.
+    public static func groupContainerAccess(home: String, probe: (String) -> Probe = probeOpen) -> Probe {
+        probe(expandTilde(groupContainerProbeFile, home: home))
     }
 
     /// The agent socket: a non-blank `override` (tilde-expanded against `home`) is the only path looked

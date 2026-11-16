@@ -9,9 +9,16 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
     case appLocked(details: String?)
     /// The user dismissed the 1Password prompt, or the request was cancelled.
     case cancelled(details: String?)
-    /// `op` can't reach the 1Password app ("Integrate with 1Password CLI" is off, the app isn't running,
-    /// or macOS doesn't share 1Password's data with the app: "No accounts configured").
+    /// `op` can't reach the 1Password app: "Integrate with 1Password CLI" is off ("No accounts
+    /// configured", a reset connection to the desktop app).
     case integrationOff(details: String?)
+    /// macOS doesn't share 1Password's data (its group container) with this app: "Data shared by
+    /// 1Password" is off in System Settings → Privacy & Security → Files & Folders. `op` says either
+    /// "operation not permitted" on the group container, or "No accounts configured" while this app's
+    /// own look into the container is refused (see `ProcessOnePasswordCLI`).
+    case containerBlocked(details: String?)
+    /// The 1Password app isn't running (nothing answers on its socket).
+    case appNotRunning(details: String?)
     /// Nobody approved the request in time.
     case timedOut(details: String?)
     /// The vault, item or field doesn't exist; `op`'s explanation.
@@ -23,7 +30,8 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
     public var details: String? {
         switch self {
         case .cliNotFound: nil
-        case .appLocked(let details), .cancelled(let details), .integrationOff(let details), .timedOut(let details):
+        case .appLocked(let details), .cancelled(let details), .integrationOff(let details), .timedOut(let details),
+             .containerBlocked(let details), .appNotRunning(let details):
             details
         case .notFound(let detail), .failed(let detail): detail
         }
@@ -39,7 +47,11 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
         case .cancelled:
             "The 1Password request was cancelled."
         case .integrationOff:
-            "The 1Password CLI can't reach the 1Password app. In 1Password \u{2192} Settings \u{2192} Developer, turn on \u{201C}Integrate with 1Password CLI\u{201D}. On macOS 27 or later, also turn on \u{201C}Data shared by 1Password\u{201D} for SwiftSSH in System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, then quit and reopen SwiftSSH."
+            "The 1Password CLI isn't connected to the 1Password app. In 1Password, select your account at the top of the sidebar, then open Settings \u{2192} Developer and turn on \u{201C}Integrate with 1Password CLI\u{201D}. Keep 1Password in the menu bar."
+        case .containerBlocked:
+            "macOS is blocking SwiftSSH from 1Password\u{2019}s data. In System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, turn on \u{201C}Data shared by 1Password\u{201D} for SwiftSSH, then quit and reopen SwiftSSH."
+        case .appNotRunning:
+            "1Password isn\u{2019}t running. Open 1Password, unlock it, and try again."
         case .timedOut:
             "1Password didn't get an answer in time. Approve the request in 1Password and try again."
         case .notFound(let detail):
@@ -50,6 +62,14 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
     }
 
     public var errorDescription: String? { message }
+
+    /// Whether the fix is in Settings → 1Password (the setup checklist), not in the request itself.
+    public var needsSetup: Bool {
+        switch self {
+        case .cliNotFound, .integrationOff, .appLocked, .containerBlocked, .appNotRunning: true
+        case .cancelled, .timedOut, .notFound, .failed: false
+        }
+    }
 }
 
 /// An item as `op item list` shows it: no field values.
@@ -68,6 +88,17 @@ public struct OnePasswordItemSummary: Equatable, Sendable, Identifiable {
         self.vault = vault
         self.vaultID = vaultID
         self.category = category
+    }
+}
+
+/// A vault as `op vault list` shows it (no contents).
+public struct OnePasswordVault: Equatable, Sendable, Identifiable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
     }
 }
 
@@ -132,6 +163,30 @@ public protocol OnePasswordCLI: Sendable {
     func fields(itemID: String, vault: String) async throws(OnePasswordError) -> [OnePasswordField]
     /// A harmless call that proves `op` can talk to the 1Password app (`op vault list`).
     func check() async throws(OnePasswordError)
+    /// The vaults `op` can see (`op vault list`): names and IDs only.
+    func listVaults() async throws(OnePasswordError) -> [OnePasswordVault]
+    /// Items of these `op` categories only (e.g. "SSH Key"), without field values.
+    func listItems(categories: [String]) async throws(OnePasswordError) -> [OnePasswordItemSummary]
+}
+
+extension OnePasswordCLI {
+    /// Clients that can't list vaults (test doubles) report it as a failure.
+    public func listVaults() async throws(OnePasswordError) -> [OnePasswordVault] {
+        throw .failed("Listing vaults isn't supported here.")
+    }
+
+    /// Falls back to every item, filtered here by `op`'s category IDs ("SSH Key" → "SSH_KEY").
+    public func listItems(categories: [String]) async throws(OnePasswordError) -> [OnePasswordItemSummary] {
+        let wanted = Set(categories.map(OnePasswordItemSummary.categoryID))
+        return try await listItems().filter { wanted.contains($0.category) }
+    }
+}
+
+extension OnePasswordItemSummary {
+    /// `op`'s category ID for a category name: "SSH Key" → "SSH_KEY", "Login" → "LOGIN".
+    public static func categoryID(_ name: String) -> String {
+        name.uppercased().split(whereSeparator: { $0 == " " || $0 == "_" }).joined(separator: "_")
+    }
 }
 
 public enum SecretReference {

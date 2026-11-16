@@ -132,6 +132,14 @@ public final class TerminalTab: Identifiable {
         appendLine(step: nil, text: message, status: .failed, at: date)
     }
 
+    /// Replaces the text of the attempt's failure line (the last line) when it is `old`.
+    fileprivate func replaceLastFailure(with text: String, ifItIs old: String) {
+        guard let index = connectionLog.indices.last, connectionLog[index].status == .failed,
+              connectionLog[index].step == nil, connectionLog[index].text == old else { return }
+        let line = connectionLog[index]
+        connectionLog[index] = ConnectionLogLine(id: line.id, step: nil, text: text, status: .failed, at: line.at)
+    }
+
     private func appendLine(step: ConnectionStep?, text: String, status: ConnectionLogLine.Status, at date: Date) {
         connectionLog.append(ConnectionLogLine(id: nextLogLineID, step: step, text: text, status: status, at: date))
         nextLogLineID += 1
@@ -292,7 +300,10 @@ fileprivate final class SessionAttempt {
 /// connects with `.agent(socketPath:publicKey:)` through system ssh. Without a socket no session starts:
 /// the tab is disconnected with a setup hint and `suggestedAction = .openOnePasswordSetup`. An attempt
 /// that ends with `.agentUnavailable`, or an agent attempt whose key the server rejects
-/// (`.authenticationFailed`), also suggests the setup; auto-reconnect retries neither.
+/// (`.authenticationFailed`), also suggests the setup; auto-reconnect retries neither. For a rejected
+/// agent key, `agentKeys` (when given) asks the agent what it offers right then, and the message and
+/// suggestion become the precise one (`AgentAuthFailure`): no keys or not the pinned key (choose the
+/// vaults), locked / not running, blocked by macOS, or the server's authorized_keys.
 ///
 /// 1Password references: a password or key passphrase that is an `op://` reference is read with
 /// `opClient()` before each attempt starts (after the agent check; agent plans never read). The value is
@@ -346,6 +357,8 @@ public final class SessionManager {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let sleep: @Sendable (Duration) async throws -> Void
     @ObservationIgnored private let opClient: @MainActor () -> (any OnePasswordCLI)?
+    /// Lists the keys of the agent at a socket path (public halves only); nil = never asked.
+    @ObservationIgnored private let agentKeys: (@Sendable (String) async throws -> [AgentKey])?
     /// Every attempt whose session has not ended yet, including ones being closed.
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
@@ -361,8 +374,10 @@ public final class SessionManager {
                 sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
                 agentSocket: @escaping @MainActor () -> String? = { nil },
                 opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil },
+                agentKeys: (@Sendable (String) async throws -> [AgentKey])? = nil,
                 terminalType: @escaping @MainActor () -> TerminalType = { .default }) {
         self.terminalType = terminalType
+        self.agentKeys = agentKeys
         self.agentSocket = agentSocket
         self.opClient = opClient
         self.keepAlivePolicy = keepAlivePolicy
@@ -1166,7 +1181,7 @@ public final class SessionManager {
         case .cancelled:
             tab.state = .disconnected("Cancelled")
             tab.appendFailure("Cancelled", at: now())
-        case .cliNotFound, .integrationOff, .appLocked:
+        case .cliNotFound, .integrationOff, .appLocked, .containerBlocked, .appNotRunning:
             tab.state = .disconnected(error.message)
             tab.suggestedAction = .openOnePasswordSetup
             tab.appendFailure(error.message, at: now())
@@ -1310,6 +1325,9 @@ public final class SessionManager {
                 current.finishCurrentStep(as: .done)
             }
             continueAutoReconnect(after: reason, attempt: attempt, tab: current)
+            if reason == .failed(.authenticationFailed), case .agent(let socket, let pinned) = attempt.plan.credential {
+                diagnoseAgentFailure(of: current, socket: socket, pinnedPublicKey: pinned, plan: attempt.plan)
+            }
         }
     }
 
@@ -1449,6 +1467,24 @@ public final class SessionManager {
         case .failed(let error):
             if case .disconnected(let message?) = state { return message }
             return error.localizedDescription
+        }
+    }
+
+    /// After a rejected agent key: asks the agent what it offers and, if the tab still shows that
+    /// failure (no new attempt started meanwhile), replaces the message, its log line and the suggestion.
+    private func diagnoseAgentFailure(of tab: TerminalTab, socket: String, pinnedPublicKey: String?, plan: ConnectionPlan) {
+        guard let agentKeys, case .disconnected(let shown?) = tab.state else { return }
+        let generation = tab.generation
+        Task { [weak self, weak tab] in
+            let listing: Result<[AgentKey], any Error>
+            do { listing = .success(try await agentKeys(socket)) } catch { listing = .failure(error) }
+            guard let self, let tab, tab.generation == generation, tab.attempt == nil,
+                  tab.state == .disconnected(shown) else { return }
+            let failure = AgentAuthFailure.diagnose(pinnedPublicKey: pinnedPublicKey, listing: listing)
+            let message = failure.message(who: Self.userAtHost(plan))
+            tab.state = .disconnected(message)
+            tab.suggestedAction = failure.suggestedAction
+            tab.replaceLastFailure(with: message, ifItIs: shown)
         }
     }
 

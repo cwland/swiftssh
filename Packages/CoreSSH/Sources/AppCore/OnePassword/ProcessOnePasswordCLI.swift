@@ -21,19 +21,26 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
     private let stderrLimit: Int
     /// Categories and vault IDs seen in the latest `listItems`, so `fields` can offer the right ones.
     private let seenItems = SeenItems()
+    /// Whether this app may look into 1Password's group container; asked only after `op` said "No
+    /// accounts configured", to tell a blocked container apart from the CLI integration being off.
+    private let containerAccess: @Sendable () -> OnePasswordPaths.Probe
 
     public init(executablePath: String, timeout: Duration = .seconds(120)) {
-        self.init(executablePath: executablePath, timeout: timeout, environment: ProcessInfo.processInfo.environment)
+        let home = NSHomeDirectory()
+        self.init(executablePath: executablePath, timeout: timeout, environment: ProcessInfo.processInfo.environment,
+                  containerAccess: { OnePasswordPaths.groupContainerAccess(home: home) })
     }
 
     /// `environment` is the app's environment, from which only the minimal set is passed (see `environment(executablePath:from:)`).
     init(executablePath: String, timeout: Duration = .seconds(120), environment: [String: String],
-         stdoutLimit: Int = 16 * 1024 * 1024, stderrLimit: Int = 64 * 1024) {
+         stdoutLimit: Int = 16 * 1024 * 1024, stderrLimit: Int = 64 * 1024,
+         containerAccess: @escaping @Sendable () -> OnePasswordPaths.Probe = { .missing }) {
         self.executablePath = executablePath
         self.timeout = timeout
         self.environment = Self.environment(executablePath: executablePath, from: environment)
         self.stdoutLimit = stdoutLimit
         self.stderrLimit = stderrLimit
+        self.containerAccess = containerAccess
     }
 
     /// The environment `op` gets: HOME, USER, LOGNAME and TMPDIR from `base` (when set), and
@@ -62,7 +69,28 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
     }
 
     public func listItems() async throws(OnePasswordError) -> [OnePasswordItemSummary] {
-        let output = try await run(["item", "list", "--format", "json"])
+        try await listItems(arguments: ["item", "list", "--format", "json"])
+    }
+
+    /// `op item list --categories "SSH Key" --format json`: metadata only, never field values.
+    public func listItems(categories: [String]) async throws(OnePasswordError) -> [OnePasswordItemSummary] {
+        try await listItems(arguments: ["item", "list", "--categories", categories.joined(separator: ","),
+                                        "--format", "json"])
+    }
+
+    public func listVaults() async throws(OnePasswordError) -> [OnePasswordVault] {
+        let output = try await run(["vault", "list", "--format", "json"])
+        if String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return [] }
+        do {
+            return try JSONDecoder().decode([ListedVault].self, from: output)
+                .map { OnePasswordVault(id: $0.id, name: $0.name ?? $0.id) }
+        } catch {
+            throw .failed("Couldn't read the vault list from 1Password.")
+        }
+    }
+
+    private func listItems(arguments: [String]) async throws(OnePasswordError) -> [OnePasswordItemSummary] {
+        let output = try await run(arguments)
         if String(decoding: output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return [] }
         let decoded: [ListedItem]
         do {
@@ -108,7 +136,7 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         }
         guard result.status == 0 else {
             let explanation = stderrDetails.isEmpty && !outputIsSecret ? result.stdout : result.stderr
-            throw Self.error(stderr: explanation, status: result.status)
+            throw Self.refine(Self.error(stderr: explanation, status: result.status), containerAccess: containerAccess)
         }
         return result.stdout
     }
@@ -120,6 +148,15 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         func has(_ needles: String...) -> Bool { needles.contains { text.contains($0) } }
         if has("authorization timeout") { return .timedOut(details: detail) }
         if has("authorization prompt dismissed") { return .cancelled(details: detail) }
+        // macOS refused `op` (as this app's child) a look into 1Password's group container, e.g.
+        // "open …/Group Containers/2BUA8C4S2C.com.1password/…/settings.json: operation not permitted".
+        if has("operation not permitted"), has("group containers", "2bua8c4s2c.com.1password") {
+            return .containerBlocked(details: detail)
+        }
+        // Nothing listens on the desktop app's socket: 1Password isn't running.
+        if has("connecting to desktop app"), has("connection refused", "is 1password running", "not running") {
+            return .appNotRunning(details: detail)
+        }
         // "No accounts configured for use with 1Password CLI." comes with a list of options and an
         // interactive prompt (stdin is /dev/null, so it ends); seen on macOS 27 with the integration off or
         // 1Password's data not shared with the app.
@@ -133,6 +170,16 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         if has("is locked") { return .appLocked(details: detail) } // [UNVERIFIED] wording; see research.md §3
         if detail.isEmpty { return .failed("op exited with status \(status)") }
         return .failed(detail)
+    }
+
+    /// "No accounts configured" is what `op` says both when the CLI integration is off and when macOS
+    /// blocks 1Password's group container: when this app's own look into the container is refused
+    /// too, it is the container (`op` runs as this app's child, so macOS treats both alike).
+    static func refine(_ error: OnePasswordError, containerAccess: () -> OnePasswordPaths.Probe) -> OnePasswordError {
+        guard case .integrationOff(let details) = error,
+              details?.lowercased().contains("no accounts configured") == true,
+              containerAccess() == .denied else { return error }
+        return .containerBlocked(details: details)
     }
 
     /// The longest `details` text, in characters.
@@ -165,6 +212,12 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         default: return scalar
         }
     }
+}
+
+/// One element of `op vault list --format json`; other keys are ignored.
+private struct ListedVault: Decodable {
+    let id: String
+    let name: String?
 }
 
 /// One element of `op item list --format json`; other keys are ignored.
