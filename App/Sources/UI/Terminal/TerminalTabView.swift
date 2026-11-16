@@ -32,7 +32,7 @@ struct TerminalTabView: View {
         VStack(spacing: 0) {
             if case .disconnected(let message) = tab.state, !isAutoReconnecting, !showsConnectionScreen {
                 DisconnectedBanner(message: bannerMessage(message),
-                                   showsOnePasswordSetup: tab.suggestedAction == .openOnePasswordSetup) {
+                                   suggestedAction: tab.suggestedAction) {
                     sessions.reconnect(tabID: tab.id)
                 }
             }

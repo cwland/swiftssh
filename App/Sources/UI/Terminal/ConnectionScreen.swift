@@ -217,6 +217,8 @@ struct ConnectionScreen: View {
                 }
                 if tab.suggestedAction == .openOnePasswordSetup {
                     OpenOnePasswordSetupButton()
+                } else if tab.suggestedAction == .chooseOnePasswordVaults {
+                    ChooseVaultsButton()
                 }
                 Spacer(minLength: 8)
                 Button("Start over", action: startOver)

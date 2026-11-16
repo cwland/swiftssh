@@ -23,6 +23,7 @@ struct SwiftSSHApp: App {
         .commands {
             SessionCommands(environment: environment)
             TextSizeCommands(settings: environment.terminalSettings)
+            HelpCommands(environment: environment)
         }
 
         // "Duplicate in New Window": a window of terminal tabs only (no Vaults), opened with
@@ -160,6 +161,20 @@ private struct SessionCommands: Commands {
             try environment.splitTab(tab.id, at: edge)
         } catch {
             environment.presentCommandError(error, title: "The tab couldn\u{2019}t be split")
+        }
+    }
+}
+
+/// Help → Set Up SwiftSSH…: opens the welcome sheet (sync server, 1Password) again.
+private struct HelpCommands: Commands {
+    let environment: AppEnvironment
+
+    var body: some Commands {
+        CommandGroup(after: .help) {
+            Button("Set Up SwiftSSH\u{2026}") {
+                environment.showWelcome()
+            }
+            .disabled(environment.vault == nil)
         }
     }
 }

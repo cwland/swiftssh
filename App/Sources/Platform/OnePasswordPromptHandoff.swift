@@ -7,6 +7,11 @@ enum OnePasswordApp {
     /// 1Password 8, and 1Password 7 for older setups.
     static let bundleIDs: Set<String> = ["com.1password.1password", "com.agilebits.onepassword7"]
 
+    /// Whether 1Password is running (it answers the CLI and the SSH agent only then).
+    @MainActor static var isRunning: Bool {
+        NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier.map(bundleIDs.contains) == true }
+    }
+
     /// Lets 1Password take the focus (macOS only allows an app to activate another this way). Only
     /// while this app is the active one: if the user is in another app, nothing is handed over (false).
     /// Also only while 1Password shows a prompt: a call that is merely slow (a big account, a far-away
@@ -86,6 +91,14 @@ struct FocusHandingOnePasswordCLI: OnePasswordCLI {
 
     func check() async throws(OnePasswordError) {
         try await waiting { () async throws(OnePasswordError) in try await base.check() }
+    }
+
+    func listVaults() async throws(OnePasswordError) -> [OnePasswordVault] {
+        try await waiting { () async throws(OnePasswordError) in try await base.listVaults() }
+    }
+
+    func listItems(categories: [String]) async throws(OnePasswordError) -> [OnePasswordItemSummary] {
+        try await waiting { () async throws(OnePasswordError) in try await base.listItems(categories: categories) }
     }
 
     private func waiting<T: Sendable>(_ work: () async throws(OnePasswordError) -> T) async throws(OnePasswordError) -> T {

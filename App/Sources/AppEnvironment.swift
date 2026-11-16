@@ -38,6 +38,10 @@ final class AppEnvironment {
     let appAppearance: AppAppearanceSetting
     /// The Settings window's selected pane ("Open 1Password Setup" selects 1Password).
     let settingsNavigation = SettingsNavigation()
+    /// The welcome sheet's "Don't show again" (per Mac).
+    let welcomeSettings = WelcomeSettings()
+    /// Whether the main window shows the welcome sheet (first launch, or Help → Set Up SwiftSSH…).
+    var isShowingWelcome = false
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
     /// Syncs the vault with the sync server (Settings → Sync, the Vaults tab's cloud icon).
@@ -51,6 +55,7 @@ final class AppEnvironment {
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
     @ObservationIgnored private var didStartLoading = false
+    @ObservationIgnored private var didOfferWelcome = false
     @ObservationIgnored private var runtime: SSHRuntimeDirectory?
 
     init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider(),
@@ -134,8 +139,10 @@ final class AppEnvironment {
             watcher.start()
             connectionWatcher = watcher
             OnePasswordApp.watchAgentSigning(sessions, focus: onePassword.promptFocus)
+            onePassword.pinnedKeys = { [weak vault] in vault.map { PinnedAgentKey.all(in: $0) } ?? [] }
             state = .ready(vault)
             startSync(vault: vault)
+            offerWelcomeIfNew(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {
             state = .failed(.unreadable(movedTo: movedTo.path, keyWasCreated: keyWasCreated))
         } catch let error as RebrandMigrationError {
@@ -167,6 +174,26 @@ final class AppEnvironment {
     /// Stops the sync loop (app quit), before the final vault write.
     func stopSync() {
         sync?.stop()
+    }
+
+    // MARK: Welcome
+
+    /// Opens the welcome sheet once per launch on a Mac that looks new (`WelcomeSetup.shouldShowAtLaunch`):
+    /// an empty vault and no sync server. Never for a Mac with data or sync set up.
+    private func offerWelcomeIfNew(vault: LocalVault) {
+        guard !didOfferWelcome else { return }
+        didOfferWelcome = true
+        let syncConfigured = sync?.serverURL != nil
+        if WelcomeSetup.shouldShowAtLaunch(liveCounts: vault.liveCounts(), syncServerConfigured: syncConfigured,
+                                           settings: welcomeSettings) {
+            isShowingWelcome = true
+        }
+    }
+
+    /// Help → Set Up SwiftSSH…: shows the welcome sheet in the main window (once the vault is open).
+    func showWelcome() {
+        guard vault != nil else { return }
+        isShowingWelcome = true
     }
 
     // MARK: Sessions
@@ -213,6 +240,8 @@ final class AppEnvironment {
             // override) is used without restarting the app.
             agentSocket: { onePassword.agentSocket() },
             opClient: { onePassword.makeClient() },
+            // After a rejected 1Password key: what the agent offers decides the message.
+            agentKeys: { try await SSHAgentClient.listKeys(socketPath: $0) },
             terminalType: { terminalSettings.terminalType }
         )
     }

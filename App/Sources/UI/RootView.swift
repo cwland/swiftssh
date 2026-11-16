@@ -119,6 +119,11 @@ struct RootView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .focusedSceneValue(\.windowScope, WindowScope(windowID: windowID))
+        // First launch on a new Mac, or Help → Set Up SwiftSSH…: main windows only.
+        .sheet(isPresented: Binding(get: { !isTerminalWindow && environment.isShowingWelcome },
+                                    set: { environment.isShowingWelcome = $0 })) {
+            WelcomeSheet(environment: environment)
+        }
         .background {
             WindowLifecycleObserver(
                 attached: { nsWindow in

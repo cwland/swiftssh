@@ -24,24 +24,7 @@ struct SyncSettingsPane: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if let sync {
-                    if let error = sync.lastError {
-                        Label(error.message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    content(sync)
-                } else {
-                    SyncCard {
-                        HStack(spacing: 8) {
-                            ProgressView().controlSize(.small)
-                            Text("Sync is available once the vault is open.")
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                SyncSetupFlow(sync: sync, vault: vault)
 
                 Text("Connection, 1Password and OS icon settings stay on this Mac. The server address is saved on this Mac; the API key and the vault key are kept in this Mac\u{2019}s Keychain.")
                     .font(.system(size: 12))
@@ -50,6 +33,37 @@ struct SyncSettingsPane: View {
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
+/// The sync steps in the order `SyncCoordinator.phase` calls for: connect (server address + API key),
+/// create or join the vault, then status. Used by Settings → Sync and the welcome sheet.
+struct SyncSetupFlow: View {
+    /// nil until the vault is open.
+    let sync: SyncCoordinator?
+    let vault: LocalVault?
+
+    var body: some View {
+        if let sync {
+            VStack(alignment: .leading, spacing: 16) {
+                if let error = sync.lastError {
+                    Label(error.message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                content(sync)
+            }
+        } else {
+            SyncCard {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Sync is available once the vault is open.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 

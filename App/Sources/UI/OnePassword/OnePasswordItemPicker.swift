@@ -257,10 +257,7 @@ struct OnePasswordItemPicker: View {
 
     /// The errors whose fix is in Settings → 1Password.
     private static func needsSetup(_ error: OnePasswordError) -> Bool {
-        switch error {
-        case .cliNotFound, .integrationOff, .appLocked: true
-        case .cancelled, .timedOut, .notFound, .failed: false
-        }
+        error.needsSetup
     }
 
     /// "SSH_KEY" → "SSH Key", "LOGIN" → "Login".
