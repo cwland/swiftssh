@@ -18,7 +18,6 @@ import Synchronization
 public final class CitadelSession: TerminalSession {
     public let events: AsyncStream<SessionEvent>
 
-    static let terminalType = "xterm-256color"
     static let commandOutputLimit = 1_048_576
     static let unresponsiveMessage = "The server stopped responding."
     /// The connection ended underneath the terminal (socket closed or reset) without the shell exiting.
@@ -45,6 +44,14 @@ public final class CitadelSession: TerminalSession {
         var answeredProbes = 0
         /// A keep-alive probe loop was started for this session; for tests.
         var keepAliveLoopStarted = false
+        /// Sends quick probes now (`checkConnection`); set while the shell runs.
+        var quickCheck: (@Sendable () async -> Void)?
+        /// A quick check is running (another request joins it).
+        var quickCheckRunning = false
+        /// Output chunks received so far, to see whether typed input was echoed.
+        var outputCount = 0
+        /// An echo wait is pending (one at a time).
+        var echoWatchPending = false
     }
 
     private enum PTYInput: Sendable {
@@ -52,16 +59,27 @@ public final class CitadelSession: TerminalSession {
         case resize(cols: Int, rows: Int)
     }
 
-    public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration = .seconds(15)) {
-        self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout, commandTimeout: .seconds(15))
+    /// `connectTimeout` nil = the plan's.
+    public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration? = nil) {
+        self.init(plan: plan, hostKeys: hostKeys, connectTimeout: connectTimeout ?? plan.connectTimeout,
+                  commandTimeout: .seconds(15))
     }
 
-    /// `commandTimeout` bounds `runCommand`; only tests change it. Liveness probes follow `plan.keepAlive`.
-    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration) {
+    /// How long each of the two probes of `checkConnection` may wait for its answer.
+    let quickCheckTimeout: Duration
+    /// Typed input that gets no output back within this long makes the session check its connection.
+    let echoWait: Duration
+
+    /// `commandTimeout` bounds `runCommand`; only tests change it (and `quickCheckTimeout`, `echoWait`).
+    /// Liveness probes follow `plan.keepAlive`.
+    init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration,
+         quickCheckTimeout: Duration = .milliseconds(2500), echoWait: Duration = .seconds(2)) {
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
         self.commandTimeout = commandTimeout
+        self.quickCheckTimeout = quickCheckTimeout
+        self.echoWait = echoWait
         (events, eventContinuation) = AsyncStream.makeStream(of: SessionEvent.self, bufferingPolicy: .unbounded)
         (input, inputContinuation) = AsyncStream.makeStream(of: PTYInput.self, bufferingPolicy: .unbounded)
     }
@@ -97,6 +115,41 @@ public final class CitadelSession: TerminalSession {
     public func send(_ bytes: [UInt8]) async {
         guard !bytes.isEmpty else { return }
         inputContinuation.yield(.bytes(bytes))
+        watchForEcho()
+    }
+
+    /// Probes the server now (two quick probes, `quickCheckTimeout` each); when neither is answered the
+    /// session ends as unresponsive. For a network change, a wake from sleep, or typed input without
+    /// an echo. Does nothing before the shell is open or after the session ended.
+    public func checkConnection() async {
+        let check = state.withLock { state -> (@Sendable () async -> Void)? in
+            guard !state.ended, !state.quickCheckRunning, let check = state.quickCheck else { return nil }
+            state.quickCheckRunning = true
+            return check
+        }
+        guard let check else { return }
+        await check()
+        state.withLock { $0.quickCheckRunning = false }
+    }
+
+    /// Typed input expects something back (an echo, a prompt). When nothing at all arrives within
+    /// `echoWait`, the connection is checked right away instead of at the next keep-alive.
+    private func watchForEcho() {
+        let seen = state.withLock { state -> Int? in
+            guard !state.ended, !state.echoWatchPending, state.quickCheck != nil else { return nil }
+            state.echoWatchPending = true
+            return state.outputCount
+        }
+        guard let seen else { return }
+        let wait = echoWait
+        Task {
+            try? await Task.sleep(for: wait)
+            let silent = self.state.withLock { state -> Bool in
+                state.echoWatchPending = false
+                return !state.ended && state.outputCount == seen
+            }
+            if silent { await self.checkConnection() }
+        }
     }
 
     public func resize(cols: Int, rows: Int) async {
@@ -268,18 +321,44 @@ public final class CitadelSession: TerminalSession {
         let port = plan.port
         let timeout = connectTimeout
         let secrets = secretStrings
+        let method = Self.authenticationMethodName(for: plan.credential)
+        // Steps are reported only while this attempt is still undecided.
+        let progress: @Sendable (ConnectionStep) -> Void = { [weak self] step in
+            if !outcome.isResolved { self?.emit(.progress(step)) }
+        }
         // This task owns the group: it is the only place that shuts it down for a failed or lost attempt.
         Task {
             do {
-                let client = try await SSHClient.connect(
-                    host: host,
-                    port: port,
-                    authenticationMethod: authentication(),
-                    hostKeyValidator: .custom(validator),
-                    reconnect: .never,
-                    group: group,
-                    connectTimeout: Self.timeAmount(timeout)
-                )
+                let channel = try await Self.openTCPConnection(host: host, port: port, group: group, timeout: timeout,
+                                                               isAbandoned: { outcome.isResolved }, progress: progress)
+                progress(.handshake)
+                // A server that hangs up before signing in ends the attempt now, not at the timeout. A socket
+                // error usually explains it first; this is the fallback when it doesn't.
+                channel.closeFuture.whenComplete { _ in
+                    guard !outcome.isResolved else { return }
+                    channel.eventLoop.scheduleTask(in: .milliseconds(250)) {
+                        outcome.resolve(.failed(.connectionFailed(Self.closedDuringHandshakeMessage)))
+                    }
+                }
+                let settings = SSHClientSettings(
+                    host: host, port: port,
+                    authenticationMethod: {
+                        .custom(ProgressReportingAuthentication(authentication()) { progress(.authenticating(method: method)) })
+                    },
+                    hostKeyValidator: .custom(validator))
+                let client: SSHClient
+                do {
+                    // Citadel installs its handlers with the pipeline's synchronous API, which must run on the
+                    // channel's event loop: run the call there.
+                    let executor = EventLoopTaskExecutor(channel.eventLoop)
+                    client = try await withTaskExecutorPreference(executor) {
+                        try await SSHClient.connect(on: channel, settings: settings)
+                    }
+                } catch {
+                    try? await channel.close()
+                    throw error
+                }
+                progress(.authenticated)
                 let connection = Connection(client: client, group: group)
                 if !outcome.resolve(.connected(connection)) {
                     // Timed out or closed meanwhile.
@@ -356,6 +435,7 @@ public final class CitadelSession: TerminalSession {
             await connection.shutdown()
             return
         }
+        emit(.progress(.openingShell))
         Task { await self.runShell(on: connection, cols: cols, rows: rows, opening: opening) }
         let timeout = connectTimeout
         let timer = Task {
@@ -376,7 +456,7 @@ public final class CitadelSession: TerminalSession {
     private func runShell(on connection: Connection, cols: Int, rows: Int, opening: OneShot<ShellOpening>) async {
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: true,
-            term: Self.terminalType,
+            term: plan.terminalType.rawValue,
             terminalCharacterWidth: cols,
             terminalRowHeight: rows,
             terminalPixelWidth: 0,
@@ -417,6 +497,15 @@ public final class CitadelSession: TerminalSession {
                     }
                 }
                 defer { keepAliveTask?.cancel() }
+                if let root {
+                    let timeout = self.quickCheckTimeout
+                    self.state.withLock {
+                        $0.quickCheck = { [weak self] in
+                            await self?.runQuickCheck(on: root, connection: connection, timeout: timeout)
+                        }
+                    }
+                }
+                defer { self.state.withLock { $0.quickCheck = nil } }
 
                 // Authenticated with the PTY open: live and ready at once. `emit` drops both after `.closed`,
                 // and this closure runs once per session, so `.ready` comes at most once.
@@ -427,6 +516,7 @@ public final class CitadelSession: TerminalSession {
                     for try await chunk in inbound {
                         switch chunk {
                         case .stdout(let buffer), .stderr(let buffer):
+                            self.state.withLock { $0.outputCount &+= 1 }
                             self.emit(.output(Array(buffer.readableBytesView)))
                         }
                     }
@@ -451,7 +541,7 @@ public final class CitadelSession: TerminalSession {
     /// Cancelling a forward this client never set up is harmless: the server answers
     /// SSH_MSG_REQUEST_FAILURE (RFC 4254 §4), and any answer proves the connection is alive.
     static var keepAliveProbe: GlobalRequest.TCPForwardingRequest {
-        .cancel(host: "keepalive@termius-reimagined", port: 0)
+        .cancel(host: "keepalive@swiftssh", port: 0)
     }
 
     private enum ProbeResult: Sendable {
@@ -484,9 +574,13 @@ public final class CitadelSession: TerminalSession {
             }
             let clock = ContinuousClock()
             let sent = clock.now
-            let outcome = await result.wait()
+            let outputBefore = state.withLock { $0.outputCount }
+            var outcome = await result.wait()
             timer.cancel()
             if Task.isCancelled || isEnded { return }
+            // Output arriving while the reply waits (behind it, on a slow link) proves the connection
+            // is alive too.
+            if outcome == .noReply, state.withLock({ $0.outputCount }) != outputBefore { outcome = .replied }
             switch outcome {
             case .replied:
                 state.withLock { $0.answeredProbes += 1 }
@@ -506,6 +600,44 @@ public final class CitadelSession: TerminalSession {
                 return
             }
         }
+    }
+
+    /// Up to two probes, `timeout` each; one answer is enough. Neither answered: the session ends as
+    /// unresponsive. A failed probe means the connection itself failed (the shell task reports it).
+    private func runQuickCheck(on root: Channel, connection: Connection, timeout: Duration) async {
+        for _ in 0..<2 {
+            if isEnded { return }
+            let scheduled = (try? await connection.withClient { _ in Self.probe(root) }) ?? nil
+            guard let probe = scheduled else { return }
+            let result = OneShot<ProbeResult>()
+            probe.whenComplete { outcome in
+                switch outcome {
+                case .success: result.resolve(.replied)
+                case .failure: result.resolve(.failed)
+                }
+            }
+            let timer = Task {
+                try? await Task.sleep(for: timeout)
+                result.resolve(.noReply)
+            }
+            let outputBefore = state.withLock { $0.outputCount }
+            var outcome = await result.wait()
+            timer.cancel()
+            // Output arriving meanwhile proves the connection is alive too (a slow, busy link).
+            if outcome == .noReply, state.withLock({ $0.outputCount }) != outputBefore { outcome = .replied }
+            switch outcome {
+            case .replied:
+                state.withLock { $0.answeredProbes += 1 }
+                return
+            case .failed:
+                return
+            case .noReply:
+                continue
+            }
+        }
+        if isEnded { return }
+        finish(.failed(.connectionFailed(Self.unresponsiveMessage)))
+        await connection.closeClient()
     }
 
     /// Sends one keep-alive probe. Succeeds when the server answered, whether it accepted or refused.
@@ -631,18 +763,130 @@ public final class CitadelSession: TerminalSession {
             return .authenticationFailed
         case let error as ChannelError:
             if case .connectTimeout = error { return .timedOut }
-        case let error as NIOConnectionError:
-            if error.connectionErrors.contains(where: { if case ChannelError.connectTimeout = $0.error { true } else { false } }) {
-                return .timedOut
-            }
-            let reasons = error.connectionErrors.map { String(describing: $0.error) }
-            let detail = reasons.isEmpty ? "" : " (\(reasons.joined(separator: "; ")))"
+        case let error as TCPConnectFailure:
+            if error.timedOut { return .timedOut }
+            let detail = error.reason.map { " (\($0))" } ?? ""
             return .connectionFailed(redact("Could not connect to \(error.host):\(error.port)\(detail)", secrets: secrets))
+        case let error as NameResolutionFailure:
+            return .connectionFailed("Could not resolve \(error.host) (\(error.reason))")
         default:
             break
         }
+        if let reason = lowLevelReason(error) {
+            return .connectionFailed(reason) // "The connection failed: connection reset by peer"
+        }
+        if closedDuringHandshake(error) {
+            return .connectionFailed(closedDuringHandshakeMessage)
+        }
         return .connectionFailed(redact(String(describing: error), secrets: secrets))
     }
+
+    static let closedDuringHandshakeMessage = "The server closed the connection before signing in."
+
+    /// The connection went away before authentication finished without a socket error: Citadel's
+    /// handshake handler fails with its private `Disconnected` error when the channel closes under it.
+    static func closedDuringHandshake(_ error: Error) -> Bool {
+        if let error = error as? ChannelError {
+            switch error {
+            case .eof, .ioOnClosedChannel, .alreadyClosed, .inputClosed, .outputClosed: return true
+            default: return false
+            }
+        }
+        if let error = error as? NIOSSHError, error.type == .tcpShutdown { return true }
+        return String(describing: type(of: error)) == "Disconnected"
+    }
+
+    /// A plain name for a socket-level error ("connection refused", "connection reset by peer"…); nil
+    /// when the error isn't one.
+    static func lowLevelReason(_ error: Error) -> String? {
+        guard let error = error as? IOError else { return nil }
+        switch error.errnoCode {
+        case ECONNREFUSED: return "connection refused"
+        case ECONNRESET: return "connection reset by peer"
+        case EHOSTUNREACH: return "no route to host"
+        case ENETUNREACH: return "network is unreachable"
+        case ETIMEDOUT: return "operation timed out"
+        case EPIPE: return "broken pipe"
+        case ECONNABORTED: return "connection aborted"
+        case EADDRNOTAVAIL: return "address not available"
+        case EHOSTDOWN: return "host is down"
+        default: return nil
+        }
+    }
+
+    /// The step log's name for how this credential signs in.
+    static func authenticationMethodName(for credential: SSHCredential) -> String {
+        switch credential {
+        case .password, .none: "password"
+        case .privateKey: "key"
+        case .agent: "1Password agent"
+        }
+    }
+
+    // MARK: TCP
+
+    /// Resolves `host` (unless it is an IP address), reporting `.resolving`, then tries its addresses in
+    /// order the way OpenSSH does, reporting `.connecting` for each and `.connected` for the one that
+    /// answers. The channel comes back with reading off: `ReadGate` turns it on once Citadel's SSH
+    /// handler is installed and speaks first, so the server's version line can't be read (and dropped)
+    /// before anyone handles it.
+    static func openTCPConnection(host: String, port: Int, group: EventLoopGroup, timeout: Duration,
+                                  isAbandoned: @escaping @Sendable () -> Bool,
+                                  progress: @escaping @Sendable (ConnectionStep) -> Void) async throws -> Channel {
+        let clock = ContinuousClock()
+        let begin = clock.now
+        let addresses: [SocketAddress]
+        if let literal = try? SocketAddress(ipAddress: host, port: port) {
+            addresses = [literal]
+        } else {
+            progress(.resolving(host: host))
+            addresses = try await NameResolver.resolve(host: host, port: port, isAbandoned: isAbandoned)
+        }
+        // The rest of the one connect budget (not per address).
+        let remaining = max(timeout - (clock.now - begin), .milliseconds(1))
+        let attempt: @Sendable (SocketAddress) async throws -> Channel = { address in
+            let bootstrap = ClientBootstrap(group: group)
+                .connectTimeout(timeAmount(remaining))
+                .channelOption(ChannelOptions.autoRead, value: false)
+                .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR), value: 1)
+                .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
+                .channelInitializer { channel in
+                    channel.eventLoop.makeCompletedFuture { try channel.pipeline.syncOperations.addHandler(ReadGate()) }
+                }
+            return try await bootstrap.connect(to: address).get()
+        }
+        let channel: Channel
+        do {
+            channel = try await ConnectionRace.run(
+                candidates: ConnectionRace.interleavedByFamily(addresses),
+                isAbandoned: isAbandoned,
+                started: { progress(.connecting(address: $0.ipAddress ?? host, port: port)) },
+                attempt: attempt,
+                discard: { channel in channel.close(promise: nil) })
+        } catch let failure as ConnectionRace.Failure {
+            var reasons: [String] = []
+            var timedOut = false
+            for error in failure.errors {
+                if let error = error as? ChannelError, case .connectTimeout = error {
+                    timedOut = true
+                    continue
+                }
+                let reason = lowLevelReason(error) ?? String(describing: error)
+                if !reasons.contains(reason) { reasons.append(reason) }
+            }
+            throw TCPConnectFailure(host: host, port: port, reason: reasons.isEmpty ? nil : reasons.joined(separator: "; "),
+                                    timedOut: timedOut && reasons.isEmpty)
+        }
+        if isAbandoned() {
+            try? await channel.close()
+            throw CancellationError()
+        }
+        progress(.connected(address: channel.remoteAddress?.ipAddress ?? host))
+        return channel
+    }
+
+    /// Why a session the server ended (shell killed, no exit status) closed: shown on the tab.
+    static let serverEndedSessionMessage = "The server ended the session (it may be restarting)."
 
     private func endReason(for error: Error) -> SessionEndReason {
         switch error {
@@ -660,6 +904,15 @@ public final class CitadelSession: TerminalSession {
             return .failed(.connectionFailed(Self.connectionLostMessage))
         case is SSHClient.CommandFailed:
             // The remote shell exited with a non-zero status: still a normal end of session.
+            return .remoteClosed
+        case is SSHClient.CommandSignaled:
+            // Killed by a signal (vendored Citadel patch): the server shut down, rebooted or restarted
+            // sshd. A lost connection (reconnect), not the user's `exit`.
+            return .failed(.connectionFailed(Self.serverEndedSessionMessage))
+        case is SSHClient.EndedWithoutExitStatus:
+            // The server closed the shell's channel without saying how it ended: some appliances
+            // never send an exit status, even for a normal logout, so this counts as one. (A server
+            // that goes away without closing the channel ends in `tcpShutdown` above.)
             return .remoteClosed
         case CitadelError.channelFailure:
             return .failed(.connectionFailed("The server refused to open a terminal."))
@@ -754,6 +1007,281 @@ private final class LockedBox<Value: Sendable>: @unchecked Sendable {
 }
 
 struct HostKeyNotTrusted: Error {}
+
+/// No address of the host accepted the TCP connection.
+struct TCPConnectFailure: Error {
+    let host: String
+    let port: Int
+    /// The socket errors, plainly named where known; nil when every address timed out.
+    let reason: String?
+    let timedOut: Bool
+}
+
+/// The host name could not be looked up.
+struct NameResolutionFailure: Error {
+    let host: String
+    /// "host name not found", or getaddrinfo's own message.
+    let reason: String
+}
+
+/// Connects to one of several addresses the way Happy Eyeballs does (RFC 8305): the first attempt starts at
+/// once, each next one when the previous failed or after `stagger` without an answer; the first success
+/// wins and any later success is handed to `discard`. Throws `Failure` with every error when all fail.
+enum ConnectionRace {
+    struct Failure: Error {
+        let errors: [Error]
+    }
+
+    static let stagger: Duration = .milliseconds(250)
+
+    /// The addresses alternating between families, starting with the first one's (IPv6, IPv4, IPv6, …),
+    /// each family keeping its own order.
+    static func interleavedByFamily(_ addresses: [SocketAddress]) -> [SocketAddress] {
+        guard let first = addresses.first else { return [] }
+        func isV6(_ address: SocketAddress) -> Bool {
+            if case .v6 = address { return true }
+            return false
+        }
+        let firstFamily = addresses.filter { isV6($0) == isV6(first) }
+        let otherFamily = addresses.filter { isV6($0) != isV6(first) }
+        var result: [SocketAddress] = []
+        for index in 0..<max(firstFamily.count, otherFamily.count) {
+            if index < firstFamily.count { result.append(firstFamily[index]) }
+            if index < otherFamily.count { result.append(otherFamily[index]) }
+        }
+        return result
+    }
+
+    fileprivate enum Event<Value: Sendable>: Sendable {
+        case tick(Int)
+        case success(Value)
+        case failure(Error)
+    }
+
+    static func run<Candidate: Sendable, Value: Sendable>(
+        candidates: [Candidate], stagger: Duration = Self.stagger,
+        isAbandoned: @escaping @Sendable () -> Bool = { false },
+        started: (Candidate) -> Void,
+        attempt: @escaping @Sendable (Candidate) async throws -> Value,
+        discard: @escaping @Sendable (Value) -> Void
+    ) async throws -> Value {
+        guard !candidates.isEmpty else { throw Failure(errors: []) }
+        let race = Race(candidates: candidates, stagger: stagger, attempt: attempt, discard: discard)
+        defer { race.stopTimers() }
+        started(race.startNext())
+        for await event in race.events {
+            switch event {
+            case .tick(let generation):
+                if race.isCurrentTick(generation), race.hasMore, !isAbandoned() { started(race.startNext()) }
+            case .success(let value):
+                race.finish()
+                return value
+            case .failure(let error):
+                race.recordFailure(error)
+                if race.hasMore, !isAbandoned() {
+                    started(race.startNext())
+                } else if race.running == 0 {
+                    race.finish()
+                    throw Failure(errors: race.errors)
+                }
+            }
+        }
+        throw Failure(errors: race.errors)
+    }
+}
+
+/// The bookkeeping of one `ConnectionRace.run`; used only by its coordinating task.
+private final class Race<Candidate: Sendable, Value: Sendable> {
+    let candidates: [Candidate]
+    let stagger: Duration
+    let attempt: @Sendable (Candidate) async throws -> Value
+    let discard: @Sendable (Value) -> Void
+    let events: AsyncStream<ConnectionRace.Event<Value>>
+    private let continuation: AsyncStream<ConnectionRace.Event<Value>>.Continuation
+    /// Set by the attempt that wins; a later success finds it taken and discards its value.
+    private let claimed = OneShot<Void>()
+    private var next = 0
+    private(set) var running = 0
+    private var tickGeneration = 0
+    private(set) var errors: [Error] = []
+    private var timers: [Task<Void, Never>] = []
+
+    init(candidates: [Candidate], stagger: Duration, attempt: @escaping @Sendable (Candidate) async throws -> Value,
+         discard: @escaping @Sendable (Value) -> Void) {
+        self.candidates = candidates
+        self.stagger = stagger
+        self.attempt = attempt
+        self.discard = discard
+        (events, continuation) = AsyncStream.makeStream(of: ConnectionRace.Event<Value>.self)
+    }
+
+    var hasMore: Bool { next < candidates.count }
+
+    func isCurrentTick(_ generation: Int) -> Bool { generation == tickGeneration }
+
+    func recordFailure(_ error: Error) {
+        running -= 1
+        errors.append(error)
+    }
+
+    /// Starts the next candidate (and the timer for the one after it); returns the one started.
+    func startNext() -> Candidate {
+        let candidate = candidates[next]
+        next += 1
+        running += 1
+        let attempt = attempt
+        let discard = discard
+        let claimed = claimed
+        let continuation = continuation
+        Task {
+            do {
+                let value = try await attempt(candidate)
+                if claimed.resolve(()) { continuation.yield(.success(value)) } else { discard(value) }
+            } catch {
+                continuation.yield(.failure(error))
+            }
+        }
+        if hasMore {
+            tickGeneration += 1
+            let generation = tickGeneration
+            let stagger = stagger
+            timers.append(Task {
+                do { try await Task.sleep(for: stagger) } catch { return }
+                continuation.yield(.tick(generation))
+            })
+        }
+        return candidate
+    }
+
+    func finish() { continuation.finish() }
+
+    func stopTimers() { timers.forEach { $0.cancel() } }
+}
+
+/// Looks up host names with `getaddrinfo` on a background thread (it blocks and can't be cancelled; the
+/// connect timeout bounds the wait for it).
+enum NameResolver {
+    /// Returns as soon as `isAbandoned()` (checked every 50 ms) says the attempt is over, with
+    /// `CancellationError`, so teardown never waits for a slow lookup; the lookup itself finishes on its own
+    /// thread and its answer is dropped.
+    static func resolve(host: String, port: Int,
+                        isAbandoned: @escaping @Sendable () -> Bool = { false }) async throws -> [SocketAddress] {
+        let answer = OneShot<Result<[SocketAddress], Error>>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            answer.resolve(Result { try lookup(host: host, port: port) })
+        }
+        let watcher = Task {
+            while !answer.isResolved {
+                if isAbandoned() {
+                    answer.resolve(.failure(CancellationError()))
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+        }
+        defer { watcher.cancel() }
+        return try await answer.wait().get()
+    }
+
+    private static func lookup(host: String, port: Int) throws -> [SocketAddress] {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        #if canImport(Glibc)
+        hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+        hints.ai_protocol = Int32(IPPROTO_TCP)
+        #else
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+        #endif
+        var list: UnsafeMutablePointer<addrinfo>?
+        let status = getaddrinfo(host, String(port), &hints, &list)
+        guard status == 0, let list else {
+            throw NameResolutionFailure(host: host, reason: reason(for: status))
+        }
+        defer { freeaddrinfo(list) }
+        var addresses: [SocketAddress] = []
+        var cursor: UnsafeMutablePointer<addrinfo>? = list
+        while let info = cursor?.pointee {
+            cursor = info.ai_next
+            guard let raw = info.ai_addr else { continue }
+            let address: SocketAddress?
+            switch info.ai_family {
+            case AF_INET:
+                address = raw.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { SocketAddress($0.pointee, host: host) }
+            case AF_INET6:
+                address = raw.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { SocketAddress($0.pointee, host: host) }
+            default:
+                address = nil
+            }
+            if let address, !addresses.contains(address) { addresses.append(address) }
+        }
+        guard !addresses.isEmpty else { throw NameResolutionFailure(host: host, reason: "host name not found") }
+        return addresses
+    }
+
+    private static func reason(for status: Int32) -> String {
+        switch status {
+        case EAI_NONAME: return "host name not found"
+        case EAI_AGAIN: return "temporary failure in name resolution"
+        default: return String(cString: gai_strerror(status)).lowercased()
+        }
+    }
+}
+
+/// Runs task jobs on a NIO event loop, so code that must run on the loop (Citadel's pipeline setup) can
+/// be awaited there.
+final class EventLoopTaskExecutor: TaskExecutor, @unchecked Sendable {
+    private let loop: any EventLoop
+
+    init(_ loop: any EventLoop) { self.loop = loop }
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        loop.execute { job.runSynchronously(on: self.asUnownedTaskExecutor()) }
+    }
+}
+
+/// Keeps a new connection from reading until Citadel's SSH handler is installed: that handler sends the
+/// client's version line as soon as it is added, and the first write through here turns reading on.
+private final class ReadGate: ChannelOutboundHandler, RemovableChannelHandler {
+    typealias OutboundIn = Any
+    private var opened = false
+
+    func write(context: ChannelHandlerContext, data: NIOAny, promise: EventLoopPromise<Void>?) {
+        context.write(data, promise: promise)
+        guard !opened else { return }
+        opened = true
+        do {
+            try context.channel.syncOptions?.setOption(ChannelOptions.autoRead, value: true)
+        } catch {
+            context.close(promise: nil)
+            return
+        }
+        // Its job is done: later writes skip it, and the pipeline looks as it did before.
+        context.pipeline.syncOperations.removeHandler(context: context, promise: nil)
+    }
+}
+
+/// Reports the start of authentication (once), then lets Citadel's method do the work.
+private final class ProgressReportingAuthentication: NIOSSHClientUserAuthenticationDelegate {
+    private let inner: SSHAuthenticationMethod
+    private let started: @Sendable () -> Void
+    private var reported = false
+
+    init(_ inner: SSHAuthenticationMethod, started: @escaping @Sendable () -> Void) {
+        self.inner = inner
+        self.started = started
+    }
+
+    func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+                                nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
+        if !reported {
+            reported = true
+            started()
+        }
+        inner.nextAuthenticationType(availableMethods: availableMethods, nextChallengePromise: nextChallengePromise)
+    }
+}
 
 /// Host key decisions of one connection attempt.
 final class HostKeyTracker: Sendable {

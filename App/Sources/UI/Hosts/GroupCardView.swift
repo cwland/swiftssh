@@ -6,10 +6,13 @@ import CoreModels
 struct GroupCardView: View {
     let group: HostGroup
     let hostCount: Int
+    var isSelected = false
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
         CardRow(title: group.name.isEmpty ? "Untitled group" : group.name,
-                subtitle: hostCount == 1 ? "1 host" : "\(hostCount) hosts") {
+                subtitle: hostCount == 1 ? "1 host" : "\(hostCount) hosts",
+                isSelected: isSelected, onEdit: onEdit) {
             SymbolBadge(symbol: "folder.fill", background: Theme.accent.opacity(0.15), foreground: Theme.accent)
         }
     }

@@ -7,6 +7,7 @@ import Observation
 public final class OnePasswordSettings {
     static let agentSocketOverrideKey = "onepassword.agentSocketOverride"
     static let cliPathOverrideKey = "onepassword.cliPathOverride"
+    static let bringsPromptForwardKey = "onepassword.bringsPromptForward"
 
     @ObservationIgnored private let defaults: UserDefaults
     private var storedAgentSocketOverride: String?
@@ -30,10 +31,17 @@ public final class OnePasswordSettings {
         }
     }
 
+    /// Hands the keyboard focus to 1Password while its Touch ID / approval prompt is showing
+    /// (`OnePasswordPromptFocus`). On by default.
+    public var bringsPromptForward: Bool {
+        didSet { defaults.set(bringsPromptForward, forKey: Self.bringsPromptForwardKey) }
+    }
+
     public init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         storedAgentSocketOverride = OnePasswordPaths.nonBlank(defaults.string(forKey: Self.agentSocketOverrideKey))
         storedCLIPathOverride = OnePasswordPaths.nonBlank(defaults.string(forKey: Self.cliPathOverrideKey))
+        bringsPromptForward = defaults.object(forKey: Self.bringsPromptForwardKey) as? Bool ?? true
     }
 
     private func store(_ value: String?, _ key: String) {

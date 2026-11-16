@@ -29,6 +29,8 @@ struct OnePasswordSettingsPane: View {
                     keysStep
                 }
 
+                PromptFocusToggle(settings: setup.settings)
+
                 AdvancedOverrides(setup: setup)
             }
             .padding(24)
@@ -87,8 +89,8 @@ struct OnePasswordSettingsPane: View {
             SubStep(3, "macOS 27 or later: open System Settings \u{2192} Privacy & Security \u{2192} Files & Folders.") {
                 Button("Open Privacy Settings") { setup.openPrivacySettings() }
             }
-            SubStep(4, "Under Termius Reimagined, turn on \u{201C}Data shared by 1Password\u{201D}.")
-            SubStep(5, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(4, "Under SwiftSSH, turn on \u{201C}Data shared by 1Password\u{201D}.")
+            SubStep(5, "Quit SwiftSSH (Cmd+Q) and open it again.")
             SubStep(6, "Click Recheck.") {
                 Button("Recheck") { setup.refresh() }
             }
@@ -150,7 +152,7 @@ struct OnePasswordSettingsPane: View {
             }
             SubStep(2, "Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.")
             SubStep(3, "Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
-            SubStep(4, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(4, "Quit SwiftSSH (Cmd+Q) and open it again.")
             SubStep(5, "Click Test, then approve 1Password\u{2019}s prompt if one appears.") {
                 Button("Test") { setup.testCLI() }
                     .disabled(!setup.isCLIReady || setup.cliTest == .running)
@@ -527,5 +529,20 @@ private struct AdvancedOverrides: View {
     private static func nonEmpty(_ text: String) -> String? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+/// "Bring 1Password's prompt to the front": `OnePasswordSettings.bringsPromptForward`.
+private struct PromptFocusToggle: View {
+    @Bindable var settings: OnePasswordSettings
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Toggle("Bring 1Password\u{2019}s Touch ID prompt to the front", isOn: $settings.bringsPromptForward)
+            Text("When 1Password asks you to approve a sign-in, it gets the keyboard focus so the prompt can be answered right away, and this app takes the focus back afterwards. Turn this off if it brings 1Password\u{2019}s main window forward.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

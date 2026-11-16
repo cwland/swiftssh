@@ -159,6 +159,42 @@ final class ConnectionPlannerTests: XCTestCase {
         XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
     }
 
+    func testStartupSnippetComesFromTheNearestGroupUnlessTheHostSaysNone() async throws {
+        let vault = try await makeVault()
+        let groupSnippet = try await vault.save(Snippet(name: "g", script: "cd /srv"))
+        let own = try await vault.save(Snippet(name: "own", script: "uptime"))
+        let parent = try await vault.save(HostGroup(name: "P", startupSnippetID: groupSnippet.id))
+        let child = try await vault.save(HostGroup(name: "C", parentID: parent.id))
+        let inheriting = try await vault.save(SavedHost(label: "I", address: "a", groupID: child.id, username: "u"))
+        let none = try await vault.save(SavedHost(label: "N", address: "a", groupID: child.id, username: "u",
+                                                  startupSnippetOff: true))
+        let mine = try await vault.save(SavedHost(label: "M", address: "a", groupID: child.id, username: "u",
+                                                  startupSnippetID: own.id))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: inheriting.id, vault: vault).startupScript, "cd /srv")
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: none.id, vault: vault).startupScript)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: mine.id, vault: vault).startupScript, "uptime")
+        try await vault.delete(Snippet.self, id: own.id)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: mine.id, vault: vault).startupScript, "cd /srv",
+                       "a deleted own snippet falls back to the group's")
+    }
+
+    func testGroupStartupSnippetWithPlaceholdersIsNotTyped() async throws {
+        let vault = try await makeVault()
+        let snippet = try await vault.save(Snippet(name: "s", script: "cd {{dir}}"))
+        let group = try await vault.save(HostGroup(name: "G", startupSnippetID: snippet.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", groupID: group.id, username: "u"))
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript)
+    }
+
+    func testStartupSnippetWithPlaceholdersIsNotTyped() async throws {
+        let vault = try await makeVault()
+        let snippet = try await vault.save(Snippet(name: "s", script: "cd {{dir}}"))
+        let host = try await vault.save(SavedHost(label: "H", address: "a", username: "u",
+                                                  startupSnippetID: snippet.id))
+        XCTAssertNil(try ConnectionPlanner.plan(hostID: host.id, vault: vault).startupScript,
+                     "a placeholder can't be filled at startup, so the script isn't typed with braces")
+    }
+
     func testMissingAddressOrUsernameThrows() async throws {
         let vault = try await makeVault()
         let noAddress = try await vault.save(SavedHost(label: "1", address: "  ", username: "u"))
@@ -406,6 +442,23 @@ final class ConnectionPlannerTests: XCTestCase {
         try await vault.deleteIdentity(id: explicit.id)
         XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "groupUser",
                        "a dead explicit identity falls back to the group default, not the kept username")
+    }
+
+    func testPrefersDirectIgnoresALinkedIdentity() async throws {
+        let vault = try await makeVault()
+        let linked = try await vault.save(Identity(label: "e", username: "explicitUser", password: "e"))
+        let groupIdentity = try await vault.save(Identity(label: "g", username: "groupUser"))
+        let group = try await vault.save(HostGroup(name: "G", defaultIdentityID: groupIdentity.id))
+        let host = try await vault.save(SavedHost(label: "H", address: "h", groupID: group.id, username: "root",
+                                                  identityID: linked.id, prefersIdentity: false))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "root")
+        let bare = try await vault.save(SavedHost(label: "B", address: "b", groupID: group.id,
+                                                  identityID: linked.id, prefersIdentity: false))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: bare.id, vault: vault).username, "groupUser",
+                       "no own credentials: the group default, never the unused linked identity")
+        let legacy = try await vault.save(SavedHost(label: "L", address: "l", username: "root", identityID: linked.id))
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: legacy.id, vault: vault).username, "explicitUser",
+                       "an older record with a link and no recorded choice uses the identity")
     }
 
     func testPrefersDirectAndLegacyUseTheHostsOwnFields() async throws {

@@ -406,3 +406,40 @@ final class ListeningSocket {
         return Int(UInt16(bigEndian: addr.sin_port))
     }
 }
+
+/// A TCP socket that accepts each connection and hangs up at once: with `reset`, with a TCP reset
+/// (SO_LINGER 0) so the client sees "connection reset by peer"; otherwise with a normal close. With
+/// `banner`, it first sends that text (e.g. an SSH version line).
+final class HangUpSocket: @unchecked Sendable {
+    let port: Int
+    private let fd: Int32
+    private let thread: Thread
+
+    init(reset: Bool, banner: String? = nil) throws {
+        let fd = try ListeningSocket.makeBoundSocket()
+        guard listen(fd, 8) == 0 else { close(fd); throw TestSSHServerError.socket("listen") }
+        self.fd = fd
+        port = try ListeningSocket.localPort(of: fd)
+        thread = Thread {
+            while true {
+                let client = accept(fd, nil, nil)
+                guard client >= 0 else { return } // the listening socket was closed
+                if let banner {
+                    _ = banner.withCString { send(client, $0, strlen($0), 0) }
+                    usleep(100_000)
+                }
+                if reset {
+                    var linger = linger(l_onoff: 1, l_linger: 0)
+                    setsockopt(client, SOL_SOCKET, SO_LINGER, &linger, socklen_t(MemoryLayout<linger>.size))
+                }
+                close(client)
+            }
+        }
+        thread.start()
+    }
+
+    deinit {
+        shutdown(fd, Int32(SHUT_RDWR))
+        close(fd)
+    }
+}

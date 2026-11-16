@@ -3,17 +3,19 @@ import Observation
 import AppCore
 import CoreModels
 
-/// OS badge images and settings from `~/Library/Application Support/TermiusReimagined/Badges/`:
+/// OS badge images and settings from `~/Library/Application Support/SwiftSSH/Badges/`:
 /// `<id>.svg` or `<id>.png` (the newer one wins; ids from the bundled `OSCatalog`) and `settings.json`
 /// (per-OS "show in white", color, icon link and image source; see `BadgeSettings`; local only).
 ///
 /// Observable: every `BadgeView` reads through `shared`, so a new image, a finished download,
 /// Reset, the white switch or a color change redraws every badge in the app at once.
 ///
-/// Also the download service for Settings → OS Icons: per-row progress and inline errors,
-/// Download All Defaults (four at a time), and the image pipeline (download → decode and redraw
-/// off the main actor → PNG in the Badges folder). On failure the previous image stays.
-/// Nothing is ever downloaded except on an explicit action in Settings.
+/// Also the download service for Settings → OS Icons: per-row progress and inline errors, the
+/// automatic launch download (`startAutomaticDownloads`, four at a time, in the background), and the
+/// image pipeline (download → decode and redraw off the main actor → PNG in the Badges folder).
+/// On failure the previous image stays. The first launch downloads every catalog icon; later
+/// launches fetch only missing icons and icons whose link changed (see `BadgeFetchPlanner`).
+/// Failures are quiet and retried next launch.
 ///
 /// Files are read at launch and again whenever the OS Icons pane opens, so logos dropped into the
 /// folder by hand are picked up then too. A missing folder or file just means "no logo".
@@ -27,12 +29,6 @@ final class BadgeLogoStore {
         case failed(String)
     }
 
-    /// Progress of Download All Defaults.
-    struct BatchProgress: Equatable {
-        var total: Int
-        var finished: Int
-    }
-
     @ObservationIgnored let directory: URL?
     @ObservationIgnored let catalog = OSCatalog.shared
     private var logos: [OSBadge: NSImage] = [:]
@@ -40,9 +36,6 @@ final class BadgeLogoStore {
     /// Why `settings.json` couldn't be written last time, nil after a successful write.
     private(set) var settingsSaveError: String?
     private(set) var rowStatus: [OSBadge: RowStatus] = [:]
-    private(set) var batch: BatchProgress?
-    /// A short note after Download All Defaults (e.g. nothing to do, or how many failed).
-    private(set) var batchMessage: String?
 
     /// In-memory settings not yet on disk (a pending debounced write, or a failed one).
     @ObservationIgnored private var hasUnsavedSettings = false
@@ -50,18 +43,17 @@ final class BadgeLogoStore {
     @ObservationIgnored private var rowTasks: [OSBadge: Task<Void, Never>] = [:]
     /// The newest job per row; an older job that finishes later is ignored.
     @ObservationIgnored private var rowTokens: [OSBadge: UUID] = [:]
-    @ObservationIgnored private var batchTask: Task<Void, Never>?
-    @ObservationIgnored private var batchFailures = 0
-    /// Tokens of the jobs Download All Defaults started; only their failures count in its summary.
-    @ObservationIgnored private var batchTokens: Set<UUID> = []
+    @ObservationIgnored private var autoTask: Task<Void, Never>?
+    /// Tokens of the launch downloads; their failures stay quiet (no error on the row).
+    @ObservationIgnored private var autoTokens: Set<UUID> = []
+    @ObservationIgnored private var autoSuccesses = 0
     /// Per badge id: the modification date of the `<id>.png` our last download wrote. A logo whose
     /// file doesn't match wasn't (or is no longer) a plain download of its link.
     @ObservationIgnored private var downloadStamps: [String: Date] = [:]
 
     /// Color changes are written this long after the last change.
     static let colorSaveDelay: Duration = .milliseconds(300)
-    static let waitingLabel = "Waiting…"
-    /// Downloads running at once during Download All Defaults.
+    /// Downloads running at once during the automatic launch download.
     static let batchConcurrency = 4
 
     init(directory: URL?) {
@@ -186,30 +178,30 @@ final class BadgeLogoStore {
         startDownload(badge, from: url)
     }
 
-    /// Downloads the default icon of every entry that has no image yet, or whose image came from
-    /// its default link. Entries with a custom link or a chosen image are left alone.
-    func downloadAllDefaults() {
-        guard batch == nil else { return }
-        batchMessage = nil
-        var targets: [(OSBadge, URL)] = []
-        for entry in catalog.entries where settings.wantsDefaultDownload(entry.id, hasLogo: hasLogo(entry.id)) {
-            // A logo that isn't the file a download of this link wrote (dropped in by hand, chosen,
-            // or changed since) is never replaced by a batch.
-            if hasLogo(entry.id), !ownsDownloadedLogo(entry.id) { continue }
-            guard !isWorking(entry.id), let url = try? BadgeImageRules.webURL(from: entry.defaultLink) else { continue }
-            targets.append((entry.id, url))
+    /// Launch download, once per launch and never blocking it: plans on the main actor (a few file
+    /// stats), then downloads four at a time off the main actor. The first launch on this Mac fetches
+    /// every catalog icon; later launches only missing ones and ones whose link changed. A failure
+    /// shows nothing and is simply planned again next launch.
+    func startAutomaticDownloads() {
+        guard autoTask == nil else { return }
+        let firstRunKey = firstRunKey
+        let isFirstRun = !UserDefaults.standard.bool(forKey: firstRunKey)
+        let candidates = catalog.entries.map { entry in
+            BadgeFetchCandidate(badge: entry.id, defaultLink: entry.defaultLink,
+                                customLink: settings.hasCustomLink(for: entry.id) ? settings.link(for: entry.id) : nil,
+                                hasLogo: hasLogo(entry.id), imageSource: settings.imageSource(for: entry.id),
+                                ownsDownloadedImage: ownsDownloadedLogo(entry.id))
+        }
+        let targets = BadgeFetchPlanner.plan(candidates, isFirstRun: isFirstRun).compactMap { target -> (OSBadge, URL)? in
+            guard let url = try? BadgeImageRules.webURL(from: target.link) else { return nil }
+            return (target.badge, url)
         }
         guard !targets.isEmpty else {
-            batchMessage = "Nothing to download: every entry has its own image or link."
+            if isFirstRun { UserDefaults.standard.set(true, forKey: firstRunKey) }
             return
         }
-        batch = BatchProgress(total: targets.count, finished: 0)
-        batchFailures = 0
-        batchTokens = []
-        for (badge, _) in targets {
-            rowStatus[badge] = .working(Self.waitingLabel)
-        }
-        batchTask = Task { [weak self] in
+        autoSuccesses = 0
+        autoTask = Task { [weak self] in
             guard let self else { return }
             for start in stride(from: 0, to: targets.count, by: Self.batchConcurrency) {
                 if Task.isCancelled { break }
@@ -217,18 +209,21 @@ final class BadgeLogoStore {
                 await withTaskGroup(of: Void.self) { group in
                     for (badge, url) in chunk {
                         group.addTask {
-                            await self.runBatchItem(badge, from: url)
+                            await self.runAutomaticItem(badge, from: url)
                         }
                     }
                 }
             }
-            self.finishBatch()
+            // Done only once something downloaded, so an offline first launch plans "all" again.
+            if isFirstRun, BadgeFetchPlanner.firstRunCompleted(planned: targets.count, succeeded: self.autoSuccesses) {
+                UserDefaults.standard.set(true, forKey: firstRunKey)
+            }
+            self.autoTask = nil
         }
     }
 
-    /// Stops Download All Defaults; finished rows keep their new images.
-    func cancelBatch() {
-        batchTask?.cancel()
+    private var firstRunKey: String {
+        "BadgeLogoStore.firstRunDownloadDone." + (directory?.path ?? "")
     }
 
     /// Clears a row's error (e.g. when the user edits the link again).
@@ -282,7 +277,7 @@ final class BadgeLogoStore {
     private func finishJob(_ badge: OSBadge, token: UUID, result: Result<Data, BadgeImageError>, source: String?) {
         guard rowTokens[badge] == token else { return } // a newer job (or Reset) took over
         rowTokens[badge] = nil
-        defer { batchTokens.remove(token) }
+        let isAutomatic = autoTokens.remove(token) != nil
         rowTasks[badge] = nil
         if Task.isCancelled {
             rowStatus[badge] = nil
@@ -292,18 +287,17 @@ final class BadgeLogoStore {
         case .success(let png):
             do throws(BadgeImageError) {
                 try writeInstalledLogo(png, for: badge, fromDownload: source != nil)
+                if isAutomatic { autoSuccesses += 1 }
                 rowStatus[badge] = nil
                 recordSource(source, for: badge)
             } catch {
                 if case .oldFileNotRemoved = error {
                     recordSource(source, for: badge) // the new image is shown
                 }
-                rowStatus[badge] = .failed(error.message)
-                if batchTokens.remove(token) != nil { batchFailures += 1 }
+                rowStatus[badge] = isAutomatic ? nil : .failed(error.message)
             }
         case .failure(let error):
-            rowStatus[badge] = .failed(error.message)
-            if batchTokens.remove(token) != nil { batchFailures += 1 }
+            rowStatus[badge] = isAutomatic ? nil : .failed(error.message)
         }
     }
 
@@ -313,34 +307,14 @@ final class BadgeLogoStore {
         saveSettingsNow()
     }
 
-    /// One Download All Defaults item; skipped when the row was taken over meanwhile (its own
-    /// Download, Choose Image… or Reset).
-    private func runBatchItem(_ badge: OSBadge, from url: URL) async {
-        if rowStatus[badge] == .working(Self.waitingLabel), !Task.isCancelled {
-            let token = beginJob(badge, label: "Downloading…")
-            batchTokens.insert(token)
-            await runDownload(badge, from: url, token: token)
-        }
-        batch?.finished += 1
-    }
-
-    private func finishBatch() {
-        let wasCancelled = batchTask?.isCancelled ?? false
-        // Rows that never started (cancelled) stop waiting.
-        for (badge, status) in rowStatus where status == .working(Self.waitingLabel) && rowTokens[badge] == nil {
-            rowStatus[badge] = nil
-        }
-        if wasCancelled {
-            batchMessage = "Stopped."
-        } else if batchFailures > 0 {
-            batchMessage = batchFailures == 1 ? "1 icon couldn't be downloaded; see its row."
-                : "\(batchFailures) icons couldn't be downloaded; see their rows."
-        } else {
-            batchMessage = nil
-        }
-        batch = nil
-        batchTask = nil
-        batchTokens = []
+    /// One launch download; skipped when the user took the row over meanwhile (its own Download,
+    /// Choose Image… or Reset) or supplied an image of their own.
+    private func runAutomaticItem(_ badge: OSBadge, from url: URL) async {
+        guard !isWorking(badge), !(hasLogo(badge) && !ownsDownloadedLogo(badge)) else { return }
+        rowTasks[badge]?.cancel()
+        let token = beginJob(badge, label: "Downloading…")
+        autoTokens.insert(token)
+        await runDownload(badge, from: url, token: token)
     }
 
     // MARK: Files
@@ -461,10 +435,10 @@ final class BadgeLogoStore {
         return failure
     }
 
-    /// `~/Library/Application Support/TermiusReimagined/Badges`, nil if Application Support is unknown.
+    /// `~/Library/Application Support/SwiftSSH/Badges`, nil if Application Support is unknown.
     static var directoryURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("TermiusReimagined", isDirectory: true)
+            .appendingPathComponent("SwiftSSH", isDirectory: true)
             .appendingPathComponent(BadgeStyle.logoFolderName, isDirectory: true)
     }
 

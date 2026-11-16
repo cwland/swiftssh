@@ -1,4 +1,4 @@
-# Termius Reimagined sync server
+# SwiftSSH sync server
 
 A small Vapor server that stores your end-to-end encrypted vault records in SQLite.
 It never sees plaintext; clients authenticate with a bearer API key.
@@ -36,7 +36,7 @@ All other endpoints require `Authorization: Bearer <key>`.
 ## Deploy from GHCR
 
 Pushes to `main` that touch `Server/` or `Packages/CoreSSH/` (and tags named `server-v*`) run
-tests and publish `ghcr.io/cwland/termius-reimagined-sync` for linux/amd64, tagged `latest`
+tests and publish `ghcr.io/cwland/swiftssh-sync` for linux/amd64, tagged `latest`
 (main only), the short commit sha, and the git tag.
 
 The repository is private, so the package is too. On the server, log in once with a personal
@@ -58,11 +58,36 @@ To update:
 
 ```sh
 docker compose -f docker-compose.deploy.yml pull
-docker compose -f docker-compose.deploy.yml up -d
+docker compose -f docker-compose.deploy.yml up -d --remove-orphans
 ```
 
 Set `SYNC_IMAGE_TAG` in `.env` (a short sha or `server-vX.Y.Z`) to pin a version instead of
 `latest`.
+
+## Moving from the Termius Reimagined names
+
+The app was renamed from Termius Reimagined to SwiftSSH. For the server that means:
+
+- Image: `ghcr.io/cwland/termius-reimagined-sync` is now `ghcr.io/cwland/swiftssh-sync`. The
+  old package stays on GHCR with its last build; new builds go only to the new name. The new
+  package is private too: if the server can't pull it, check the package's access settings on
+  GitHub (Packages → swiftssh-sync).
+- Service and container: `termius-sync` is now `swiftssh-sync` (container name set explicitly).
+  If you use the service name in your reverse proxy (`termius-sync:8080`), change it.
+- Data: the volume is still called `sync-data`, so Compose finds the same
+  `<project>_sync-data` volume and nothing is copied or lost. Keep running from the same folder
+  (the project name comes from it, e.g. `server`).
+
+To switch, back up first (see Backups below, using the old service name), copy the new
+`docker-compose.deploy.yml` over the old one, then:
+
+```sh
+docker compose -f docker-compose.deploy.yml pull
+docker compose -f docker-compose.deploy.yml up -d --remove-orphans
+```
+
+`--remove-orphans` stops and removes the old `termius-sync` container, which would otherwise
+keep port 8080. The Macs keep their server URL and API key; nothing changes there.
 
 ## Revoking a Mac
 
@@ -81,7 +106,7 @@ The server has no path-prefix support of its own: routes are mounted at `/health
 `/v1/...`. If you publish it under a prefix such as `https://host/sync/`, the proxy must
 strip the prefix before forwarding to the server (for Nginx: `location /sync/ {
 proxy_pass http://<server-ip>:8080/; }`, with the trailing slash). Use an address the proxy
-can reach: the server's IP or hostname, or `termius-sync:8080` only if the proxy shares a
+can reach: the server's IP or hostname, or `swiftssh-sync:8080` only if the proxy shares a
 Docker network with the container. Serving it on its own
 hostname needs no rewriting. Forward the `Authorization` header unchanged, and allow request
 bodies of at least 10 MB (the server's limit; Nginx defaults to 1 MB, so set
@@ -93,10 +118,10 @@ All state is one SQLite file, `/data/sync.sqlite`, in the `sync-data` Docker vol
 Back up that volume, for example:
 
 ```sh
-docker compose stop termius-sync
+docker compose stop swiftssh-sync
 docker run --rm -v server_sync-data:/data -v "$PWD":/backup ubuntu \
   tar czf /backup/sync-data.tgz -C /data .
-docker compose start termius-sync
+docker compose start swiftssh-sync
 ```
 
 (The volume name is prefixed with the Compose project name; check `docker volume ls`.)

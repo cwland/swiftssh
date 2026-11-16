@@ -7,7 +7,7 @@ import Foundation
 
 /// The private directory for system ssh's temporary files: the askpass helper, one-time secret files,
 /// temporary private keys, pinned agent public keys and each session's generated `known_hosts` file. ssh's control sockets live in a separate,
-/// short `controlDirectory` (`/tmp/tr-<uid>`), because Unix socket paths are limited to 104 bytes on macOS
+/// short `controlDirectory` (`/tmp/swiftssh-<uid>`), because Unix socket paths are limited to 104 bytes on macOS
 /// and the app's run directory is far too deep for `<dir>/<40-character %C>`.
 ///
 /// The directory is 0700 and every file is created 0600 (the helper 0700) with `O_EXCL | O_NOFOLLOW`,
@@ -17,15 +17,15 @@ public struct SSHRuntimeDirectory: Sendable {
     /// Holds ssh's control sockets (`ControlPath=<controlDirectory>/%C`).
     public let controlDirectory: URL
 
-    /// The app passes `~/Library/Application Support/TermiusReimagined/run`; tests inject `controlDirectory`.
+    /// The app passes `~/Library/Application Support/SwiftSSH/run`; tests inject `controlDirectory`.
     public init(root: URL, controlDirectory: URL = SSHRuntimeDirectory.defaultControlDirectory) {
         self.root = root.standardizedFileURL
         self.controlDirectory = controlDirectory
     }
 
-    /// `/tmp/tr-<uid>`.
+    /// `/tmp/swiftssh-<uid>`.
     public static var defaultControlDirectory: URL {
-        URL(fileURLWithPath: "/tmp/tr-\(getuid())", isDirectory: true)
+        URL(fileURLWithPath: "/tmp/swiftssh-\(getuid())", isDirectory: true)
     }
 
     public var askpassURL: URL { root.appendingPathComponent("askpass") }
@@ -34,7 +34,7 @@ public struct SSHRuntimeDirectory: Sendable {
     /// (never the prompt) and deletes the file, so a second ask fails.
     static let askpassScript = """
     #!/bin/sh
-    f="$TR_SECRET_FILE"
+    f="$SWIFTSSH_SECRET_FILE"
     [ -n "$f" ] && [ -f "$f" ] && cat "$f" && rm -f "$f"
 
     """
@@ -118,6 +118,14 @@ public struct SSHRuntimeDirectory: Sendable {
         let text = safe.map { $0 + "\n" }.joined()
         let url = root.appendingPathComponent("\(UUID().uuidString).known_hosts")
         try create(url, contents: Data(text.utf8), mode: 0o600)
+        return url
+    }
+
+    /// Creates an empty `<uuid>.log` (0600) for `ssh -E`: ssh's debug output goes there instead of the
+    /// terminal. `SSHDebugLogReader` reads and removes it.
+    public func writeDebugLog() throws -> URL {
+        let url = root.appendingPathComponent("\(UUID().uuidString).log")
+        try create(url, contents: Data(), mode: 0o600)
         return url
     }
 

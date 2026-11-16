@@ -7,7 +7,10 @@ import AppCore
 enum Theme {
     // Top bar
     static let topBarBackground = Color(hex: "#23263A")
-    static let tabBackground = Color(hex: "#2F3348")
+    /// The selected tab.
+    static let tabBackground = Color(hex: "#41455E")
+    /// Every other tab: its own box, so you can see where one tab ends and the next begins.
+    static let tabInactiveBackground = Color(hex: "#2D3046")
     static let topBarForeground = Color.white
     static let topBarHeight: CGFloat = 52
     static let tabCornerRadius: CGFloat = 10
@@ -26,6 +29,8 @@ enum Theme {
     static let contentBackground = Color.dynamic(light: "#EEF0F2", dark: .windowBackground)
     static let searchFieldBackground = Color.dynamic(light: "#E4E7EB", dark: .quaternaryLabel)
     static let accent = Color(hex: "#3B82F6")
+    /// Where a dragged tab or host lands on a terminal (the half that becomes the new pane).
+    static let dropHighlight = Color(hex: "#22C55E")
     /// Cards stand apart from the content area: white on the light grey background, one step
     /// lighter than the background in Dark Aqua.
     static let cardBackground = Color.dynamic(light: "#FFFFFF", dark: .raisedSurface)
@@ -122,7 +127,11 @@ struct CardRow<Badge: View>: View {
     let title: String
     let subtitle: String
     var isSelected = false
+    /// When set, a pencil button at the right edge (while hovered or selected) opens the editor.
+    var onEdit: (() -> Void)? = nil
     @ViewBuilder let badge: () -> Badge
+
+    @State private var isHovering = false
 
     var body: some View {
         HStack(spacing: Theme.cardPadding) {
@@ -142,6 +151,11 @@ struct CardRow<Badge: View>: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
+            if let onEdit {
+                CardEditButton(action: onEdit)
+                    .opacity(isHovering || isSelected ? 1 : 0)
+                    .allowsHitTesting(isHovering || isSelected)
+            }
         }
         .padding(.horizontal, Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -155,6 +169,31 @@ struct CardRow<Badge: View>: View {
                 .strokeBorder(isSelected ? Theme.accent : Color.clear, lineWidth: 2)
         }
         .contentShape(RoundedRectangle(cornerRadius: Theme.cardCornerRadius, style: .continuous))
+        .onHover { isHovering = $0 }
+    }
+}
+
+/// The card's pencil: a rounded grey square (as in Termius) that opens the card's editor.
+struct CardEditButton: View {
+    let action: () -> Void
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "pencil")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.primary)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(isHovering ? 0.16 : 0.09))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .help("Edit")
+        .accessibilityLabel("Edit")
     }
 }
 

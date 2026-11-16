@@ -146,46 +146,52 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.osBadge?.rawValue, "xcpng")
     }
 
-    func testSwitchingCredentialModeClearsTheOtherMode() async throws {
+    func testSwitchingCredentialModeKeepsBothSidesAndUsesOnlyTheChosenOne() async throws {
         let vault = try await makeVault()
         let key = try await vault.save(SSHKey(label: "k", keyType: .ed25519, publicKey: "pub", privateKey: "priv"))
-        let identity = try await vault.save(Identity(label: "cory", username: "cory"))
+        let identity = try await vault.save(Identity(label: "cory", username: "cory", password: "idpw"))
         let host = try await vault.save(SavedHost(label: "a", address: "a.example", username: "root",
                                                   password: "pw", sshKeyID: key.id))
         let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
         XCTAssertEqual(vm.credentialMode, .direct)
-        XCTAssertEqual(vm.username, "root")
-        XCTAssertEqual(vm.password, "pw")
-        XCTAssertEqual(vm.sshKeyID, key.id)
         XCTAssertEqual(vm.availableKeys, [key])
         XCTAssertEqual(vm.availableIdentities, [identity])
 
         vm.credentialMode = .identity
-        XCTAssertEqual(vm.credentialMode, .identity)
-        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertEqual(stored.username, "root", "switching the login method never clears the username")
-        XCTAssertNil(stored.password)
-        XCTAssertNil(stored.sshKeyID)
-        XCTAssertEqual(vm.credentialMode, .identity, "a kept username doesn't flip the mode back to direct")
-
         vm.identityID = identity.id
-        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.identityID, identity.id)
-        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.username, "root")
+        var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
+        XCTAssertEqual(stored.identityID, identity.id)
+        XCTAssertEqual(stored.username, "root", "the direct credentials are kept")
+        XCTAssertEqual(stored.password, "pw")
+        XCTAssertEqual(stored.sshKeyID, key.id)
         XCTAssertEqual(vm.credentialMode, .identity)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "cory",
+                       "identity mode uses only the identity")
 
         vm.credentialMode = .direct
-        XCTAssertEqual(vm.credentialMode, .direct)
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertNil(stored.identityID)
-        XCTAssertEqual(vm.username, "root", "back in direct mode the kept username shows")
+        XCTAssertEqual(stored.identityID, identity.id, "the identity stays linked for switching back")
+        XCTAssertEqual(stored.prefersIdentity, false)
+        XCTAssertEqual(vm.credentialMode, .direct)
+        XCTAssertEqual(vm.username, "root")
+        XCTAssertEqual(vm.password, "pw")
+        XCTAssertEqual(vm.sshKeyID, key.id)
+        XCTAssertEqual(vm.identityID, identity.id)
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.username, "root", "direct mode ignores the linked identity")
+        XCTAssertEqual(HostsViewModel(vault: vault).subtitle(for: stored), "ssh, root")
 
+        vm.credentialMode = .identity
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "cory",
+                       "switching back needs no re-entry")
+
+        vm.credentialMode = .direct
         vm.username = "admin"
         vm.password = "secret"
-        vm.sshKeyID = key.id
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(stored.username, "admin")
         XCTAssertEqual(stored.password, "secret")
-        XCTAssertEqual(stored.sshKeyID, key.id)
+        XCTAssertEqual(stored.identityID, identity.id)
         vm.username = ""
         XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.username)
     }
@@ -284,34 +290,35 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.credentialMode = .direct
         XCTAssertEqual(vm.credentialMode, .direct)
 
-        // Linked externally while the VM thinks direct: derived from storage.
+        // Linked on another Mac (identity mode recorded there): derived from storage.
         let other = try await vault.save(Identity(label: "o", username: "o"))
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         stored.identityID = other.id
+        stored.prefersIdentity = true
         try await vault.save(stored)
         XCTAssertEqual(vm.credentialMode, .identity)
 
-        // Setting a direct field while an identity is linked clears the identity.
+        // Setting a direct field records direct mode; the identity stays linked.
         vm.sshKeyID = key.id
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.identityID, other.id)
         XCTAssertEqual(stored.sshKeyID, key.id)
         XCTAssertEqual(vm.credentialMode, .direct)
         vm.username = "root"
         vm.password = "pw"
 
-        // Setting an identity clears the direct password and key, never the username.
+        // Choosing an identity again keeps the direct password and key.
         vm.identityID = other.id
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(stored.identityID, other.id)
         XCTAssertEqual(stored.username, "root")
-        XCTAssertNil(stored.password)
-        XCTAssertNil(stored.sshKeyID)
+        XCTAssertEqual(stored.password, "pw")
+        XCTAssertEqual(stored.sshKeyID, key.id)
         XCTAssertEqual(vm.credentialMode, .identity)
 
         vm.password = "secret"
         stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.identityID, other.id)
         XCTAssertEqual(stored.password, "secret")
         XCTAssertEqual(vm.credentialMode, .direct)
     }
@@ -430,10 +437,11 @@ final class HostDetailsViewModelTests: XCTestCase {
 
     // MARK: 1Password agent key
 
-    func testSettingAgentKeySavesAndUnlinksTheIdentity() async throws {
+    func testSettingAgentKeySavesSwitchesToDirectAndKeepsTheIdentity() async throws {
         let vault = try await makeVault()
         let identity = try await vault.save(Identity(label: "i", username: "u"))
-        let host = try await vault.save(SavedHost(label: "h", address: "h.example", identityID: identity.id))
+        let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
+                                                  identityID: identity.id))
         let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
         XCTAssertNil(vm.agentKey)
         XCTAssertEqual(vm.credentialMode, .identity)
@@ -441,9 +449,11 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.agentKey = AgentKeyChoice(publicKey: nil)
         let saved = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(saved.agentKey, AgentKeyChoice(publicKey: nil))
-        XCTAssertNil(saved.identityID)
+        XCTAssertEqual(saved.identityID, identity.id, "kept for switching back")
         XCTAssertEqual(vm.agentKey, AgentKeyChoice(publicKey: nil))
         XCTAssertEqual(vm.credentialMode, .direct)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).agentKey,
+                       AgentKeyChoice(publicKey: nil), "direct mode signs in with the agent")
 
         vm.agentKey = AgentKeyChoice(publicKey: "ssh-ed25519 AAAA pin")
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.agentKey?.publicKey, "ssh-ed25519 AAAA pin")
@@ -491,7 +501,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(otherVM.credentialMode, .direct)
     }
 
-    func testSwitchingToIdentityModeOrLinkingAnIdentityClearsAgentKey() async throws {
+    func testSwitchingToIdentityModeOrLinkingAnIdentityKeepsTheAgentKeyUnused() async throws {
         let vault = try await makeVault()
         let identity = try await vault.save(Identity(label: "i", username: "u"))
         let a = try await vault.save(SavedHost(label: "a", address: "a.example", username: "root",
@@ -499,12 +509,17 @@ final class HostDetailsViewModelTests: XCTestCase {
         let b = try await vault.save(SavedHost(label: "b", address: "b.example",
                                                agentKey: AgentKeyChoice(publicKey: nil)))
         HostDetailsViewModel(vault: vault, hostID: a.id).credentialMode = .identity
-        XCTAssertNil(vault.get(SavedHost.self, id: a.id)?.agentKey)
+        XCTAssertEqual(vault.get(SavedHost.self, id: a.id)?.agentKey?.publicKey, "ssh-ed25519 AAAA pin")
         XCTAssertEqual(vault.get(SavedHost.self, id: a.id)?.username, "root")
+        XCTAssertNil(try? ConnectionPlanner.plan(hostID: a.id, vault: vault),
+                     "identity mode without an identity: the kept agent key isn't used")
         HostDetailsViewModel(vault: vault, hostID: b.id).identityID = identity.id
         let linked = try XCTUnwrap(vault.get(SavedHost.self, id: b.id))
-        XCTAssertNil(linked.agentKey)
+        XCTAssertEqual(linked.agentKey, AgentKeyChoice(publicKey: nil))
         XCTAssertEqual(linked.identityID, identity.id)
+        let plan = try ConnectionPlanner.plan(hostID: b.id, vault: vault)
+        XCTAssertEqual(plan.username, "u")
+        XCTAssertNil(plan.agentKey, "the identity applies, not the host's agent key")
     }
 
     func testAgentKeySetIsIgnoredOnceTheHostIsDeleted() async throws {
@@ -585,7 +600,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.credentialMode, .identity)
     }
 
-    func testWritingADifferentUsernameStillUnlinksTheIdentity() async throws {
+    func testWritingADifferentUsernameSwitchesToDirectAndKeepsTheIdentity() async throws {
         let vault = try await makeVault()
         let identity = try await vault.save(Identity(label: "i", username: "alice"))
         let host = try await vault.save(SavedHost(label: "h", address: "h.example", username: "root",
@@ -593,8 +608,9 @@ final class HostDetailsViewModelTests: XCTestCase {
         let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
         vm.username = "other"
         let after = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
-        XCTAssertNil(after.identityID)
+        XCTAssertEqual(after.identityID, identity.id)
         XCTAssertEqual(after.prefersIdentity, false)
+        XCTAssertEqual(try ConnectionPlanner.plan(hostID: host.id, vault: vault).username, "other")
         XCTAssertEqual(after.username, "other")
     }
 
@@ -727,7 +743,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(saved.username, "root")
     }
 
-    func testApplyUnlinksIdentityKeepsUsernameAndPersists() async throws {
+    func testApplySwitchesToDirectKeepsIdentityAndUsernameAndPersists() async throws {
         let p = InMemoryVaultPersistence()
         let vault = try await makeVault(p)
         let identity = try await vault.save(Identity(label: "i", username: "u"))
@@ -742,7 +758,8 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.credentialMode, .direct)
         await vault.flush()
         let stored = try await persistedHost(p, id: host.id)
-        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.identityID, identity.id)
+        XCTAssertEqual(stored.prefersIdentity, false)
         XCTAssertEqual(stored.username, "root")
         XCTAssertEqual(stored.agentKey, AgentKeyChoice(publicKey: nil))
         XCTAssertNotNil(vault.get(Identity.self, id: identity.id))
@@ -778,7 +795,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         var stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(stored.prefersIdentity, true)
         XCTAssertEqual(stored.username, "root")
-        XCTAssertNil(stored.password)
+        XCTAssertEqual(stored.password, "pw", "kept, unused in identity mode")
         XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: host.id).credentialMode, .identity,
                        "a fresh editor (another Mac) sees identity mode")
         var plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
@@ -825,7 +842,7 @@ final class HostDetailsViewModelTests: XCTestCase {
         vm.apply(.agent(AgentKeyChoice(publicKey: nil)), removingReplaced: true)
         let stored = try XCTUnwrap(vault.get(SavedHost.self, id: host.id))
         XCTAssertEqual(stored.prefersIdentity, false)
-        XCTAssertNil(stored.identityID)
+        XCTAssertEqual(stored.identityID, identity.id)
         XCTAssertEqual(stored.username, "root")
         XCTAssertEqual(vm.credentialMode, .direct)
     }
@@ -929,5 +946,57 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertNil(vm.inheritedThemeID)
         XCTAssertNil(vm.unknownThemeID)
         XCTAssertNil(vault.get(SavedHost.self, id: host.id))
+    }
+
+    // MARK: Theme row and gallery (v0.6.1)
+
+    func testDefaultThemeIsGroupThemeThenAppDefaultThenAutomatic() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let grouped = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "nord"))
+        let loose = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        let groupedVM = HostDetailsViewModel(vault: vault, hostID: grouped.id)
+        let looseVM = HostDetailsViewModel(vault: vault, hostID: loose.id)
+        XCTAssertEqual(groupedVM.defaultTheme(appDefaultThemeID: "nord")?.id, "dracula")
+        XCTAssertEqual(looseVM.defaultTheme(appDefaultThemeID: "nord")?.id, "nord")
+        XCTAssertNil(looseVM.defaultTheme(appDefaultThemeID: nil))
+        XCTAssertNil(looseVM.defaultTheme(appDefaultThemeID: "from-the-future"))
+    }
+
+    func testDefaultThemeLabel() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let grouped = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id))
+        let loose = try await vault.save(SavedHost(label: "b", address: "b.example"))
+        XCTAssertEqual(HostDetailsViewModel(vault: vault, hostID: grouped.id).defaultThemeLabel(appDefaultThemeID: "nord"),
+                       "Dracula \u{2014} from group")
+        let looseVM = HostDetailsViewModel(vault: vault, hostID: loose.id)
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: "nord"), "Nord")
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: nil), "Automatic")
+        XCTAssertEqual(looseVM.defaultThemeLabel(appDefaultThemeID: "from-the-future"), "Automatic")
+    }
+
+    func testThemeSummaryNamesOwnThemeDefaultOrUnknown() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "nord"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Nord")
+        vm.themeID = nil
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Default (Dracula \u{2014} from group)")
+        vm.groupID = nil
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Default (Automatic)")
+        vm.themeID = "from-the-future"
+        XCTAssertEqual(vm.themeSummary(appDefaultThemeID: nil), "Unknown theme (from-the-future)")
+    }
+
+    func testInheritedThemeIDIgnoresOtherHosts() async throws {
+        let vault = try await makeVault()
+        let group = try await vault.save(HostGroup(name: "G", defaultThemeID: "dracula"))
+        _ = try await vault.save(SavedHost(label: "other", address: "o.example", groupID: group.id, themeID: "nord"))
+        let host = try await vault.save(SavedHost(label: "a", address: "a.example", groupID: group.id, themeID: "flexoki-dark"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.inheritedThemeID, "dracula")
+        XCTAssertEqual(vm.themeID, "flexoki-dark")
     }
 }

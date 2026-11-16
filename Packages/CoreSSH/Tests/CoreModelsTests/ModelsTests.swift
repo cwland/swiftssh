@@ -19,11 +19,15 @@ final class ModelsTests: XCTestCase {
         try roundTrip(Host(id: id, label: "Docker", address: "10.0.0.1", port: 2200, groupID: other, tags: ["a", "b"], username: "root", identityID: other, password: "pw", sshKeyID: other, osBadge: .raspbian, osBadgeIsManual: true, themeID: "dracula", startupSnippetID: other, lastConnectedAt: date, updatedAt: date, deleted: true))
         try roundTrip(Identity(id: id, label: "Me", username: "cory", password: "pw", sshKeyID: other, updatedAt: date, deleted: true))
         try roundTrip(SSHKey(id: id, label: "k", keyType: .rsa, publicKey: "pub", privateKey: "priv", passphrase: "pp", updatedAt: date, deleted: true))
-        try roundTrip(Snippet(id: id, name: "n", script: "ls", package: "pkg", updatedAt: date, deleted: true))
+        try roundTrip(Snippet(id: id, name: "n", script: "ls", package: "pkg", targetHostIDs: [other, id], updatedAt: date, deleted: true))
         try roundTrip(KnownHost(id: id, hostPort: "h:22", keyType: "ssh-ed25519", fingerprintSHA256: "abc", firstSeen: date, updatedAt: date, deleted: true))
         try roundTrip(ConnectionLog(id: id, hostID: other, hostLabel: "Docker", username: "root", deviceName: "mini", startedAt: date, endedAt: date, saved: true, updatedAt: date, deleted: true))
         try roundTrip(ShellHistoryEntry(id: id, command: "ls", hostID: other, executedAt: date, updatedAt: date, deleted: true))
         try roundTrip(AISettings(id: id, provider: .anthropic, baseURL: "https://x", model: "m", apiKey: "k", updatedAt: date, deleted: true))
+        try roundTrip(TerminalHighlightRules(id: id, rules: [
+            HighlightRule(id: other, pattern: "prod\\d+", isRegularExpression: true, matchCase: true, color: "#E5484D",
+                          isBold: true, isEnabled: false),
+        ], updatedAt: date, deleted: true))
     }
 
     func testRecordTypesAreUniquePerModel() {
@@ -33,6 +37,64 @@ final class ModelsTests: XCTestCase {
             ShellHistoryEntry.recordType, AISettings.recordType,
         ]
         XCTAssertEqual(Set(types).count, SyncRecordType.allCases.count)
+        // The one deliberate exception: the highlight rules share the settings slot, so app versions
+        // before v0.11 never see an unknown record type (see `TerminalHighlightRules`).
+        XCTAssertEqual(TerminalHighlightRules.recordType, .aiSettings)
+    }
+
+    func testHighlightRulesRecordIsASingleton() {
+        XCTAssertEqual(TerminalHighlightRules(rules: []).id, TerminalHighlightRules.singletonID)
+        XCTAssertEqual(TerminalHighlightRules.singletonID.uuidString, "6C1B2E1A-0B5D-4E0C-9D6A-48494C495445")
+    }
+
+    func testHighlightRuleDecodesLeniently() throws {
+        let json = #"{"pattern":"prod","isBold":"yes","future":1}"#
+        let rule = try CoreJSON.decoder.decode(HighlightRule.self, from: Data(json.utf8))
+        XCTAssertEqual(rule.pattern, "prod")
+        XCTAssertFalse(rule.isRegularExpression)
+        XCTAssertFalse(rule.matchCase)
+        XCTAssertFalse(rule.isBold)
+        XCTAssertTrue(rule.isEnabled)
+        XCTAssertEqual(rule.color, "")
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(HighlightRule.self, from: Data(##"{"color":"#FFFFFF"}"##.utf8)))
+    }
+
+    /// A rule a newer version wrote that this one can't read is skipped, not the whole list.
+    func testHighlightRulesSkipRulesThatDoNotDecode() throws {
+        let json = #"""
+        {"id":"6C1B2E1A-0B5D-4E0C-9D6A-48494C495445","updatedAt":1793000000000,"deleted":false,
+         "rules":[{"pattern":"prod","color":"#E5484D"},{"color":"#FFFFFF"},7,{"pattern":"db"}]}
+        """#
+        let record = try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: Data(json.utf8))
+        XCTAssertEqual(record.rules.map(\.pattern), ["prod", "db"])
+        let shapeChanged = #"{"id":"6C1B2E1A-0B5D-4E0C-9D6A-48494C495445","updatedAt":1793000000000,"deleted":false,"rules":{"v":2}}"#
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: Data(shapeChanged.utf8)),
+                             "a list that changed shape doesn't decode (the store then shows it read-only)")
+    }
+
+    func testHighlightRulesUnionKeepsVaultOrderThenLocalOnlyRules() {
+        let shared = UUID()
+        let vaultShared = HighlightRule(id: shared, pattern: "prod", color: "#E5484D")
+        var localShared = vaultShared
+        localShared.isBold = true
+        let v1 = HighlightRule(pattern: "db", color: "#E5484D")
+        let l1 = HighlightRule(pattern: "staging", color: "#E5484D")
+        let l2 = HighlightRule(pattern: "error", color: "#E5484D")
+
+        let preferVault = TerminalHighlightRules.union(vault: [v1, vaultShared], local: [l1, localShared, l2],
+                                                       preferLocalVersions: false)
+        XCTAssertEqual(preferVault, [v1, vaultShared, l1, l2])
+        let preferLocal = TerminalHighlightRules.union(vault: [v1, vaultShared], local: [l1, localShared, l2],
+                                                       preferLocalVersions: true)
+        XCTAssertEqual(preferLocal, [v1, localShared, l1, l2], "a rule in both lists keeps the newer copy's version")
+        XCTAssertEqual(TerminalHighlightRules.union(vault: [], local: [l1], preferLocalVersions: false), [l1])
+    }
+
+    func testHighlightRulesAndAISettingsNeverDecodeAsEachOther() throws {
+        let rules = try CoreJSON.encoder.encode(TerminalHighlightRules(rules: [HighlightRule(pattern: "x", color: "#000000")]))
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(AISettings.self, from: rules))
+        let ai = try CoreJSON.encoder.encode(AISettings(baseURL: "https://x", model: "m"))
+        XCTAssertThrowsError(try CoreJSON.decoder.decode(TerminalHighlightRules.self, from: ai))
     }
 
     func testHostDefaults() {
@@ -68,5 +130,21 @@ final class ModelsTests: XCTestCase {
         XCTAssertNil(decoded.publicKeyBase64)
         XCTAssertEqual(decoded.hostPort, "h")
         try roundTrip(k)
+    }
+
+    func testOldSnippetWithoutTargetsDecodes() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.123)
+        let target = UUID()
+        let s = Snippet(name: "up", script: "apt update", package: "ops", targetHostIDs: [target], updatedAt: date)
+        let data = try CoreJSON.encoder.encode(s)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["targetHostIDs"] as? [String], [target.uuidString])
+        object.removeValue(forKey: "targetHostIDs")
+        let decoded = try CoreJSON.decoder.decode(Snippet.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(decoded.targetHostIDs)
+        XCTAssertEqual(decoded.name, "up")
+        XCTAssertEqual(decoded.package, "ops")
+        XCTAssertNil(Snippet(name: "n", script: "ls").targetHostIDs, "defaults to none")
+        try roundTrip(s)
     }
 }

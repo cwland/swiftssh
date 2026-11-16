@@ -1,14 +1,20 @@
 import Foundation
 import CoreModels
 
-/// What a terminal tab draws with: the resolved theme and the text size in points.
+/// What a terminal tab draws with: the resolved theme, the text size in points, the font family
+/// (nil = SF Mono) and the behaviour settings. `TerminalSettings.appearance(theme:)` fills all four.
 public struct TerminalAppearance: Equatable, Sendable {
     public var theme: TerminalTheme
     public var fontSize: Int
+    public var fontName: String?
+    public var behaviour: TerminalBehaviour
 
-    public init(theme: TerminalTheme, fontSize: Int) {
+    public init(theme: TerminalTheme, fontSize: Int, fontName: String? = nil,
+                behaviour: TerminalBehaviour = TerminalBehaviour()) {
         self.theme = theme
         self.fontSize = fontSize
+        self.fontName = fontName
+        self.behaviour = behaviour
     }
 }
 

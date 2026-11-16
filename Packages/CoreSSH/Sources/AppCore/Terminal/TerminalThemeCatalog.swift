@@ -115,7 +115,7 @@ public struct TerminalThemeCatalog: Sendable {
         return themes.compactMap(\.credit).filter { seen.insert($0.key).inserted }
     }
 
-    /// Reimagined Light or Reimagined Dark. A catalog without them (only test data) falls back to
+    /// SwiftSSH Light or SwiftSSH Dark. A catalog without them (only test data) falls back to
     /// its first theme of that appearance, then its first theme, then the bundled catalog's.
     public func automatic(prefersDark: Bool) -> TerminalTheme {
         let id = prefersDark ? Self.darkDefaultID : Self.lightDefaultID

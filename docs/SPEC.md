@@ -1,4 +1,4 @@
-# Project Specification: Native macOS SSH Client (Termius Clone)
+# Project Specification: SwiftSSH, a Native macOS SSH Client (Termius-inspired)
 
 ## 1. Project Overview & Goals
 Build a native macOS SSH client and terminal emulator inspired by the design, workflow, and visual polish of **Termius**. 

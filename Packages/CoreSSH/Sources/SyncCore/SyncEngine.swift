@@ -29,6 +29,35 @@ public struct PlainRecord: Codable, Equatable, Sendable {
     public func decode<M: SyncableModel>(_: M.Type) throws -> M {
         try CoreJSON.decoder.decode(M.self, from: payload)
     }
+
+    /// `model` as a record that keeps the fields of `previous` (the stored copy) this app version
+    /// doesn't know, so an older app editing a record a newer one wrote doesn't erase the newer
+    /// settings (see `encode(_:keepingUnknownFieldsOf:)`).
+    public init<M: SyncableModel>(_ model: M, deviceID: String, keepingUnknownFieldsOf previous: PlainRecord?) throws {
+        try self.init(model, deviceID: deviceID)
+        if let previous, previous.type == M.recordType {
+            payload = try Self.encode(model, keepingUnknownFieldsOf: previous.payload)
+        }
+    }
+
+    /// `model`'s JSON plus the top-level fields of `previous` this app version doesn't know. A field
+    /// the model knows always takes the model's value, also when it is now empty (cleared). Without
+    /// such fields it is the model's plain encoding. Fields nested inside a known field are not kept:
+    /// new fields go at the top level of a model.
+    public static func encode<M: SyncableModel>(_ model: M, keepingUnknownFieldsOf previous: Data) throws -> Data {
+        let plain = try CoreJSON.encoder.encode(model)
+        guard let old = try? JSONSerialization.jsonObject(with: previous) as? [String: Any] else { return plain }
+        // The models use synthesized Codable: their stored properties are exactly their field names
+        // (guarded by JoinDeduplicatorTests.testEveryModelsJSONKeysAreItsPropertyNames).
+        let known = Set(Mirror(reflecting: model).children.compactMap(\.label))
+        let unknown = old.filter { !known.contains($0.key) }
+        guard !unknown.isEmpty,
+              var merged = try? JSONSerialization.jsonObject(with: plain) as? [String: Any] else { return plain }
+        for (key, value) in unknown where merged[key] == nil {
+            merged[key] = value
+        }
+        return try JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys])
+    }
 }
 
 /// The sync server as the engine sees it. Implementations map HTTP 404 on `GET /vault` to

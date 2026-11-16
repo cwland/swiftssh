@@ -371,6 +371,38 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(b.coordinator.phase, .needsVault(exists: false))
     }
 
+    // MARK: Highlight rules on a merge join
+
+    /// Both Macs made highlight rules before the second one joins with Merge: every Mac ends with
+    /// both lists (the vault's order first), whichever list was edited last.
+    func testMergeJoinUnitesBothMacsHighlightRules() async throws {
+        for joinerIsNewer in [true, false] {
+            let transport = ScriptedTransport()
+            let macBook = try await mac("MacBook", transport: transport)
+            let mini = try await mac("Mac mini", transport: transport)
+            let rule = { HighlightRule(pattern: $0, color: HighlightPalette.defaultColor.hex) }
+            let miniRules = HighlightRulesStore(vault: mini.vault)
+            let macBookRules = HighlightRulesStore(vault: macBook.vault)
+            if !joinerIsNewer { miniRules.add(rule("prod")) }
+            try await Task.sleep(for: .milliseconds(5))
+            macBookRules.add(rule("error"))
+            macBookRules.add(rule("warning"))
+            try await macBook.coordinator.connect(serverURL: url, apiKey: apiKey)
+            try await macBook.coordinator.createVault(passphrase: passphrase)
+            try await Task.sleep(for: .milliseconds(5))
+            if joinerIsNewer { miniRules.add(rule("prod")) }
+
+            try await mini.coordinator.connect(serverURL: url, apiKey: apiKey)
+            try await mini.coordinator.joinVault(passphrase: passphrase, mode: .merge)
+            XCTAssertEqual(miniRules.rules.map(\.pattern), ["error", "warning", "prod"], "joiner newer: \(joinerIsNewer)")
+
+            await macBook.coordinator.syncNow()
+            XCTAssertEqual(macBookRules.rules.map(\.pattern), ["error", "warning", "prod"], "joiner newer: \(joinerIsNewer)")
+            macBook.coordinator.stop()
+            mini.coordinator.stop()
+        }
+    }
+
     // MARK: Retried merge join
 
     private func storedHostIDs(_ transport: ScriptedTransport) async -> Set<UUID> {

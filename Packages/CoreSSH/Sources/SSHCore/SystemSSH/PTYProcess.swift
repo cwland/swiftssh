@@ -9,8 +9,9 @@ import Synchronization
 /// A child process running in a pseudo-terminal (`forkpty`).
 ///
 /// - The child gets only the given environment plus `PATH`, `HOME`, `USER`, `LANG` (inherited when set)
-///   and `TERM=xterm-256color`. It closes every descriptor from 3 up to `RLIMIT_NOFILE`, and its signal
-///   mask and common signal dispositions are reset to the defaults.
+///   and `TERM` (`terminalType`, xterm-256color unless given; a `TERM` in the given environment wins).
+///   It closes every descriptor from 3 up to `RLIMIT_NOFILE`, and its signal mask and common signal
+///   dispositions are reset to the defaults.
 /// - Output is read on a dedicated thread and delivered in order. The stream ends when the terminal's
 ///   last slave descriptor is closed (EIO or EOF on the master), after which the child is reaped and
 ///   `exitStatus` is set.
@@ -53,19 +54,21 @@ public final class PTYProcess: Sendable {
     }
 
     public convenience init(executable: String, arguments: [String], environment: [String: String],
+                            terminalType: TerminalType = .default,
                             cols: Int, rows: Int) throws {
         try self.init(executable: executable, arguments: arguments, environment: environment,
-                      cols: cols, rows: rows, rawMode: false)
+                      terminalType: terminalType, cols: cols, rows: rows, rawMode: false)
     }
 
     /// `rawMode` starts the terminal without line discipline processing (no echo, no `\n` → `\r\n`),
     /// for capturing a command's output byte for byte.
     init(executable: String, arguments: [String], environment: [String: String],
+         terminalType: TerminalType = .default,
          cols: Int, rows: Int, rawMode: Bool) throws {
         // Everything the child needs is prepared before fork: after fork, only async-signal-safe calls.
         let path = CStringArray([executable])
         let argv = CStringArray([executable] + arguments)
-        let envp = CStringArray(Self.childEnvironment(environment).map { "\($0.key)=\($0.value)" }.sorted())
+        let envp = CStringArray(Self.childEnvironment(environment, terminalType: terminalType.rawValue).map { "\($0.key)=\($0.value)" }.sorted())
         let descriptorLimit = Self.descriptorLimit()
         guard let pathPointer = path.pointer[0] else { throw POSIXError(.ENOMEM) }
         let argvPointer = argv.pointer
@@ -258,13 +261,13 @@ public final class PTYProcess: Sendable {
         UInt16(clamping: max(value, 1))
     }
 
-    private static func childEnvironment(_ given: [String: String]) -> [String: String] {
+    private static func childEnvironment(_ given: [String: String], terminalType: String) -> [String: String] {
         let parent = ProcessInfo.processInfo.environment
         var environment: [String: String] = ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
         for name in ["PATH", "HOME", "USER", "LANG"] {
             if let value = parent[name] { environment[name] = value }
         }
-        environment["TERM"] = "xterm-256color"
+        environment["TERM"] = terminalType
         environment.merge(given) { _, new in new }
         return environment
     }

@@ -102,7 +102,7 @@ final class HostsViewModelTests: XCTestCase {
         let host = try await vm.newHost()
         XCTAssertEqual(host.label, "New host")
         XCTAssertEqual(host.groupID, group.id)
-        XCTAssertEqual(vm.selectedHostID, host.id)
+        XCTAssertEqual(vm.editingHostID, host.id)
         XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.groupID, group.id)
     }
 
@@ -160,14 +160,14 @@ final class HostsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.visibleGroups.map(\.name), ["S"])
     }
 
-    @MainActor func testSelectedHostIsNilAfterDeletion() async throws {
+    @MainActor func testEditingHostIsNilAfterDeletion() async throws {
         let vault = try await makeVault()
         let vm = HostsViewModel(vault: vault)
-        XCTAssertNil(vm.selectedHost)
+        XCTAssertNil(vm.editingHost)
         let host = try await vm.newHost()
-        XCTAssertEqual(vm.selectedHost?.id, host.id)
+        XCTAssertEqual(vm.editingHost?.id, host.id)
         try await vault.delete(SavedHost.self, id: host.id)
-        XCTAssertNil(vm.selectedHost)
+        XCTAssertNil(vm.editingHost)
     }
 
     @MainActor func testBreadcrumbsTerminateOnCyclicParents() async throws {
@@ -293,6 +293,17 @@ extension HostsViewModelTests {
         XCTAssertEqual(vm.inheritedThemeID(ofGroup: leaf.id), "nord")
         XCTAssertEqual(vm.inheritedThemeID(ofGroup: mid.id), "nord")
         XCTAssertNil(vm.inheritedThemeID(ofGroup: root.id))
+    }
+
+    @MainActor func testDefaultThemeOfGroupIsParentThemeThenAppDefaultThenAutomatic() async throws {
+        let vault = try await makeVault()
+        let root = try await vault.save(HostGroup(name: "R", defaultThemeID: "nord"))
+        let leaf = try await vault.save(HostGroup(name: "L", parentID: root.id, defaultThemeID: "dracula"))
+        let vm = HostsViewModel(vault: vault)
+        XCTAssertEqual(vm.defaultTheme(ofGroup: leaf.id, appDefaultThemeID: "flexoki-dark")?.id, "nord")
+        XCTAssertEqual(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: "flexoki-dark")?.id, "flexoki-dark")
+        XCTAssertNil(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: nil))
+        XCTAssertNil(vm.defaultTheme(ofGroup: root.id, appDefaultThemeID: "from-the-future"))
     }
 }
 

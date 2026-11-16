@@ -1,4 +1,6 @@
-# Termius Reimagined
+# SwiftSSH
+
+Formerly "Termius Reimagined" (renamed in v0.11.0; the first launch moves your vault over, see [App/README.md](App/README.md#moving-over-from-termius-reimagined-first-launch)).
 
 A native macOS SSH client and terminal emulator inspired by the design and workflow of Termius.
 
@@ -8,7 +10,7 @@ A native macOS SSH client and terminal emulator inspired by the design and workf
 
 See the full [project specification](docs/SPEC.md).
 
-**Terminal themes:** Settings → Terminal has a theme gallery (Automatic, Reimagined Light/Dark and 18 bundled themes) and the text size (⌘= / ⌘− / ⌘0). Hosts and groups can have their own theme, which syncs to every Mac; open tabs update live.
+**Terminal themes:** Settings → Terminal has a theme gallery (Automatic, SwiftSSH Light/Dark and 18 bundled themes) and the text size (⌘= / ⌘− / ⌘0). Hosts and groups can have their own theme, which syncs to every Mac; open tabs update live.
 
 **Third-party themes:** Bundled terminal themes are MIT-licensed by their authors; see `Packages/CoreSSH/Sources/AppCore/Resources/terminal-themes-notices.txt` (also in Settings → Terminal → Theme credits).
 
@@ -19,8 +21,8 @@ The Xcode project is generated from `App/project.yml` with XcodeGen (it is not c
 ```
 brew install xcodegen
 cd App && xcodegen generate
-xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -destination 'platform=macOS' test
-open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
+xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -destination 'platform=macOS' test
+open SwiftSSH.xcodeproj   # then Run (Cmd+R)
 ```
 
 See [App/README.md](App/README.md) for details.

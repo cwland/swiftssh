@@ -20,7 +20,7 @@ public enum BadgeStyle {
         return OSCatalog.shared.entry(for: badge)?.name ?? badge.rawValue
     }
 
-    /// Folder (inside Application Support/TermiusReimagined) holding user-supplied logos.
+    /// Folder (inside Application Support/SwiftSSH) holding user-supplied logos.
     public static let logoFolderName = "Badges"
 
     /// Logo file extensions, in order of preference when two files are equally new.

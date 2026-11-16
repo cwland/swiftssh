@@ -2,8 +2,10 @@ import Foundation
 
 /// When a dropped connection is tried again: after 5 s, then 10, 20, 30 and 30 s; then it gives up.
 public enum ReconnectSchedule {
-    /// Delay before try n (1-based): 5, 10, 20, 30, 30 seconds.
-    public static let delays: [TimeInterval] = [5, 10, 20, 30, 30]
+    /// Delay before try n (1-based): every 5 seconds for the first half minute, then every 10, then
+    /// every 15 seconds: about 3 minutes in all, long enough for a server to reboot.
+    public static let delays: [TimeInterval] = Array(repeating: 5, count: 6) + Array(repeating: 10, count: 6)
+        + Array(repeating: 15, count: 6)
 
     public static var maxAttempts: Int { delays.count }
 

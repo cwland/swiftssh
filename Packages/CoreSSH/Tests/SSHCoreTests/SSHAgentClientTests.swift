@@ -102,7 +102,7 @@ final class SSHAgentClientTests: XCTestCase {
 
     func testMissingSocketIsSocketNotFound() async throws {
         do {
-            _ = try await SSHAgentClient.listKeys(socketPath: "/tmp/tr-no-such-\(UUID().uuidString.prefix(8)).sock")
+            _ = try await SSHAgentClient.listKeys(socketPath: "/tmp/swiftssh-no-such-\(UUID().uuidString.prefix(8)).sock")
             XCTFail("expected an error")
         } catch {
             XCTAssertEqual(error as? SSHAgentError, .socketNotFound)
@@ -123,7 +123,7 @@ final class SSHAgentClientTests: XCTestCase {
 
     func testSilentAgentTimesOut() async throws {
         // A listening socket that never accepts: connect succeeds (backlog), the reply never comes.
-        let path = "/tmp/tr-silent-\(UUID().uuidString.prefix(8)).sock"
+        let path = "/tmp/swiftssh-silent-\(UUID().uuidString.prefix(8)).sock"
         let fd = socket(AF_UNIX, Int32(SOCK_STREAM_VALUE), 0)
         XCTAssertGreaterThanOrEqual(fd, 0)
         defer { close(fd); unlink(path) }

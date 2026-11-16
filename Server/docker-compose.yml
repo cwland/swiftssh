@@ -1,5 +1,8 @@
+# The volume keeps its name `sync-data` (Compose stores it as `<project>_sync-data`, e.g.
+# `server_sync-data`), so a server that ran as "termius-sync" keeps its data after the rename.
 services:
-  termius-sync:
+  swiftssh-sync:
+    container_name: swiftssh-sync
     build:
       context: ..
       dockerfile: Server/Dockerfile

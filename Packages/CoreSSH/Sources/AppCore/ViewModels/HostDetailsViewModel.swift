@@ -6,6 +6,47 @@ public enum CredentialMode: Sendable, Equatable {
     case identity, direct
 }
 
+/// The "Attach to tmux" setting as the Host Details row (and the group sheet) shows it.
+public enum TmuxMode: Sendable, Equatable, CaseIterable {
+    /// Default: the nearest group's choice (stored as nil).
+    case inherit
+    case on
+    case off
+}
+
+public enum TmuxLabels {
+    /// "Default (group: on, ops)", "Default (group: off)", or "Default (off)" when no group sets one.
+    public static func defaultSummary(_ inherited: InheritedTmux) -> String {
+        switch inherited.choice {
+        case .session(let name): "Default (group: on, \(name))"
+        case .off: "Default (group: off)"
+        case .inherit: "Default (off)"
+        }
+    }
+
+    public static let invalidNameMessage = "Use 1\u{2013}64 letters, digits, underscores or hyphens"
+}
+
+/// The "Startup snippet" picker on a host: Default (the nearest group's), None, or one snippet.
+public enum StartupSnippetSelection: Hashable, Sendable {
+    /// Stored as no snippet and no None flag.
+    case inherit
+    /// Stored as `startupSnippetOff = true`: no snippet, not even a group's.
+    case none
+    case snippet(UUID)
+}
+
+public enum StartupSnippetLabels {
+    /// "Default (from group “Ops”: Go to app)", or "Default (none)" when no group sets one.
+    /// `snippetName` is the inherited snippet's name ("Untitled snippet" when blank).
+    public static func defaultSummary(_ inherited: InheritedStartupSnippet?, snippetName: String?) -> String {
+        guard let inherited else { return "Default (none)" }
+        let group = inherited.groupName.isEmpty ? "Untitled group" : inherited.groupName
+        let name = (snippetName ?? "").isEmpty ? "Untitled snippet" : snippetName!
+        return "Default (from group \u{201C}\(group)\u{201D}: \(name))"
+    }
+}
+
 public enum HostDetailsError: Error, Equatable, Sendable {
     case noReusedCredentials
 }
@@ -29,6 +70,10 @@ public final class HostDetailsViewModel {
     private var portInput: PortInput?
     /// True after the user picked identity mode; honored only until an identity is linked.
     private var identityModePicked = false
+    /// A tmux session name typed that is not valid (shown back with `tmuxNameError`, not saved).
+    private var invalidTmuxName: String?
+    /// The last session name used while on, so switching off and on again keeps it.
+    private var lastTmuxName: String?
 
     public init(vault: LocalVault, hostID: UUID) {
         self.vault = vault
@@ -121,6 +166,135 @@ public final class HostDetailsViewModel {
         set { update { $0.themeID = newValue } }
     }
 
+    // MARK: Startup snippet
+
+    /// The snippet typed after login; nil = none (also when the stored one is missing or deleted).
+    /// Saves at once; setting the stored value again does nothing (nil clears a stale stored id).
+    public var startupSnippetID: UUID? {
+        get {
+            guard let id = host?.startupSnippetID, vault.get(Snippet.self, id: id) != nil else { return nil }
+            return id
+        }
+        set { update { $0.startupSnippetID = newValue } }
+    }
+
+    /// Default / None / a snippet. `.snippet` while the host's own snippet exists; else `.none` for the
+    /// None flag; else `.inherit`. Saves at once; choosing a snippet or Default clears the None flag.
+    public var startupSnippetSelection: StartupSnippetSelection {
+        get {
+            if let id = startupSnippetID { return .snippet(id) }
+            return host?.startupSnippetOff == true ? .none : .inherit
+        }
+        set {
+            update { host in
+                switch newValue {
+                case .inherit: host.startupSnippetID = nil; host.startupSnippetOff = nil
+                case .none: host.startupSnippetID = nil; host.startupSnippetOff = true
+                case .snippet(let id): host.startupSnippetID = id; host.startupSnippetOff = nil
+                }
+            }
+        }
+    }
+
+    /// The snippet typed after login (the host's own, else its groups'), or nil = none.
+    public var effectiveStartupSnippetID: UUID? {
+        guard let host else { return nil }
+        return directory.effectiveStartupSnippetID(for: host) { vault.get(Snippet.self, id: $0) != nil }
+    }
+
+    /// What "Default" means for this host, e.g. "Default (from group “Ops”: Go to app)".
+    public var inheritedStartupSnippetSummary: String {
+        guard let host else { return StartupSnippetLabels.defaultSummary(nil, snippetName: nil) }
+        let inherited = directory.inheritedStartupSnippet(for: host) { vault.get(Snippet.self, id: $0) != nil }
+        return StartupSnippetLabels.defaultSummary(
+            inherited, snippetName: inherited.flatMap { vault.get(Snippet.self, id: $0.snippetID)?.name })
+    }
+
+    /// Snippets that can be a startup snippet: those without placeholders, A–Z (as
+    /// `SnippetsViewModel.startupCandidates()`).
+    public func startupCandidates() -> [Snippet] {
+        _ = vault.revision
+        return SnippetsViewModel(vault: vault).startupCandidates()
+    }
+
+    /// Snippets left out of `startupCandidates()` because they have placeholders (for the picker's note).
+    public var hiddenStartupSnippetCount: Int {
+        _ = vault.revision
+        return vault.all(Snippet.self).filter { SnippetTemplate($0.script).hasPlaceholders }.count
+    }
+
+    // MARK: Attach to tmux
+
+    /// `.inherit` for nil (older records) and a stored `.inherit`. Saves at once; the username and
+    /// credentials are never touched. Switching on keeps a stored name, else uses the last name used
+    /// here, else the groups' session name, else "main". An invalid typed name is dropped on any change.
+    public var tmuxMode: TmuxMode {
+        get {
+            switch host?.tmuxSession ?? .inherit {
+            case .inherit: .inherit
+            case .off: .off
+            case .session: .on
+            }
+        }
+        set {
+            guard let host else { return }
+            invalidTmuxName = nil
+            if let name = host.tmuxSession?.sessionName { lastTmuxName = name }
+            let choice: TmuxChoice?
+            switch newValue {
+            case .inherit: choice = nil
+            case .off: choice = .off
+            case .on:
+                if case .session = host.tmuxSession { return }
+                choice = .session(lastTmuxName ?? directory.inheritedTmux(for: host).choice.sessionName
+                                  ?? TmuxChoice.defaultSessionName)
+            }
+            update { $0.tmuxSession = choice }
+        }
+    }
+
+    /// The session name field (shown while `.on`): what was typed when it is invalid, else the stored
+    /// name. A valid name (whitespace trimmed) is saved at once, only while on.
+    public var tmuxNameText: String {
+        get { invalidTmuxName ?? host?.tmuxSession?.sessionName ?? "" }
+        set {
+            guard let host, case .session = host.tmuxSession else { return }
+            let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard TmuxChoice.isValidSessionName(trimmed) else {
+                invalidTmuxName = newValue
+                return
+            }
+            invalidTmuxName = nil
+            lastTmuxName = trimmed
+            update { $0.tmuxSession = .session(trimmed) }
+        }
+    }
+
+    public var tmuxNameError: String? {
+        invalidTmuxName == nil ? nil : TmuxLabels.invalidNameMessage
+    }
+
+    /// The session attached to after login, or nil = off (what the host and its groups add up to).
+    public var effectiveTmuxSession: String? {
+        guard let host else { return nil }
+        return directory.effectiveTmuxSession(for: host)
+    }
+
+    /// What "Default" means for this host, e.g. "Default (group: on, ops)".
+    public var inheritedTmuxSummary: String {
+        guard let host else { return TmuxLabels.defaultSummary(InheritedTmux(choice: .inherit, groupName: nil)) }
+        return TmuxLabels.defaultSummary(directory.inheritedTmux(for: host))
+    }
+
+    /// The row's text: "On (main)", "Off", or `inheritedTmuxSummary`.
+    public var tmuxSummary: String {
+        switch host?.tmuxSession ?? .inherit {
+        case .session(let name): "On (\(name))"
+        case .off: "Off"
+        case .inherit: inheritedTmuxSummary
+        }
+    }
+
     /// Setting a badge marks it as chosen by the user.
     public var osBadge: OSBadge? {
         get { host?.osBadge }
@@ -146,17 +320,20 @@ public final class HostDetailsViewModel {
         }
     }
 
-    /// `.identity` when the host links an identity or prefers one (`prefersIdentity == true`); `.direct`
-    /// when it prefers its own credentials (`false`). For older records (`nil`): `.identity` when the user
+    /// The login method in use, stored in `prefersIdentity` (synced): `.identity` when true, `.direct`
+    /// when false. For older records (`nil`): `.identity` when an identity is linked, or when the user
     /// picked identity mode here and the host has no direct password, key or agent key yet (the username
-    /// is kept across modes, so it doesn't count), otherwise `.direct`. The choice is stored in
-    /// `prefersIdentity` (synced). Switching to `.identity` clears the direct password, key and agent key,
-    /// never the username; switching to `.direct` clears the identity and keeps the username.
+    /// doesn't count); otherwise `.direct`.
+    ///
+    /// Switching never clears anything: the identity link and the host's own username, password, key
+    /// and agent key are all kept, so switching back needs no re-entry. Connecting uses only the side
+    /// that is chosen (`CredentialResolution`).
     public var credentialMode: CredentialMode {
         get {
             guard let host else { return .direct }
-            if host.identityID != nil || host.prefersIdentity == true { return .identity }
+            if host.prefersIdentity == true { return .identity }
             if host.prefersIdentity == false { return .direct }
+            if host.identityID != nil { return .identity }
             let hasDirect = host.password != nil || host.sshKeyID != nil || host.agentKey != nil
             return identityModePicked && !hasDirect ? .identity : .direct
         }
@@ -165,52 +342,32 @@ public final class HostDetailsViewModel {
             switch newValue {
             case .identity:
                 identityModePicked = true
-                update {
-                    Self.clearDirectCredentials(&$0)
-                    $0.prefersIdentity = true
-                }
+                update { $0.prefersIdentity = true }
             case .direct:
                 identityModePicked = false
-                update {
-                    $0.identityID = nil
-                    $0.prefersIdentity = false
-                }
+                update { $0.prefersIdentity = false }
             }
         }
     }
 
-    /// The username is kept: switching the login method never clears it (an identity still wins over it).
-    nonisolated private static func clearDirectCredentials(_ host: inout SavedHost) {
-        host.password = nil
-        host.sshKeyID = nil
-        host.agentKey = nil
-    }
-
-    /// Linking an identity clears the direct password, key and agent key and records identity mode;
-    /// the username is kept.
+    /// Linking an identity records identity mode; the host's own credentials are kept (unused).
     public var identityID: UUID? {
         get { host?.identityID }
         set {
             update {
                 $0.identityID = newValue
-                if newValue != nil {
-                    Self.clearDirectCredentials(&$0)
-                    $0.prefersIdentity = true
-                }
+                if newValue != nil { $0.prefersIdentity = true }
             }
         }
     }
 
-    /// Sets a direct credential field; a non-empty value unlinks any identity and records direct mode
-    /// (an older record without a recorded choice keeps none).
+    /// Sets a direct credential field; a non-empty value records direct mode. A linked identity is
+    /// kept (unused), for switching back.
     private func updateDirect(isEmpty: Bool, _ change: (inout SavedHost) -> Void) {
         if !isEmpty { identityModePicked = false }
         update {
             change(&$0)
-            if !isEmpty {
-                $0.identityID = nil
-                if $0.prefersIdentity == true { $0.prefersIdentity = false }
-            }
+            if !isEmpty { $0.prefersIdentity = false }
         }
     }
 
@@ -255,7 +412,7 @@ public final class HostDetailsViewModel {
         return Self.loginFields(of: host).replaced(by: change)
     }
 
-    /// Switches the host's direct login to `change` (unlinking any identity) and saves at once. With
+    /// Switches the host's direct login to `change` (direct mode; a linked identity is kept) and saves at once. With
     /// `removingReplaced`, the secrets `secretsReplaced(by:)` reports are removed too; otherwise they stay
     /// stored. The username is never touched, and a Keychain key item is never deleted.
     public func apply(_ change: CredentialChange, removingReplaced: Bool) {
@@ -302,11 +459,38 @@ public final class HostDetailsViewModel {
     /// What "Default" resolves to from the host's groups: a theme id this build knows, or nil = the
     /// app default. The host's own theme is not considered.
     public var inheritedThemeID: String? {
-        guard var host else { return nil }
-        host.themeID = nil
-        let others = vault.all(SavedHost.self).filter { $0.id != hostID }
-        return TerminalThemeResolver.inheritedThemeID(forHostID: hostID, hosts: others + [host],
+        guard let host else { return nil }
+        // Only this host's group chain matters, so the other hosts are not read.
+        return TerminalThemeResolver.inheritedThemeID(forHostID: hostID, hosts: [host],
                                                       groups: vault.all(HostGroup.self))
+    }
+
+    /// The theme "Default" draws with for this host: the groups' theme, else the app default
+    /// (`appDefaultThemeID`, when this build knows it), else nil = Automatic.
+    public func defaultTheme(appDefaultThemeID: String?,
+                             catalog: TerminalThemeCatalog = .shared) -> TerminalTheme? {
+        if let id = inheritedThemeID, let theme = catalog.theme(id: id) { return theme }
+        return appDefaultThemeID.flatMap { catalog.theme(id: $0) }
+    }
+
+    /// What "Default" means for this host: "Nord — from group", the app default's name, or
+    /// "Automatic".
+    public func defaultThemeLabel(appDefaultThemeID: String?,
+                                  catalog: TerminalThemeCatalog = .shared) -> String {
+        if let id = inheritedThemeID, let theme = catalog.theme(id: id) {
+            return "\(theme.name) \u{2014} from group"
+        }
+        return appDefaultThemeID.flatMap { catalog.theme(id: $0) }?.name ?? "Automatic"
+    }
+
+    /// The Theme row's text: the host's own theme name, "Unknown theme (<id>)" for an id this
+    /// build doesn't know, or "Default (<defaultThemeLabel>)".
+    public func themeSummary(appDefaultThemeID: String?,
+                             catalog: TerminalThemeCatalog = .shared) -> String {
+        if let id = themeID {
+            return catalog.theme(id: id)?.name ?? "Unknown theme (\(id))"
+        }
+        return "Default (\(defaultThemeLabel(appDefaultThemeID: appDefaultThemeID, catalog: catalog)))"
     }
 
     /// The stored theme id when this build's catalog doesn't know it (a newer build synced it).
@@ -368,7 +552,7 @@ public final class HostDetailsViewModel {
         let identity = vault.saveNow(Identity(label: "\(username) credentials",
                                               username: username, password: password))
         for member in group {
-            guard var current = vault.get(SavedHost.self, id: member.id), current.identityID == nil,
+            guard var current = vault.get(SavedHost.self, id: member.id), CredentialReuse.usesDirect(current),
                   current.username == username, current.password == password else { continue }
             // The identity becomes the host's single credential source.
             current.identityID = identity.id

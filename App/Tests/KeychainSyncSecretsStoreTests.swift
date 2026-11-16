@@ -3,7 +3,7 @@ import Foundation
 import Security
 import AppCore
 import SyncCore
-@testable import TermiusReimagined
+@testable import SwiftSSH
 
 /// Uses the real login keychain with a unique service per test so the app's own sync secrets are
 /// never touched; items are deleted in `tearDown`.
@@ -12,7 +12,7 @@ final class KeychainSyncSecretsStoreTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        service = "com.cwland.TermiusReimagined.sync.tests.\(UUID().uuidString)"
+        service = "com.cwland.SwiftSSH.sync.tests.\(UUID().uuidString)"
     }
 
     override func tearDown() {

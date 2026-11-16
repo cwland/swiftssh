@@ -44,7 +44,7 @@ private struct HostDetailsContent: View {
     @FocusState private var tagsFieldFocused: Bool
     @State private var showBadgePicker = false
     @State private var showOSPicker = false
-    @State private var showsMore = false
+    @State private var showThemeGallery = false
     @State private var confirmDelete = false
     @State private var showError = false
     @State private var errorMessage = ""
@@ -64,14 +64,6 @@ private struct HostDetailsContent: View {
                     if let hint = details.reuseHint {
                         reuseHintCard(hint)
                     }
-                    Button(showsMore ? "Show less" : "Show more") {
-                        showsMore.toggle()
-                    }
-                    .buttonStyle(.link)
-                    .padding(.horizontal, 4)
-                    if showsMore {
-                        terminalCard
-                    }
                 }
                 .padding(16)
             }
@@ -89,7 +81,7 @@ private struct HostDetailsContent: View {
             Button("Delete host", role: .destructive) { deleteHost() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("\u{201C}\(details.label)\u{201D} will be removed from this vault.")
+            Text("\u{201C}\(details.label)\u{201D} will be removed from this vault. You can restore it from Settings \u{2192} Recently Deleted.")
         }
         .alert("Something went wrong", isPresented: $showError) {
             Button("OK", role: .cancel) {}
@@ -205,6 +197,9 @@ private struct HostDetailsContent: View {
                 TextField("Label", text: $details.label, prompt: Text("Name shown on the card"))
                     .textFieldStyle(.roundedBorder)
             }
+            themeField
+            tmuxField
+            startupSnippetField
             FieldColumn(title: "Parent group") {
                 Picker("Parent group", selection: $details.groupID) {
                     Text("None").tag(UUID?.none)
@@ -275,28 +270,102 @@ private struct HostDetailsContent: View {
         }
     }
 
-    private var terminalCard: some View {
-        DetailsCard {
-            Text("Terminal")
-                .font(.system(size: 13, weight: .semibold))
-            FieldColumn(title: "Theme") {
-                ThemePicker(themeID: $details.themeID, defaultLabel: themeDefaultLabel,
-                            unknownThemeID: details.unknownThemeID)
+    /// The host's terminal theme, near the top so it is easy to find: a swatch and the current
+    /// choice; clicking opens the gallery popover. Each click there saves at once (all the host's
+    /// tabs follow) and the popover stays open for comparing.
+    private var themeField: some View {
+        FieldColumn(title: "Theme") {
+            ThemeRowButton(title: details.themeSummary(appDefaultThemeID: terminalSettings.defaultThemeID),
+                           swatchTheme: rowSwatchTheme) {
+                showThemeGallery = true
+            }
+            .popover(isPresented: $showThemeGallery, arrowEdge: .leading) {
+                ThemeGalleryPopover(title: themeGalleryTitle,
+                                    selectedThemeID: details.themeID,
+                                    inheritedTheme: details.defaultTheme(appDefaultThemeID: terminalSettings.defaultThemeID),
+                                    unknownThemeID: details.unknownThemeID) { id in
+                    details.themeID = id
+                }
             }
         }
     }
 
-    /// What "Default" means for this host: the group's theme ("Nord — from group"), else the app
-    /// default theme's name, else "Automatic".
-    private var themeDefaultLabel: String {
-        let catalog = TerminalThemeCatalog.shared
-        if let id = details.inheritedThemeID, let theme = catalog.theme(id: id) {
-            return "\(theme.name) — from group"
+    /// "Attach to tmux": Default (the groups' choice, e.g. "Default (group: on, ops)"), On with a
+    /// session name ("main" when first switched on), or Off. Each change saves at once; an invalid
+    /// name is shown with its error and not saved.
+    private var tmuxField: some View {
+        FieldColumn(title: "Attach to tmux") {
+            Picker("Attach to tmux", selection: $details.tmuxMode) {
+                Text(details.inheritedTmuxSummary).tag(TmuxMode.inherit)
+                Text("On").tag(TmuxMode.on)
+                Text("Off").tag(TmuxMode.off)
+            }
+            .labelsHidden()
+            .help("After login, run tmux new -A -s <name>, so Reconnect returns to the same session")
+            if details.tmuxMode == .on {
+                TextField("Session name", text: $details.tmuxNameText,
+                          prompt: Text(TmuxChoice.defaultSessionName))
+                    .textFieldStyle(.roundedBorder)
+                if let error = details.tmuxNameError {
+                    Text(error)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.red)
+                } else {
+                    Text("Skipped with a message when tmux isn\u{2019}t installed on the server.")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        if let id = terminalSettings.defaultThemeID, let theme = catalog.theme(id: id) {
-            return theme.name
+    }
+
+    /// "Startup snippet": runs after sign-in, before tmux attach. Default uses the nearest group's
+    /// ("Default (from group “Ops”: …)"); None runs nothing, not even a group's. Only snippets without
+    /// `{{placeholders}}` can be chosen. A saved choice that now has placeholders stays visible as
+    /// "(unavailable)" so the user can see it and pick another.
+    private var startupSnippetField: some View {
+        let candidates = details.startupCandidates()
+        let selection = details.startupSnippetSelection
+        let unavailableID: UUID? = {
+            guard case .snippet(let id) = selection, !candidates.contains(where: { $0.id == id }) else { return nil }
+            return id
+        }()
+        let hasHidden = details.hiddenStartupSnippetCount > 0
+        return FieldColumn(title: "Startup snippet") {
+            Picker("Startup snippet", selection: $details.startupSnippetSelection) {
+                Text(details.inheritedStartupSnippetSummary).tag(StartupSnippetSelection.inherit)
+                Text("None").tag(StartupSnippetSelection.none)
+                if let unavailableID {
+                    Text("(unavailable)").tag(StartupSnippetSelection.snippet(unavailableID))
+                }
+                ForEach(candidates) { snippet in
+                    Text(startupSnippetPickerTitle(snippet)).tag(StartupSnippetSelection.snippet(snippet.id))
+                }
+            }
+            .labelsHidden()
+            .help("A snippet typed into the terminal each time this host connects")
+            Text("Runs after you sign in, before tmux attach.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+            if hasHidden {
+                Text("Snippets with {{placeholders}} can\u{2019}t run at startup.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
         }
-        return "Automatic"
+    }
+
+    /// The host's own theme when this build knows it, else what Default resolves to (which is
+    /// also what its tabs draw with for an unknown id); nil = Automatic.
+    private var rowSwatchTheme: TerminalTheme? {
+        if let id = details.themeID, let theme = TerminalThemeCatalog.shared.theme(id: id) { return theme }
+        return details.defaultTheme(appDefaultThemeID: terminalSettings.defaultThemeID)
+    }
+
+    private var themeGalleryTitle: String {
+        let name = details.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let shown = name.isEmpty ? details.address : name
+        return shown.isEmpty ? "Theme" : "Theme for \u{201C}\(shown)\u{201D}"
     }
 
     private var credentialsCard: some View {
@@ -474,6 +543,14 @@ private struct HostDetailsContent: View {
         errorMessage = error.localizedDescription
         showError = true
     }
+}
+
+/// A snippet as the startup snippet pickers list it: "Name – Snippet group" when it is in a snippet
+/// group, else "Name".
+func startupSnippetPickerTitle(_ snippet: Snippet) -> String {
+    let name = snippet.name.isEmpty ? "Untitled snippet" : snippet.name
+    guard let group = snippet.package, !group.isEmpty else { return name }
+    return "\(name) \u{2013} \(group)"
 }
 
 /// A white rounded card holding a column of fields.

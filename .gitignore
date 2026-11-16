@@ -26,3 +26,6 @@ Package.resolved.bak
 # Secrets / local config
 *.xcconfig.local
 .env
+
+# Local signing override (per Mac)
+App/Config/Local.xcconfig

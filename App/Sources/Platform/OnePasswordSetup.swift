@@ -30,6 +30,14 @@ final class OnePasswordSetup {
     }
 
     let settings: OnePasswordSettings
+    /// Brings 1Password's Touch ID prompt forward (Settings → 1Password → "Bring 1Password's prompt
+    /// to the front"); every `op` client from `makeClient()` reports its calls here.
+    @ObservationIgnored private(set) lazy var promptFocus: OnePasswordPromptFocus = {
+        let settings = settings
+        return OnePasswordPromptFocus(isEnabled: { settings.bringsPromptForward },
+                                      handOff: { OnePasswordApp.handOff() },
+                                      takeBack: { OnePasswordApp.takeBack() })
+    }()
 
     /// nil when 1Password isn't installed.
     private(set) var appURL: URL?
@@ -110,7 +118,7 @@ final class OnePasswordSetup {
     /// A client for the `op` found now; nil without `op`.
     func makeClient() -> (any OnePasswordCLI)? {
         guard let path = cli() else { return nil }
-        return ProcessOnePasswordCLI(executablePath: path)
+        return FocusHandingOnePasswordCLI(base: ProcessOnePasswordCLI(executablePath: path), focus: promptFocus)
     }
 
     // MARK: Checking
@@ -257,7 +265,7 @@ final class OnePasswordSetup {
         echo
         \(Self.shellQuoted(brew)) \(OnePasswordLinks.homebrewInstallArguments.map(Self.shellQuoted).joined(separator: " "))
         echo
-        echo "Done. Return to Termius Reimagined; the 1Password settings update by themselves."
+        echo "Done. Return to SwiftSSH; the 1Password settings update by themselves."
         read -k 1 -s "?Press any key to close this window."
         rm -f -- "$0"
 

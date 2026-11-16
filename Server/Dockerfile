@@ -9,6 +9,8 @@ WORKDIR /build
 
 # Resolve dependencies in a cached layer: manifests first, sources later.
 COPY Packages/CoreSSH/Package.swift ./Packages/CoreSSH/
+# CoreSSH uses the patched Citadel kept in the repo (Packages/Citadel, see its PATCHES.md).
+COPY Packages/Citadel ./Packages/Citadel
 COPY Server/Package.swift Server/Package.resolved ./Server/
 WORKDIR /build/Server
 RUN swift package resolve

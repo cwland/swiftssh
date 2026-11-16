@@ -6,6 +6,7 @@ on:
     paths:
       - "Server/**"
       - "Packages/CoreSSH/**"
+      - "Packages/Citadel/**"
       - ".github/workflows/server-image.yml"
     tags: ["server-v*"]
   workflow_dispatch:
@@ -19,7 +20,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/termius-reimagined-sync
+  IMAGE: ghcr.io/${{ github.repository_owner }}/swiftssh-sync
 
 jobs:
   test:

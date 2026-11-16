@@ -1,0 +1,7 @@
+// Signing for local builds. By default the app is ad-hoc signed ("-"), which macOS treats as a
+// new app after every rebuild, so privacy permissions (e.g. "Data shared by 1Password") reset.
+// To keep them, create a self-signed code-signing certificate (see App/README.md) and put
+//   CODE_SIGN_IDENTITY = <its name>
+// in App/Config/Local.xcconfig (not committed).
+CODE_SIGN_IDENTITY = -
+#include? "Local.xcconfig"

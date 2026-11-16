@@ -28,6 +28,13 @@ import Synchronization
 ///   255), turned into the error; `.connected` and `.ready` come together. Without a stored secret, ssh
 ///   asks in the terminal, so `.connected` is emitted as soon as ssh runs (its prompts are shown as
 ///   output) and `.ready` once the user has signed in.
+/// - **Progress**: with a stored secret or an agent, ssh runs with `-v -E <file>` so its debug output goes
+///   to a 0600 file in the private runtime directory instead of the terminal; the file is unlinked as soon
+///   as ssh has written to it and closed when the session ends. Only whitelisted debug lines are read
+///   (`SSHDebugLogParser`) and become `.progress` steps before `.connected`; ssh's own messages (which
+///   without `-E` would be on stderr) are kept only to explain a failure. Host names are reported as
+///   `.resolving` before `ssh-keyscan` looks them up. Without a stored secret (ssh asks in the terminal)
+///   and when ssh doesn't take `-E`, ssh runs as before and reports no steps.
 /// - **Commands** (`runCommand`) reuse the session's connection through ssh's control socket
 ///   (`ControlMaster=auto`, socket in `SSHRuntimeDirectory.controlDirectory`), in batch mode, without
 ///   askpass.
@@ -93,6 +100,13 @@ public final class SystemSSHSession: TerminalSession {
         var controlKey: String?
         /// Output chunks received so far (for the session-start fallback).
         var outputChunks = 0
+        /// ssh's debug log (`-E`) while ssh runs; nil without one.
+        var debugLog: SSHDebugLogReader?
+        var debugParser = SSHDebugLogParser(agent: false)
+        /// A run of `ssh -E /dev/null -V` checking that ssh takes `-E`; killed by `close()`.
+        var probe: PTYProcess?
+        /// The debug log showed ssh entering the interactive session (for the session-start fallback).
+        var sawOpeningShell = false
     }
 
     public convenience init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator,
@@ -226,15 +240,19 @@ public final class SystemSSHSession: TerminalSession {
             }
             defer {
                 state.keyscan = nil
+                state.probe = nil
                 state.ssh = nil
                 state.commands = [:]
                 state.tempFiles = []
                 state.controlKey = nil
+                state.debugLog = nil
             }
-            return (keyscan: state.keyscan, ssh: state.ssh, commands: Array(state.commands.values),
-                    files: state.tempFiles, controlKey: state.controlKey)
+            return (keyscan: state.keyscan, probe: state.probe, ssh: state.ssh, commands: Array(state.commands.values),
+                    files: state.tempFiles, controlKey: state.controlKey, debugLog: state.debugLog)
         }
         startGate.resolve(())
+        taken.debugLog?.close()
+        taken.probe?.kill()
         taken.keyscan?.kill()
         taken.commands.forEach { $0.kill() }
         taken.ssh?.terminate()
@@ -275,7 +293,8 @@ public final class SystemSSHSession: TerminalSession {
             return
         }
 
-        // 1. Fetch the server's host keys.
+        // 1. Fetch the server's host keys (ssh-keyscan looks up the name).
+        if !Self.isIPAddress(host) { emitProgress(.resolving(host: host)) }
         guard let candidate = await scanHostKey() else { return }
 
         // 2. One trust decision, before ssh runs.
@@ -322,6 +341,29 @@ public final class SystemSSHSession: TerminalSession {
             return
         }
 
+        // An agent signs without the user typing anything (1Password asks in its own window), so its
+        // sessions behave like ones with a stored secret: ssh's messages before the session become the error.
+        // A key that is plainly not encrypted can't make ssh ask anything either (public key only).
+        let interactive = secretFile == nil && !usesAgent && !Self.storedKeyNeedsNoPassphrase(plan.credential)
+
+        // ssh's debug log, for the progress steps: only when ssh doesn't ask in the terminal (steps end at
+        // `.connected`, which then comes at once) and when this ssh takes `-E`.
+        var debugLog: SSHDebugLogReader?
+        if !interactive, await debugLogSupported() {
+            guard !isEnded else { return }
+            do {
+                let url = try runtime.writeDebugLog()
+                do {
+                    debugLog = try SSHDebugLogReader(url: url)
+                } catch {
+                    runtime.remove(url)
+                    throw error
+                }
+            } catch {
+                debugLog = nil // no progress, but the session still works
+            }
+        }
+
         // 5. Launch ssh.
         let algorithms = Self.hostKeyAlgorithms(for: candidate.keyType)
         let auth: AuthArguments
@@ -333,21 +375,21 @@ public final class SystemSSHSession: TerminalSession {
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
                                           knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms,
-                                          keepAlive: plan.keepAlive)
+                                          keepAlive: plan.keepAlive, connectTimeout: plan.connectTimeout,
+                                          debugLog: debugLog?.url)
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
-                           "DISPLAY": ":0", "TR_SECRET_FILE": secretFile.path]
+                           "DISPLAY": ":0", "SWIFTSSH_SECRET_FILE": secretFile.path]
         }
-        // An agent signs without the user typing anything (1Password asks in its own window), so its
-        // sessions behave like ones with a stored secret: ssh's messages before the session become the error.
-        let interactive = secretFile == nil && !usesAgent
         let (cols, rows) = state.withLock { ($0.cols, $0.rows) }
         let ssh: PTYProcess
         do {
+            // ssh sends its own TERM in the PTY request.
             ssh = try PTYProcess(executable: sshPath, arguments: arguments, environment: environment,
-                                 cols: cols, rows: rows, rawMode: false)
+                                 terminalType: plan.terminalType, cols: cols, rows: rows, rawMode: false)
         } catch {
+            debugLog?.close()
             finish(.failed(.connectionFailed("Could not run ssh")))
             return
         }
@@ -355,6 +397,8 @@ public final class SystemSSHSession: TerminalSession {
         let launched = state.withLock { state -> Bool in
             guard !state.ended else { return false }
             state.ssh = ssh
+            state.debugLog = debugLog
+            state.debugParser = SSHDebugLogParser(agent: usesAgent)
             state.hostKeyAlgorithms = algorithms
             state.knownHostsFile = knownHostsFile
             state.controlKey = controlKey
@@ -370,11 +414,13 @@ public final class SystemSSHSession: TerminalSession {
         }
         guard launched else {
             ssh.kill()
+            debugLog?.close()
             return
         }
         if interactive { startGate.resolve(()) }
 
-        Task { await self.watchForSessionStart(ssh, secretFile: secretFile) }
+        if let debugLog { Task { await self.followDebugLog(debugLog) } }
+        Task { await self.watchForSessionStart(ssh, secretFile: secretFile, interactive: interactive) }
         for await chunk in ssh.output { received(chunk) }
         await sshExited(status: ssh.exitStatus)
     }
@@ -408,7 +454,11 @@ public final class SystemSSHSession: TerminalSession {
                                                                   host: host, port: plan.port))
         }
         guard let candidate else {
-            finish(.failed(.connectionFailed("Could not reach \(host):\(plan.port)")))
+            var reason = ""
+            if case .finished(let output, _) = result, Self.keyscanFoundNoHost(String(decoding: output, as: UTF8.self)) {
+                reason = " (host name not found)"
+            }
+            finish(.failed(.connectionFailed("Could not reach \(host):\(plan.port)\(reason)")))
             return nil
         }
         return candidate
@@ -431,13 +481,18 @@ public final class SystemSSHSession: TerminalSession {
     /// Polls the terminal mode until ssh starts the session (canonical mode off) or exits.
     ///
     /// If the mode can't be read, falls back to: with askpass, the helper has consumed the secret file
-    /// and output arrived after that; without askpass, the first output once 2 s have passed.
-    private func watchForSessionStart(_ ssh: PTYProcess, secretFile: URL?) async {
+    /// and output arrived after that; when ssh can't ask anything (agent, unencrypted key), ssh's debug log
+    /// shows it entering the session, or 2 s have passed and output arrived; otherwise (ssh asks in the
+    /// terminal), the first output once 2 s have passed.
+    private func watchForSessionStart(_ ssh: PTYProcess, secretFile: URL?, interactive: Bool) async {
         let clock = ContinuousClock()
         let launched = clock.now
         var outputMark: Int?
         while true {
-            let (ended, started, chunks) = state.withLock { ($0.ended, $0.sessionStarted, $0.outputChunks) }
+            let (ended, started, chunks, enteredSession) = state.withLock { state in
+                Self.drainDebugLog(&state, continuation: eventContinuation)
+                return (state.ended, state.sessionStarted, state.outputChunks, state.sawOpeningShell)
+            }
             if ended || started { return }
             switch terminalModeProbe(ssh) {
             case .exited:
@@ -448,7 +503,12 @@ public final class SystemSSHSession: TerminalSession {
             case .canonical:
                 break
             case .unavailable:
-                if outputMark == nil {
+                if secretFile == nil && !interactive {
+                    if enteredSession || (clock.now - launched >= .seconds(2) && chunks > 0) {
+                        sessionStarted()
+                        return
+                    }
+                } else if outputMark == nil {
                     if let secretFile {
                         if !FileManager.default.fileExists(atPath: secretFile.path) { outputMark = chunks }
                     } else if clock.now - launched >= .seconds(2) {
@@ -466,6 +526,8 @@ public final class SystemSSHSession: TerminalSession {
     private func sessionStarted() {
         let files = state.withLock { state -> [URL] in
             guard !state.ended, !state.sessionStarted else { return [] }
+            // Steps ssh logged up to now still come before `.connected`.
+            Self.drainDebugLog(&state, continuation: eventContinuation)
             state.sessionStarted = true
             state.preSessionOutput = []
             if !state.connectedEmitted {
@@ -501,7 +563,11 @@ public final class SystemSSHSession: TerminalSession {
 
     private func sshExited(status: Int32?) async {
         let (started, output) = state.withLock { state in
-            (state.sessionStarted, state.sessionStarted ? state.recentOutput : state.preSessionOutput)
+            // ssh's last messages (why it failed) are in its log.
+            Self.drainDebugLog(&state, continuation: eventContinuation, includePartial: true)
+            state.debugLog?.close()
+            state.debugLog = nil
+            return (state.sessionStarted, state.sessionStarted ? state.recentOutput : state.preSessionOutput)
         }
         let reason = await Self.classifyExit(status: status, sessionStarted: started, output: output, secrets: secrets,
                                              agent: usesAgent,
@@ -546,10 +612,14 @@ public final class SystemSSHSession: TerminalSession {
             }
             defer {
                 state.keyscan = nil
+                state.probe = nil
                 state.tempFiles = []
+                state.debugLog = nil
             }
-            return (keyscan: state.keyscan, files: state.tempFiles)
+            return (keyscan: state.keyscan, probe: state.probe, files: state.tempFiles, debugLog: state.debugLog)
         }
+        taken.debugLog?.close()
+        taken.probe?.kill()
         taken.keyscan?.kill()
         taken.files.forEach(runtime.remove)
         startGate.resolve(())
@@ -590,6 +660,122 @@ public final class SystemSSHSession: TerminalSession {
         return await Self.collect(process, limit: 65_536, timeout: Self.controlExitTimeout)
     }
 
+    // MARK: Progress
+
+    /// Emits a step unless the session is live (`.connected`) or ended: steps only ever precede `.connected`.
+    private func emitProgress(_ step: ConnectionStep) {
+        state.withLock { state in
+            if !state.ended && !state.connectedEmitted { eventContinuation.yield(.progress(step)) }
+        }
+    }
+
+    /// Reads ssh's debug log as it grows until `.connected` (steps only come before it); after that the
+    /// log is read once more only when ssh exits.
+    private func followDebugLog(_ log: SSHDebugLogReader) async {
+        while true {
+            let keepGoing = state.withLock { state -> Bool in
+                guard !state.ended, !state.connectedEmitted, state.debugLog === log else { return false }
+                Self.drainDebugLog(&state, continuation: eventContinuation)
+                return true
+            }
+            guard keepGoing else { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+
+    /// Turns the log's new lines into steps (before `.connected` only) and, before the session started,
+    /// keeps ssh's own messages for the failure text. Runs under the state lock, so lines are handled once
+    /// and in order.
+    private static func drainDebugLog(_ state: inout State, continuation: AsyncStream<SessionEvent>.Continuation,
+                                      includePartial: Bool = false) {
+        guard let log = state.debugLog else { return }
+        for line in log.readLines(includePartial: includePartial) {
+            switch state.debugParser.consume(line) {
+            case .step(let step):
+                if step == .openingShell { state.sawOpeningShell = true }
+                if !state.ended && !state.connectedEmitted { continuation.yield(.progress(step)) }
+            case .message(let text):
+                if !state.sessionStarted {
+                    state.preSessionOutput = appendingTail(state.preSessionOutput, Array((text + "\r\n").utf8))
+                }
+            case .ignored:
+                break
+            }
+        }
+    }
+
+    /// Whether this ssh takes `-E` (checked once per ssh path with `ssh -E /dev/null -V`, at most 3 s).
+    private func debugLogSupported() async -> Bool {
+        if let known = Self.debugLogSupport.withLock({ $0[sshPath] }) { return known }
+        guard let probe = try? PTYProcess(executable: sshPath, arguments: ["-E", "/dev/null", "-V"], environment: [:],
+                                          cols: 200, rows: 24, rawMode: true) else { return false }
+        let registered = state.withLock { state -> Bool in
+            guard !state.ended else { return false }
+            state.probe = probe
+            return true
+        }
+        guard registered else {
+            probe.kill()
+            return false
+        }
+        let result = await Self.collect(probe, limit: 65_536, timeout: .seconds(3))
+        state.withLock { $0.probe = nil }
+        guard !isEnded else { return false }
+        var supported = false
+        if case .finished(let output, 0) = result {
+            supported = String(decoding: output, as: UTF8.self).contains("OpenSSH")
+        }
+        let path = sshPath
+        Self.debugLogSupport.withLock { $0[path] = supported }
+        return supported
+    }
+
+    /// Per ssh path: whether it takes `-E`.
+    static let debugLogSupport = Mutex([String: Bool]())
+
+    /// An IPv4 or IPv6 address (nothing to look up).
+    static func isIPAddress(_ host: String) -> Bool {
+        var v4 = in_addr()
+        var v6 = in6_addr()
+        let bare = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+        return inet_pton(AF_INET, host, &v4) == 1 || inet_pton(AF_INET6, bare, &v6) == 1
+    }
+
+    /// A private key credential whose key is certainly unencrypted (OpenSSH format with cipher "none", or
+    /// an unencrypted PEM): ssh signs with it without asking. Anything unclear counts as encrypted.
+    static func storedKeyNeedsNoPassphrase(_ credential: SSHCredential) -> Bool {
+        guard case .privateKey(_, let pem, let passphrase) = credential, passphrase?.isEmpty ?? true else { return false }
+        return keyIsUnencrypted(pem)
+    }
+
+    static func keyIsUnencrypted(_ pem: String) -> Bool {
+        let lines = pem.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let begin = lines.first(where: { $0.hasPrefix("-----BEGIN ") }) else { return false }
+        switch begin {
+        case "-----BEGIN OPENSSH PRIVATE KEY-----":
+            let body = lines.drop { $0 != begin }.dropFirst().prefix { !$0.hasPrefix("-----END ") }.joined()
+            guard let data = Data(base64Encoded: body) else { return false }
+            let bytes = [UInt8](data)
+            let magic = Array("openssh-key-v1\0".utf8)
+            guard bytes.count >= magic.count + 4, Array(bytes[0..<magic.count]) == magic else { return false }
+            let lengthStart = magic.count
+            let length = bytes[lengthStart..<(lengthStart + 4)].reduce(0) { $0 << 8 | Int($1) }
+            guard length == 4, bytes.count >= lengthStart + 4 + length else { return false }
+            return Array(bytes[(lengthStart + 4)..<(lengthStart + 4 + length)]) == Array("none".utf8)
+        case "-----BEGIN RSA PRIVATE KEY-----", "-----BEGIN EC PRIVATE KEY-----":
+            return !lines.contains { $0.hasPrefix("Proc-Type:") && $0.contains("ENCRYPTED") }
+        case "-----BEGIN PRIVATE KEY-----":
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// ssh-keyscan's message that the name could not be looked up (Linux and macOS wording).
+    static func keyscanFoundNoHost(_ output: String) -> Bool {
+        output.contains("getaddrinfo") && (output.contains("not known") || output.contains("No address associated"))
+    }
+
     // MARK: Command line
 
     /// How ssh may authenticate, by credential.
@@ -612,10 +798,12 @@ public final class SystemSSHSession: TerminalSession {
     /// `HostKeyAlgorithms` limited to the trusted key's type.
     static func sshArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                              knownHosts: URL, auth: AuthArguments, hostKeyAlgorithms: String,
-                             keepAlive: KeepAlivePolicy = .normal) -> [String] {
-        var arguments = ["-tt"] + optionArguments(port: port, username: username, knownHosts: knownHosts,
+                             keepAlive: KeepAlivePolicy = .standard, connectTimeout: Duration = .seconds(15),
+                             debugLog: URL? = nil) -> [String] {
+        // `-v -E`: debug output to the log file, never the terminal.
+        var arguments = ["-tt"] + (debugLog.map { ["-v", "-E", $0.path] } ?? []) + optionArguments(port: port, username: username, knownHosts: knownHosts,
                                                   controlMaster: "auto", controlPath: controlPath(runtime),
-                                                  keepAlive: keepAlive)
+                                                  keepAlive: keepAlive, connectTimeout: connectTimeout)
         switch auth {
         case .key(let keyFile):
             arguments += ["-o", "IdentitiesOnly=yes", "-i", keyFile.path] + publicKeyOnlyArguments
@@ -657,7 +845,7 @@ public final class SystemSSHSession: TerminalSession {
     /// A command through the existing control master only (`ControlMaster=no`, the exact socket).
     static func commandArguments(host: String, port: Int, username: String, runtime: SSHRuntimeDirectory,
                                  knownHosts: URL, controlSocket: String, hostKeyAlgorithms: String,
-                                 command: String, keepAlive: KeepAlivePolicy = .normal) -> [String] {
+                                 command: String, keepAlive: KeepAlivePolicy = .standard) -> [String] {
         optionArguments(port: port, username: username, knownHosts: knownHosts,
                         controlMaster: "no", controlPath: quoted(controlSocket), keepAlive: keepAlive)
             + ["-o", "HostKeyAlgorithms=\(hostKeyAlgorithms)", "-T", "-o", "BatchMode=yes", "--", host, command]
@@ -666,7 +854,8 @@ public final class SystemSSHSession: TerminalSession {
     /// `-F /dev/null` (the user's ssh configuration never applies), port, user and the shared `-o` options.
     /// Paths are double-quoted because ssh splits `-o` values at spaces ("Application Support").
     static func optionArguments(port: Int, username: String, knownHosts: URL, controlMaster: String,
-                                controlPath: String, keepAlive: KeepAlivePolicy) -> [String] {
+                                controlPath: String, keepAlive: KeepAlivePolicy,
+                                connectTimeout: Duration = .seconds(15)) -> [String] {
         [
             "-F", "/dev/null",
             "-p", String(port), "-l", username,
@@ -677,7 +866,7 @@ public final class SystemSSHSession: TerminalSession {
             "-o", "ControlPath=\(controlPath)",
             "-o", "ControlPersist=15",
         ] + aliveArguments(keepAlive) + [
-            "-o", "ConnectTimeout=15",
+            "-o", "ConnectTimeout=\(max(1, connectTimeout.components.seconds))",
         ]
     }
 
@@ -742,7 +931,7 @@ public final class SystemSSHSession: TerminalSession {
 
     /// Shown when an agent attempt fails because the agent couldn't be reached or wouldn't sign.
     static let agentUnavailableMessage =
-        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it."
+        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it."
 
     /// ssh's messages (from a line before the session started) that the agent couldn't be used.
     static let agentFailureMarkers = [
