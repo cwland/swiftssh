@@ -1,0 +1,143 @@
+name: release
+
+# Builds SwiftSSH on a GitHub Mac and publishes a .dmg on a GitHub Release.
+#   Push a tag:   git tag v1.0.0 && git push origin v1.0.0
+#   Or run it by hand (Actions -> release -> Run workflow) to get the .dmg as an artifact only.
+#
+# Signing and notarization use these repository secrets when they exist (otherwise the .dmg is
+# ad-hoc signed and macOS shows its "unidentified developer" warning):
+#   DEVELOPER_ID_P12           base64 of the "Developer ID Application" certificate + key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD  the .p12's password
+#   APPLE_TEAM_ID              10-character Team ID (developer.apple.com -> Membership)
+#   NOTARY_KEY_P8              base64 of an App Store Connect API key (.p8), role Developer
+#   NOTARY_KEY_ID              that key's Key ID
+#   NOTARY_ISSUER_ID           the Issuer ID shown above the keys list
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Version
+        id: version
+        run: |
+          version=$(grep -m1 'MARKETING_VERSION:' App/project.yml | sed 's/.*"\(.*\)".*/\1/')
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match MARKETING_VERSION $version in App/project.yml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Import the Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$keychain" | grep -c "Developer ID Application" >/dev/null
+
+      - name: Build
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd App
+          xcodegen generate
+          if [ "$HAS_SIGNING" = true ]; then
+            signing=(CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM="$TEAM_ID"
+                     ENABLE_HARDENED_RUNTIME=YES OTHER_CODE_SIGN_FLAGS="--timestamp")
+          else
+            signing=(CODE_SIGN_IDENTITY="-")
+          fi
+          xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -configuration Release \
+            -destination 'generic/platform=macOS' -skipPackagePluginValidation \
+            -derivedDataPath "$RUNNER_TEMP/dd" "${signing[@]}" build | tail -25
+          app="$RUNNER_TEMP/dd/Build/Products/Release/SwiftSSH.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|flags" || true
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Make the .dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          cp -R "$APP" "$stage/"
+          ln -s /Applications "$stage/Applications"
+          dmg="$RUNNER_TEMP/SwiftSSH-$VERSION.dmg"
+          hdiutil create -volname "SwiftSSH $VERSION" -srcfolder "$stage" -ov -format UDZO "$dmg"
+          if [ "$HAS_SIGNING" = true ]; then
+            codesign --sign "Developer ID Application" --timestamp "$dmg"
+          fi
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Notarize
+        if: env.HAS_SIGNING == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/notary.p8"
+          echo "$KEY_P8" | base64 --decode > "$key"
+          xcrun notarytool submit "$DMG" --key "$key" --key-id "$KEY_ID" --issuer "$ISSUER_ID" --wait --timeout 30m
+          rm "$key"
+          xcrun stapler staple "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SwiftSSH-${{ steps.version.outputs.version }}
+          path: ${{ env.DMG }}
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$HAS_SIGNING" = true ] && [ "$HAS_NOTARY" = true ]; then
+            note="Signed with Developer ID and notarized."
+          else
+            note="Not signed with Developer ID yet: the first time it is blocked, open System Settings, Privacy & Security, and click Open Anyway next to SwiftSSH."
+          fi
+          gh release create "$GITHUB_REF_NAME" "$DMG" --title "SwiftSSH $VERSION" \
+            --notes "Open the .dmg and drag SwiftSSH to Applications. $note" || \
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+
+      - name: Clean up the keychain
+        if: always() && env.HAS_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true
