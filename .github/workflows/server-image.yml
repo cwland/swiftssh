@@ -6,6 +6,7 @@ on:
     paths:
       - "Server/**"
       - "Packages/CoreSSH/**"
+      - "Packages/Citadel/**"
       - ".github/workflows/server-image.yml"
     tags: ["server-v*"]
   workflow_dispatch:
