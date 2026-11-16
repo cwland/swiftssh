@@ -34,7 +34,7 @@ struct SidebarView: View {
 
 private struct SidebarRow: View {
     let item: SidebarItem
-    /// nil: no number (a section whose screen isn't built yet).
+    /// nil: no number.
     let count: Int?
     let isSelected: Bool
     let action: () -> Void

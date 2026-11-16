@@ -1,0 +1,230 @@
+name: release
+
+# Builds SwiftSSH on a GitHub Mac and publishes a .dmg on a GitHub Release.
+#   Push a tag:   git tag v1.0.0 && git push origin v1.0.0
+#   A "build-*" tag (e.g. build-0.12.0-1) builds the .dmg as an artifact only, without a release:
+#   a compile check of a branch on a real Mac. Actions -> release -> Run workflow does the same.
+#
+# Package versions: App/Package.resolved (committed) pins every Swift package, so a release builds
+# exactly what was tested. Without it, the build resolves the newest allowed versions and uploads the
+# result as the "Package.resolved" artifact, to be committed as App/Package.resolved.
+#
+# Signing and notarization use these repository secrets when they exist (otherwise the .dmg is
+# ad-hoc signed and macOS blocks its first launch until it is allowed in Privacy & Security):
+#   DEVELOPER_ID_P12           base64 of the "Developer ID Application" certificate + key (.p12)
+#   DEVELOPER_ID_P12_PASSWORD  the .p12's password
+#   APPLE_TEAM_ID              10-character Team ID (developer.apple.com -> Membership)
+#   NOTARY_KEY_P8              base64 of an App Store Connect API key (.p8), role Developer
+#   NOTARY_KEY_ID              that key's Key ID
+#   NOTARY_ISSUER_ID           the Issuer ID shown above the keys list
+
+on:
+  push:
+    tags: ["v*", "build-*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # -e and pipefail: a failing command in a pipeline fails the step.
+    shell: bash
+
+jobs:
+  build:
+    # Xcode 27 image (arm64): matches the Xcode SwiftSSH is developed with.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    env:
+      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_KEY_P8 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The newest stable Xcode 27.x on the image (SwiftTerm doesn't compile with Xcode 26.3).
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          swift --version
+
+      - name: Version
+        id: version
+        run: |
+          version=$(grep -m1 'MARKETING_VERSION:' App/project.yml | sed 's/.*"\(.*\)".*/\1/')
+          if [[ "$GITHUB_REF" == refs/tags/v* && "${GITHUB_REF_NAME#v}" != "$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match MARKETING_VERSION $version in App/project.yml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Import the Developer ID certificate
+        if: env.HAS_SIGNING == 'true'
+        env:
+          P12: ${{ secrets.DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          trap 'rm -f "$RUNNER_TEMP/cert.p12"' EXIT
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          # Apple's Developer ID intermediate: without it the identity doesn't chain to a trusted root.
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain" || true
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-identity -v -p codesigning "$keychain" | grep -q "Developer ID Application" || {
+            echo "Identities in the keychain (valid or not):"
+            security find-identity -p codesigning "$keychain" | sed -E 's/[0-9A-F]{40}/<hash>/'
+            echo "::error::No valid 'Developer ID Application' identity in DEVELOPER_ID_P12 (wrong certificate type, expired, or no private key)"
+            exit 1
+          }
+
+      - name: Build
+        env:
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cd App
+          xcodegen generate
+          resolved_dir=SwiftSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          package_flags=()
+          if [ -f Package.resolved ]; then
+            mkdir -p "$resolved_dir"
+            cp Package.resolved "$resolved_dir/"
+            package_flags=(-onlyUsePackageVersionsFromResolvedFile)
+          else
+            echo "::warning::No App/Package.resolved: resolving the newest allowed package versions"
+          fi
+          # Built unsigned, then signed below: a signing identity on the command line would also apply
+          # to the Swift package targets, which Xcode refuses ("conflicting provisioning settings").
+          signing=(CODE_SIGNING_ALLOWED=NO)
+          log="$RUNNER_TEMP/xcodebuild.log"
+          xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -configuration Release \
+            -destination 'generic/platform=macOS' -skipPackagePluginValidation "${package_flags[@]}" \
+            -derivedDataPath "$RUNNER_TEMP/dd" "${signing[@]}" build > "$log" 2>&1 || {
+              grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | head -60
+              echo "::error::xcodebuild failed (full log in the xcodebuild-log artifact)"
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" "$log"
+          if [ -f "$resolved_dir/Package.resolved" ]; then cp "$resolved_dir/Package.resolved" "$RUNNER_TEMP/Package.resolved"; fi
+          app="$RUNNER_TEMP/dd/Build/Products/Release/SwiftSSH.app"
+          # Sign inside-out: nested code first, then the app. Hardened runtime and a secure timestamp
+          # for Developer ID (notarization needs both); ad hoc otherwise. No entitlements.
+          if [ "$HAS_SIGNING" = true ]; then
+            sign=(codesign --force --options runtime --timestamp --sign "Developer ID Application")
+          else
+            sign=(codesign --force --sign -)
+          fi
+          find "$app/Contents" -depth \( -name "*.framework" -o -name "*.dylib" -o -name "*.bundle" \
+               -o -name "*.xpc" -o -name "*.appex" \) -print0 | while IFS= read -r -d '' nested; do
+            "${sign[@]}" "$nested"
+          done
+          "${sign[@]}" "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|flags" || true
+          echo "commit stamped: $(defaults read "$app/Contents/Info.plist" SwiftSSHGitCommit)"
+          if [ "$HAS_SIGNING" = true ]; then
+            codesign -dv "$app" 2>&1 | grep -q "runtime" || { echo "::error::Hardened runtime is off"; exit 1; }
+            if codesign -d --entitlements - --xml "$app" 2>/dev/null | grep -q "get-task-allow"; then
+              echo "::error::The app has the get-task-allow entitlement; notarization would reject it"; exit 1
+            fi
+          fi
+          echo "APP=$app" >> "$GITHUB_ENV"
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+
+      - name: Upload the package versions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Package.resolved
+          path: ${{ runner.temp }}/Package.resolved
+          if-no-files-found: warn
+
+      - name: Make the .dmg
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          stage="$RUNNER_TEMP/dmg"
+          mkdir -p "$stage"
+          ditto "$APP" "$stage/SwiftSSH.app"
+          ln -s /Applications "$stage/Applications"
+          dmg="$RUNNER_TEMP/SwiftSSH-$VERSION.dmg"
+          for attempt in 1 2 3; do
+            hdiutil create -volname "SwiftSSH $VERSION" -srcfolder "$stage" -ov -format UDZO "$dmg" && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "hdiutil failed, retrying"; sleep 5
+          done
+          if [ "$HAS_SIGNING" = true ]; then
+            codesign --sign "Developer ID Application" --timestamp "$dmg"
+          fi
+          echo "DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Notarize
+        if: env.HAS_SIGNING == 'true' && env.HAS_NOTARY == 'true'
+        env:
+          KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          key="$RUNNER_TEMP/notary.p8"
+          trap 'rm -f "$key"' EXIT
+          echo "$KEY_P8" | base64 --decode > "$key"
+          out=$(xcrun notarytool submit "$DMG" --key "$key" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
+                --wait --timeout 30m --output-format json) || true
+          id=$(echo "$out" | /usr/bin/plutil -extract id raw - 2>/dev/null || true)
+          status=$(echo "$out" | /usr/bin/plutil -extract status raw - 2>/dev/null || true)
+          echo "notarization: ${status:-no answer} (${id:-no id})"
+          if [ "$status" != Accepted ]; then
+            [ -n "$id" ] && xcrun notarytool log "$id" --key "$key" --key-id "$KEY_ID" --issuer "$ISSUER_ID" || true
+            echo "::error::Notarization was not accepted"
+            exit 1
+          fi
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SwiftSSH-${{ steps.version.outputs.version }}
+          path: ${{ env.DMG }}
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ "$HAS_SIGNING" = true ] && [ "$HAS_NOTARY" = true ]; then
+            note="Signed with Developer ID and notarized."
+          elif [ "$HAS_SIGNING" = true ]; then
+            note="Signed with Developer ID but not notarized: macOS may block the first launch (System Settings, Privacy & Security, Open Anyway)."
+          else
+            note="Not signed with Developer ID yet: the first time it is blocked, open System Settings, Privacy & Security, and click Open Anyway next to SwiftSSH. Each update asks again for Keychain and 1Password access."
+          fi
+          gh release create "$GITHUB_REF_NAME" "$DMG" --title "SwiftSSH $VERSION" \
+            --notes "Open the .dmg and drag SwiftSSH to Applications. $note" || \
+          gh release upload "$GITHUB_REF_NAME" "$DMG" --clobber
+
+      - name: Clean up the keychain
+        if: always() && env.HAS_SIGNING == 'true'
+        run: security delete-keychain "$RUNNER_TEMP/signing.keychain-db" || true

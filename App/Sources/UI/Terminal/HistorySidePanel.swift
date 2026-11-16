@@ -11,6 +11,9 @@ import CoreModels
 /// has the Snippets screen, opens it there to name). The shell writes its history file when it exits
 /// (bash) or as you go (zsh/fish, depending on its settings), so the newest commands of this session
 /// may not be listed yet.
+///
+/// The close button and Cmd+Y close the panel, and so does Esc while the keyboard focus is in the panel
+/// (its search field or list). While the terminal has the focus, Esc goes to the terminal.
 struct HistorySidePanel: View {
     let tab: TerminalTab
     let sessions: SessionManager
@@ -78,6 +81,8 @@ struct HistorySidePanel: View {
         } message: { _ in
             Text("This server\u{2019}s shell doesn\u{2019}t support safe multi-line paste, so each line runs as soon as it\u{2019}s pasted.")
         }
+        // Esc with the focus in the panel (search field, list) closes it; Esc in the terminal stays there.
+        .onExitCommand(perform: close)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("History panel")
     }
@@ -91,8 +96,9 @@ struct HistorySidePanel: View {
             Spacer(minLength: 8)
             circleButton("arrow.clockwise", help: "Read the history again", label: "Refresh history", action: reload)
                 .disabled(!isConnected || model?.isLoading == true)
-            circleButton("xmark", help: "Close (Esc)", label: "Close history panel", action: close)
-                .keyboardShortcut(.cancelAction)
+            // No Esc shortcut here: it would take Esc from the terminal (see `onExitCommand`).
+            circleButton("xmark", help: "Close (\u{2318}Y or Esc in the search field)", label: "Close history panel",
+                         action: close)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -134,6 +140,11 @@ struct HistorySidePanel: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($searchFocused)
+                // Esc in the field closes the panel; the field editor can swallow `onExitCommand`.
+                .onKeyPress(.escape) {
+                    close()
+                    return .handled
+                }
         }
         .padding(.horizontal, 10)
         .frame(height: 30)

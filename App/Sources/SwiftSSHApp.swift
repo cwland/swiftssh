@@ -7,7 +7,7 @@ struct SwiftSSHApp: App {
     @State private var environment = AppEnvironment()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: AppEnvironment.mainSceneID) {
             RootView(environment: environment)
                 .environment(environment.settingsNavigation)
                 .environment(environment.onePassword)
@@ -23,6 +23,7 @@ struct SwiftSSHApp: App {
         .commands {
             SessionCommands(environment: environment)
             TextSizeCommands(settings: environment.terminalSettings)
+            HelpCommands(environment: environment)
         }
 
         // "Duplicate in New Window": a window of terminal tabs only (no Vaults), opened with
@@ -55,7 +56,8 @@ struct SwiftSSHApp: App {
 }
 
 /// Keyboard commands for terminal tabs, acting on the focused window's tabs (`WindowScope`): Cmd+W
-/// closes the selected tab, or a workspace's focused pane (or the window on Vaults), Cmd+1 shows Vaults,
+/// closes the selected tab, or a workspace's focused pane (or the window on Vaults, or Settings when it
+/// is in front), Cmd+1 shows Vaults,
 /// Cmd+2…9 select tab bar items (a workspace counts as one), Cmd+Shift+[ / ] the previous and next item,
 /// Cmd+R reconnects a disconnected tab, Cmd+. shows or hides the selected tab's snippets panel. In a
 /// workspace: Cmd+B broadcast input, Cmd+Shift+M Focus mode / Split view, Cmd+S Save Workspace.
@@ -66,7 +68,8 @@ private struct SessionCommands: Commands {
     @FocusedValue(\.historyPanelToggle) private var historyPanel
 
     var body: some Commands {
-        // Replaces the standard File > Close (Cmd+W).
+        // Replaces the standard File > Close (Cmd+W). With Settings in front it closes Settings
+        // (`closeSelectedTabOrWindow` checks the key window), never a tab behind it.
         CommandGroup(replacing: .saveItem) {
             Button(workspace == nil ? "Close" : "Close Pane") {
                 environment.closeSelectedTabOrWindow(in: scope)
@@ -158,6 +161,23 @@ private struct SessionCommands: Commands {
             try environment.splitTab(tab.id, at: edge)
         } catch {
             environment.presentCommandError(error, title: "The tab couldn\u{2019}t be split")
+        }
+    }
+}
+
+/// Help → Set Up SwiftSSH…: opens the welcome sheet (sync server, 1Password) again, in a new main
+/// window when none is open.
+private struct HelpCommands: Commands {
+    let environment: AppEnvironment
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .help) {
+            Button("Set Up SwiftSSH\u{2026}") {
+                // With no main window open, open one: it shows the sheet once it appears.
+                if !environment.showWelcome() { openWindow(id: AppEnvironment.mainSceneID) }
+            }
+            .disabled(environment.vault == nil)
         }
     }
 }

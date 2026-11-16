@@ -11,7 +11,8 @@ import CoreModels
 ///
 /// Nothing is typed into a tab that isn't connected: Paste and Run are disabled with the reason. After
 /// Paste or Run the terminal gets the keyboard focus back; the panel stays open. The close button and
-/// Esc close the panel (while it is open, Esc does not reach the terminal).
+/// Cmd+. close the panel, and so does Esc while the keyboard focus is in the panel (its search field or
+/// list). While the terminal has the focus, Esc goes to the terminal (vim and other programs need it).
 struct SnippetsSidePanel: View {
     let tab: TerminalTab
     let sessions: SessionManager
@@ -116,6 +117,8 @@ struct SnippetsSidePanel: View {
         } message: { _ in
             Text("It is removed from the Snippets screen and from your other Macs that sync this vault. You can restore it from Settings \u{2192} Recently Deleted.")
         }
+        // Esc with the focus in the panel (search field, list) closes it; Esc in the terminal stays there.
+        .onExitCommand(perform: close)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Snippets panel")
     }
@@ -147,9 +150,8 @@ struct SnippetsSidePanel: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            // Esc closes the panel while it is open.
-            .keyboardShortcut(.cancelAction)
-            .help("Close (Esc). While this panel is open, Esc closes it instead of reaching the terminal.")
+            // No Esc shortcut here: it would take Esc from the terminal (see `onExitCommand`).
+            .help("Close (\u{2318}. or Esc in the search field)")
             .accessibilityLabel("Close snippets panel")
         }
         .padding(.horizontal, 14)
@@ -178,6 +180,11 @@ struct SnippetsSidePanel: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($searchFocused)
+                // Esc in the field closes the panel; the field editor can swallow `onExitCommand`.
+                .onKeyPress(.escape) {
+                    close()
+                    return .handled
+                }
         }
         .padding(.horizontal, 10)
         .frame(height: 30)

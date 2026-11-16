@@ -21,13 +21,7 @@ struct OnePasswordSettingsPane: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                VStack(alignment: .leading, spacing: 8) {
-                    appStep
-                    agentStep
-                    cliStep
-                    integrationStep
-                    keysStep
-                }
+                OnePasswordChecklist(setup: setup)
 
                 PromptFocusToggle(settings: setup.settings)
 
@@ -36,9 +30,32 @@ struct OnePasswordSettingsPane: View {
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+    }
+}
+
+/// What's wrong (with fix buttons), then the five setup steps. Re-checks on appear and whenever the
+/// app becomes active. Shown in Settings → 1Password and in the welcome sheet.
+struct OnePasswordChecklist: View {
+    let setup: OnePasswordSetup
+    @State private var choosingVaults = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            OnePasswordProblemsView(setup: setup)
+            VStack(alignment: .leading, spacing: 8) {
+                appStep
+                agentStep
+                cliStep
+                integrationStep
+                keysStep
+            }
+        }
         .onAppear { setup.refresh() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             setup.refresh()
+        }
+        .sheet(isPresented: $choosingVaults) {
+            AgentVaultChooserSheet(setup: setup)
         }
     }
 
@@ -66,6 +83,7 @@ struct OnePasswordSettingsPane: View {
                 }
             }
             SubStep(3, "Unlock 1Password. Keep it unlocked while you connect.")
+            SubStep(4, "In 1Password \u{2192} Settings \u{2192} General, turn on \u{201C}Keep 1Password in the menu bar\u{201D}.")
         }
     }
 
@@ -81,13 +99,15 @@ struct OnePasswordSettingsPane: View {
             if let path = setup.agentSocketPath {
                 StepDetail(path, monospaced: true)
             }
-            SubStep(1, "In 1Password, open \(developer).") {
-                Button("Open 1Password") { setup.openOnePassword() }
+            SubStep(1, "Select your account at the top of 1Password\u{2019}s sidebar, then open \(developer).") {
+                Button("Open Developer Settings") { setup.openDeveloperSettings() }
                     .disabled(checked && !setup.isAppInstalled)
+                    .accessibilityHint(OnePasswordFix.openDeveloperSettings.accessibilityHint)
             }
             SubStep(2, "Turn on \u{201C}Use the SSH agent\u{201D}.")
             SubStep(3, "macOS 27 or later: open System Settings \u{2192} Privacy & Security \u{2192} Files & Folders.") {
-                Button("Open Privacy Settings") { setup.openPrivacySettings() }
+                Button("Open Privacy & Security") { setup.openPrivacySettings() }
+                    .accessibilityHint(OnePasswordFix.openPrivacySettings.accessibilityHint)
             }
             SubStep(4, "Under SwiftSSH, turn on \u{201C}Data shared by 1Password\u{201D}.")
             SubStep(5, "Quit SwiftSSH (Cmd+Q) and open it again.")
@@ -134,8 +154,9 @@ struct OnePasswordSettingsPane: View {
                 }
             }
             SubStep(2, "Come back here. This step turns green by itself.")
-            SubStep(3, "If Terminal says \u{201C}No accounts configured\u{201D}, open Files & Folders.") {
-                Button("Open Privacy Settings") { setup.openPrivacySettings() }
+            SubStep(3, "For Terminal too (the key-install command), open Files & Folders.") {
+                Button("Open Privacy & Security") { setup.openPrivacySettings() }
+                    .accessibilityHint(OnePasswordFix.openPrivacySettings.accessibilityHint)
             }
             SubStep(4, "Under Terminal, turn on \u{201C}Data shared by 1Password\u{201D}.")
             SubStep(5, "Quit Terminal (Cmd+Q) and open it again.")
@@ -150,7 +171,11 @@ struct OnePasswordSettingsPane: View {
                 Button("Open 1Password") { setup.openOnePassword() }
                     .disabled(checked && !setup.isAppInstalled)
             }
-            SubStep(2, "Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.")
+            SubStep(2, "Select your account at the top of 1Password\u{2019}s sidebar (Developer only shows then). Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.") {
+                Button("Open Developer Settings") { setup.openDeveloperSettings() }
+                    .disabled(checked && !setup.isAppInstalled)
+                    .accessibilityHint(OnePasswordFix.openDeveloperSettings.accessibilityHint)
+            }
             SubStep(3, "Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
             SubStep(4, "Quit SwiftSSH (Cmd+Q) and open it again.")
             SubStep(5, "Click Test, then approve 1Password\u{2019}s prompt if one appears.") {
@@ -180,11 +205,11 @@ struct OnePasswordSettingsPane: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.green)
         case .failed(let error):
+            // What to do is in the problem card at the top; here only that the test failed, and op's words.
             VStack(alignment: .leading, spacing: 4) {
-                Text(error.message)
+                Text("The test didn\u{2019}t pass. What to do is shown at the top.")
                     .font(.system(size: 12))
                     .foregroundStyle(.red)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
                 OnePasswordErrorDetails(error: error)
             }
@@ -209,7 +234,10 @@ struct OnePasswordSettingsPane: View {
                     .disabled(checked && !setup.isAppInstalled)
             }
             SubStep(2, "Generate a key (Ed25519) and save it in the **Private** vault.")
-            SubStep(3, "The agent offers only Private-vault keys. Another vault? See below.")
+            SubStep(3, "Keys in another vault? Choose the vaults the agent offers keys from.") {
+                Button(OnePasswordFix.chooseVaults.title) { choosingVaults = true }
+                    .accessibilityHint(OnePasswordFix.chooseVaults.accessibilityHint)
+            }
             SubStep(4, "Put the public key on each server: copy this, replace PORT, USER and HOST.")
             CopyableCommand(command: KeyInstallCommand.make(port: nil, user: nil, host: nil))
                 .padding(.leading, SubStepMetrics.indent)
@@ -222,7 +250,7 @@ struct OnePasswordSettingsPane: View {
 
     /// Keys in a vault other than Private: 1Password's agent.toml lists the vaults the agent offers.
     private var otherVault: some View {
-        DisclosureGroup("Keys in another vault?") {
+        DisclosureGroup("Set the vaults by hand instead") {
             VStack(alignment: .leading, spacing: 6) {
                 SubStep(1, "Run this in Terminal. It creates the agent\u{2019}s config file and opens it.")
                 CopyableCommand(command: OnePasswordLinks.agentConfigCommand)
@@ -233,7 +261,7 @@ struct OnePasswordSettingsPane: View {
                 SubStep(3, "Save the file, then click Recheck.") {
                     Button("Recheck") { setup.refresh() }
                 }
-                SubStep(4, "Key still missing? Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
+                SubStep(4, "Key still missing? Lock 1Password and unlock it again. Still missing? Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
                 StepNote("Once this file exists, 1Password offers only the vaults listed. Keep \u{201C}Private\u{201D} if you still want it.")
             }
             .padding(.top, 6)

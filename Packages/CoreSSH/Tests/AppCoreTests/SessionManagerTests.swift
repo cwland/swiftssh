@@ -1332,6 +1332,103 @@ extension SessionManagerTests {
         XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup, "1Password may hold another key, or be locked")
     }
 
+    // MARK: Rejected agent key: what the agent offers decides the message (v1.0.0)
+
+    private static let generic = "The server didn't accept the key from 1Password's SSH agent for root@agent.example. Either the key's public half isn't in ~/.ssh/authorized_keys on the server, or 1Password is locked \u{2014} unlock it and try again."
+
+    private func agentManager(_ keys: @escaping @Sendable (String) async throws -> [AgentKey]) -> SessionManager {
+        let factory = factory!
+        return SessionManager(vault: vault, knownHosts: store, makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                              deviceName: "Test Mac", defaultUsername: "me", initialSizeTimeout: .zero,
+                              agentSocket: { "/tmp/a.sock" }, agentKeys: keys)
+    }
+
+    private func agentKey(_ line: String) -> AgentKey {
+        AgentKey(publicKeyLine: line, type: "ssh-ed25519", comment: "", fingerprint: "SHA256:x")
+    }
+
+    private func rejected(pin: String?, agent keys: @escaping @Sendable (String) async throws -> [AgentKey]) async throws -> TerminalTab {
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        manager = agentManager(keys)
+        let tab = try manager.open(hostID: agentHost(AgentKeyChoice(publicKey: pin)).id)
+        await waitUntil("disconnected") { if case .disconnected = tab.state { true } else { false } }
+        await waitUntil("diagnosed") { tab.state != .disconnected(Self.generic) }
+        return tab
+    }
+
+    func testRejectedAgentKeyWhenTheAgentOffersNoKeys() async throws {
+        let asked = Mutex<[String]>([])
+        let tab = try await rejected(pin: "ssh-ed25519 AAAA pin") { socket in
+            asked.withLock { $0.append(socket) }
+            return []
+        }
+        let message = "1Password\u{2019}s SSH agent offers no keys, so it had none to try for root@agent.example. Choose the vaults that hold your SSH keys."
+        XCTAssertEqual(tab.state, .disconnected(message))
+        XCTAssertEqual(tab.suggestedAction, .chooseOnePasswordVaults)
+        XCTAssertEqual(tab.connectionFailure, message, "the log's failure line says the same")
+        XCTAssertEqual(tab.connectionLog.filter { $0.status == .failed && $0.step == nil }.count, 1)
+        XCTAssertEqual(asked.withLock { $0 }, ["/tmp/a.sock"])
+    }
+
+    func testRejectedAgentKeyWhenThePinnedKeyIsntOffered() async throws {
+        let other = agentKey("ssh-ed25519 BBBB other")
+        let tab = try await rejected(pin: "ssh-ed25519 AAAA Homelab key") { _ in [other] }
+        XCTAssertEqual(tab.state, .disconnected("1Password\u{2019}s SSH agent doesn\u{2019}t offer the key this host uses (Homelab key), so it couldn\u{2019}t sign in to root@agent.example. Its vault may not be one the agent uses: choose the vaults, or pick another key in Host Details."))
+        XCTAssertEqual(tab.suggestedAction, .chooseOnePasswordVaults)
+    }
+
+    func testRejectedAgentKeyThatTheAgentOffersIsTheServers() async throws {
+        let offered = agentKey("ssh-ed25519 AAAA renamed in 1Password")
+        let tab = try await rejected(pin: "ssh-ed25519 AAAA pin") { _ in [offered] }
+        XCTAssertEqual(tab.state, .disconnected("The server didn\u{2019}t accept the key from 1Password\u{2019}s SSH agent for root@agent.example. Add the key\u{2019}s public half to ~/.ssh/authorized_keys on the server (Host Details \u{2192} \u{201C}Copy key-install command\u{201D})."))
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        // Without a pinned key, any offered key means the server said no.
+        let unpinned = try await rejected(pin: nil) { _ in [offered] }
+        XCTAssertEqual(unpinned.suggestedAction, .openOnePasswordSetup)
+        guard case .disconnected(let text?) = unpinned.state else { return XCTFail() }
+        XCTAssertTrue(text.hasPrefix("The server didn\u{2019}t accept the key"), text)
+    }
+
+    func testRejectedAgentKeyWhenTheAgentDoesntAnswer() async throws {
+        let tab = try await rejected(pin: "ssh-ed25519 AAAA pin") { _ in throw SSHAgentError.connectionFailed("Nothing is listening on the agent's socket.") }
+        XCTAssertEqual(tab.state, .disconnected("1Password is locked or not running, so its SSH agent couldn\u{2019}t sign in to root@agent.example. Open 1Password, unlock it, and try again."))
+        XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
+        let blocked = try await rejected(pin: "ssh-ed25519 AAAA pin") { _ in throw SSHAgentError.permissionDenied }
+        guard case .disconnected(let text?) = blocked.state else { return XCTFail() }
+        XCTAssertTrue(text.hasPrefix("macOS is blocking SwiftSSH from 1Password\u{2019}s SSH agent."), text)
+    }
+
+    func testALateAgentAnswerDoesntOverwriteANewAttempt() async throws {
+        let gate = TestGate()
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        manager = agentManager { _ in
+            await gate.wait()
+            return []
+        }
+        let tab = try manager.open(hostID: agentHost().id)
+        await waitUntil("disconnected") { tab.state == .disconnected(Self.generic) }
+        factory.onStart = { @Sendable s in
+            s.emit(.connected)
+            s.emit(.ready)
+        }
+        manager.reconnect(tabID: tab.id)
+        await waitUntil("connected") { tab.state == .connected }
+        gate.open()
+        await settle()
+        XCTAssertEqual(tab.state, .connected)
+        XCTAssertNil(tab.suggestedAction)
+    }
+
+    func testOtherFailuresDontAskTheAgent() async throws {
+        let asked = Mutex(0)
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.connectionFailed("refused")))) }
+        manager = agentManager { _ in asked.withLock { $0 += 1 }; return [] }
+        let tab = try manager.open(hostID: agentHost().id)
+        await waitUntil("disconnected") { if case .disconnected = tab.state { true } else { false } }
+        await settle()
+        XCTAssertEqual(asked.withLock { $0 }, 0)
+    }
+
     func testUnreachableAgentDisconnectsWithItsMessageAndSetupSuggestion() async throws {
         let unreachable = SessionError.agentUnavailable(
             "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it.")

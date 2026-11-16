@@ -41,6 +41,19 @@ final class OnePasswordSetup {
 
     /// nil when 1Password isn't installed.
     private(set) var appURL: URL?
+    /// 1Password (8, or 7) is running, as of the last `refresh()`.
+    private(set) var isAppRunning = false
+    /// Whether this app may look into 1Password's group container ("Data shared by 1Password"), as of
+    /// the last `refresh()`; nil when 1Password isn't installed or before the first look has answered
+    /// (it runs in the background: macOS may ask the user first).
+    private(set) var containerAccess: OnePasswordPaths.Probe?
+    /// Reads the agent keys saved hosts and identities are pinned to (set by `AppEnvironment` once the
+    /// vault is open). Called by `refresh()` only, so views never decode the vault while drawing.
+    @ObservationIgnored var readPinnedKeys: @MainActor () -> [PinnedAgentKey] = { [] }
+    /// The pinned keys as of the last `refresh()`, for "a host's key isn't offered".
+    private(set) var pinnedKeys: [PinnedAgentKey] = []
+    /// Whether `~/.config/1Password/ssh/agent.toml` existed at the last `refresh()`.
+    private(set) var agentConfigExists = false
     private(set) var agentSocketStatus: AgentSocketStatus = .notFound
     private(set) var cliPath: String?
     /// `op --version`, once read.
@@ -59,6 +72,7 @@ final class OnePasswordSetup {
     private(set) var installError: String?
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var containerTask: Task<Void, Never>?
     @ObservationIgnored private var versionTask: Task<Void, Never>?
     @ObservationIgnored private var testTask: Task<Void, Never>?
 
@@ -92,6 +106,29 @@ final class OnePasswordSetup {
         return agentKeys == .blocked
     }
     var isCLIReady: Bool { cliPath != nil }
+
+    /// What the checklist found, for `OnePasswordDiagnosis`.
+    var facts: OnePasswordFacts {
+        let agent: AgentListing = switch agentKeys {
+        case .unknown, .loading: .notChecked
+        case .loaded(let keys): .keys(keys)
+        case .blocked: .denied
+        case .failed(let message): .failed(message)
+        }
+        let cliError: OnePasswordError? = switch cliTest {
+        case .failed(let error): error
+        case .idle, .running, .passed: nil
+        }
+        return OnePasswordFacts(appInstalled: isAppInstalled, appRunning: isAppRunning, socket: agentSocketStatus,
+                                agent: agent, cliInstalled: isCLIReady, cliError: cliError,
+                                containerAccess: containerAccess, pinnedKeys: pinnedKeys,
+                                agentConfigExists: agentConfigExists)
+    }
+
+    /// Everything that keeps 1Password from working, most basic first; empty before the first check.
+    var problems: [OnePasswordProblem] {
+        hasChecked ? OnePasswordDiagnosis.problems(facts) : []
+    }
 
     // MARK: Lookups (also used by SessionManager at connect time)
 
@@ -157,11 +194,30 @@ final class OnePasswordSetup {
         return "\(item.vault) / \(title) / \(parts[2])"
     }
 
-    /// Re-checks the app, the socket, `op` (and its version), Homebrew and the agent's keys. This lists
-    /// the agent's keys, which can make macOS ask to access data from other apps: call it only from
-    /// Settings → 1Password and the agent key picker. A CLI test result is kept unless `op` moved.
+    /// Re-checks the app (installed, running), access to 1Password's group container, the socket, `op`
+    /// (and its version), Homebrew, agent.toml, the pinned keys and the agent's keys. This lists the
+    /// agent's keys and opens a file in the group container, which can make macOS ask to access data from
+    /// other apps: call it only from the 1Password checklist (Settings, welcome), the vault chooser and
+    /// the agent key picker. The container look runs in the background, so such a prompt never stalls
+    /// the app. A CLI test result is kept unless `op` moved; one that failed for a setup reason runs again.
     func refresh() {
         appURL = Self.findApp()
+        isAppRunning = OnePasswordApp.isRunning
+        pinnedKeys = readPinnedKeys()
+        agentConfigExists = FileManager.default.fileExists(atPath: OnePasswordAgentConfigFile(home: NSHomeDirectory()).url.path)
+        // Opening (not reading) a file in the container: refused when macOS blocks it for this app. The
+        // last answer stays until the new one arrives.
+        containerTask?.cancel()
+        if appURL == nil {
+            containerAccess = nil
+        } else {
+            let home = NSHomeDirectory()
+            containerTask = Task { [weak self] in
+                let access = await OnePasswordPaths.groupContainerAccessInBackground(home: home)
+                guard !Task.isCancelled, let self, self.appURL != nil else { return }
+                self.containerAccess = access
+            }
+        }
         homebrewPath = OnePasswordLinks.homebrewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         let status = currentAgentSocketStatus()
         agentSocketStatus = status
@@ -184,6 +240,12 @@ final class OnePasswordSetup {
             let version = await OnePasswordCLIVersion.read(executablePath: cli)
             guard !Task.isCancelled, let self else { return }
             if self.cliPath == cli { self.cliVersion = version }
+        }
+
+        // A CLI test that failed for a setup reason runs again by itself, so the checklist follows a fix
+        // the user just made in 1Password or System Settings (it may show 1Password's prompt then).
+        if case .failed(let error) = cliTest, error.needsSetup, cli != nil {
+            testCLI()
         }
 
         refreshTask?.cancel()
@@ -224,7 +286,46 @@ final class OnePasswordSetup {
         }
     }
 
+    /// The agent's keys right now (public halves only), at the socket in use; for the vault chooser's
+    /// recheck. Throws `SSHAgentError.socketNotFound` without a socket.
+    nonisolated static func listAgentKeys(socket: String?) async throws -> [AgentKey] {
+        guard let socket else { throw SSHAgentError.socketNotFound }
+        return try await SSHAgentClient.listKeys(socketPath: socket)
+    }
+
+    /// A vault chooser ("Choose vaults…") for `~/.config/1Password/ssh/agent.toml`. Its recheck also
+    /// refreshes this checklist.
+    func makeVaultChooser() -> AgentVaultChooser {
+        let socket = agentSocket()
+        return AgentVaultChooser(cli: { [weak self] in self?.makeClient() },
+                                 file: OnePasswordAgentConfigFile(home: NSHomeDirectory()),
+                                 listAgentKeys: { try await OnePasswordSetup.listAgentKeys(socket: socket) })
+    }
+
     // MARK: Actions
+
+    /// Runs a checklist fix button. `.chooseVaults` is shown by the view itself (a sheet), so it does
+    /// nothing here.
+    func perform(_ fix: OnePasswordFix) {
+        switch fix {
+        case .downloadApp: openDownloadPage()
+        case .openOnePassword: openOnePassword()
+        case .openDeveloperSettings: openDeveloperSettings()
+        case .openPrivacySettings: openPrivacySettings()
+        case .copyCLIInstallCommand: Self.copy(OnePasswordLinks.homebrewInstallCommand)
+        case .openCLIDownloadPage: openCLIDownloadPage()
+        case .chooseVaults: break
+        case .recheck: refresh()
+        }
+    }
+
+    /// `onepassword://settings/developers`; opens 1Password itself when the link isn't handled.
+    func openDeveloperSettings() {
+        guard isAppInstalled || Self.findApp() != nil else { return openDownloadPage() }
+        if !NSWorkspace.shared.open(OnePasswordLinks.developerSettingsURL) {
+            openOnePassword()
+        }
+    }
 
     func openDownloadPage() {
         NSWorkspace.shared.open(OnePasswordLinks.appDownloadURL)
@@ -234,7 +335,7 @@ final class OnePasswordSetup {
         NSWorkspace.shared.open(OnePasswordLinks.cliDownloadURL)
     }
 
-    /// Opens the 1Password app (there is no documented link into its Developer settings).
+    /// Opens the 1Password app.
     func openOnePassword() {
         if let app = appURL ?? Self.findApp() {
             NSWorkspace.shared.open(app)
