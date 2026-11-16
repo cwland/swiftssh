@@ -194,18 +194,12 @@ struct SessionScreen: View {
         environment.navigation.show(.keys)
     }
 
-    /// The host's theme, then its groups', then this device's default, then Automatic (by the colour
-    /// scheme); and this device's text size. Reading the vault, the settings and the colour scheme
-    /// here re-applies them live.
+    /// The theme chosen in Settings for every session (host and group themes from the Mac aren't
+    /// used on iPhone/iPad), else Automatic by the colour scheme; and this device's text size.
+    /// Reading the settings and the colour scheme here re-applies them live.
     private var resolvedAppearance: TerminalAppearance {
-        _ = vault.revision
         let settings = environment.terminalSettings
-        let host = tab.savedHostID.flatMap { vault.get(SavedHost.self, id: $0) }
-        let theme = TerminalThemeResolver.theme(forHostID: tab.savedHostID,
-                                                hosts: host.map { [$0] } ?? [],
-                                                groups: host == nil ? [] : vault.all(HostGroup.self),
-                                                defaultThemeID: settings.defaultThemeID,
-                                                prefersDark: colorScheme == .dark)
+        let theme = CompanionThemes.theme(selectedID: settings.defaultThemeID, prefersDark: colorScheme == .dark)
         return settings.appearance(theme: theme)
     }
 

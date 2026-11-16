@@ -3,13 +3,21 @@ import AppCore
 import CoreModels
 import SwiftSSHUI
 
-/// Settings: sync (status, Sync Now, Leave sync), the app lock, the terminal's default theme and
+/// Settings: sync (status, Sync Now, Leave sync), the app lock, the terminal theme and
 /// text size on this device, and the version.
 struct SettingsScreen: View {
     @Environment(IOSEnvironment.self) private var environment
     @State private var confirmsLeaving = false
     @State private var isLeaving = false
     @State private var leaveError: String?
+
+    /// The chosen theme; one outside the built-in list (an older choice) shows as Automatic.
+    private var themeSelection: Binding<String?> {
+        let settings = environment.terminalSettings
+        return Binding(get: {
+            settings.defaultThemeID.flatMap { id in CompanionThemes.choices.contains { $0.id == id } ? id : nil }
+        }, set: { settings.defaultThemeID = $0 })
+    }
 
     var body: some View {
         @Bindable var terminal = environment.terminalSettings
@@ -52,9 +60,9 @@ struct SettingsScreen: View {
                 Text("Locks SwiftSSH when it opens and when you come back after more than \(Int(AppLock.gracePeriod)) seconds.")
             }
             Section {
-                Picker("Default theme", selection: $terminal.defaultThemeID) {
+                Picker("Theme", selection: themeSelection) {
                     Text("Automatic").tag(String?.none)
-                    ForEach(TerminalThemeCatalog.shared.themes) { theme in
+                    ForEach(CompanionThemes.choices) { theme in
                         Text(theme.name).tag(Optional(theme.id))
                     }
                 }
@@ -65,7 +73,7 @@ struct SettingsScreen: View {
             } header: {
                 Text("Terminal")
             } footer: {
-                Text("A host\u{2019}s own theme (set on the Mac) wins over the default. Pinch a terminal to change the text size.")
+                Text("Used for every session on this device. Automatic follows Light or Dark mode. Pinch a terminal to change the text size.")
             }
             Section("About") {
                 LabeledContent("Version", value: Self.version)
