@@ -1,7 +1,7 @@
-# Project Specification: SwiftSSH, a Native macOS SSH Client (Termius-inspired)
+# Project Specification: SwiftSSH, a Native macOS SSH Client
 
 ## 1. Project Overview & Goals
-Build a native macOS SSH client and terminal emulator inspired by the design, workflow, and visual polish of **Termius**. 
+Build a native macOS SSH client and terminal emulator with a modern design, a smooth workflow and careful visual polish. 
 - **Target Platform:** macOS 15.0+ (Sequoia and later) built with Swift and SwiftUI (with AppKit bridging where required for low-level terminal rendering and window management).
 - **Future-Proofing:** Architect the data models, SSH networking engine, and iCloud sync layer as a shared Swift Package (`CoreSSH`) so an iOS/iPadOS companion app can be built on top of the exact same core later.
 - **Scope:** Focus strictly on core SSH, SFTP, host management, snippets, port forwarding, and seamless cross-Mac credential syncing via Apple's iCloud ecosystem. Exclude team collaboration features, multiplayer terminals, and custom cloud accounts.
@@ -17,11 +17,11 @@ Build a native macOS SSH client and terminal emulator inspired by the design, wo
 
 ---
 
-## 3. UI/UX & Visual Design ("Termius Look & Feel")
-Replicate Termius’s modern, dark-first, high-contrast developer aesthetic:
+## 3. UI/UX & Visual Design
+A modern, dark-first, high-contrast developer aesthetic:
 - **Color Palette & Theme:**
   - Deep slate/navy-charcoal base (`#14171F` background, `#1C202B` elevated cards/sidebars, `#252A37` hover states, `#00D1B2` / `#3B82F6` vibrant teal/blue primary accents).
-  - Support custom terminal color themes (Dracula, Solarized Dark/Light, Monokai, Nord, Termius Dark) decoupled from the app chrome.
+  - Support custom terminal color themes (Dracula, Solarized Dark/Light, Monokai, Nord, a default dark theme) decoupled from the app chrome.
 - **Window & Navigation Architecture:**
   - **Unified Titlebar with Horizontal Tabs:** Top bar merges window controls with a browser-style tab strip for active terminal sessions, SFTP sessions, and the main "Vault" management tab.
   - **Left Navigation Sidebar (Collapsible):**
@@ -48,7 +48,7 @@ Replicate Termius’s modern, dark-first, high-contrast developer aesthetic:
 - **Connection Resiliency:** Automatic reconnect prompt on dropped connections; keep scrollback buffer intact.
 - **Clipboard & Drag-and-Drop:** Support OSC 52 clipboard integration, copy-on-select, and dragging a local file onto the terminal window to automatically upload it via SFTP to the current working directory.
 
-### 4.2 Centralized Keychain (Termius Model)
+### 4.2 Centralized Keychain
 - Credentials are **decoupled** from Hosts. A user creates a Keychain item once (e.g., "Production Root Key" or "Staging Password") and links it to multiple Hosts or Groups.
 - Updating a password or rotating a key in the Keychain automatically updates all linked Hosts.
 - Support generating new `Ed25519` and `RSA-4096` keypairs in-app, importing existing PEM/OpenSSH keys, and one-click `ssh-copy-id` deployment to a host.
@@ -91,7 +91,7 @@ final class Host {
     var keychainIdentityID: UUID? // Maps to iCloud Keychain item
     var jumpHostID: UUID?
     var startupSnippetID: UUID?
-    var terminalTheme: String = "TermiusDark"
+    var terminalTheme: String = "DefaultDark"
     var group: HostGroup?
     var lastConnectedAt: Date?
 }

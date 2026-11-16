@@ -1,6 +1,6 @@
 # SwiftSSH
 
-**A native macOS SSH client with the look and workflow of Termius, without the subscription.**
+**A native macOS SSH client with an encrypted, self-hosted sync vault and 1Password support.**
 
 SwiftSSH keeps your servers, logins and SSH keys in one encrypted vault, opens them in fast terminal tabs and split-screen workspaces, and keeps every Mac in step through a small sync server you run yourself. It works with 1Password for SSH keys and passwords, so secrets can stay in 1Password instead of the app.
 
@@ -36,7 +36,7 @@ SwiftSSH is SSH only, on purpose: no SFTP browser, port forwarding, jump hosts, 
 - **Startup snippets:** a command typed after login, per host or inherited from its group.
 
 ### Connections
-- **Connection screen** in the style of Termius: each step of the connection as it happens, and on failure the full log with Close, Edit Host and Start Over.
+- **Connection screen:** each step of the connection as it happens, and on failure the full log with Close, Edit Host and Start Over.
 - **Host key checks** on every connection, with a clear prompt for a new or changed server key, and a **Known Hosts** screen to search, copy fingerprints and remove trusted keys.
 - **Fast disconnect detection:** keep-alives every 5 seconds, plus an immediate check when typing gets no echo, when the network changes and after sleep.
 - **Automatic reconnect** with a countdown popup (for reboots and dropped networks) for about three minutes; typing `exit` simply closes the tab.
