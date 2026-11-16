@@ -111,6 +111,17 @@ final class TerminalViewStore {
         _ = view.becomeFirstResponder()
     }
 
+    /// Shows the keyboard when the session's terminal doesn't have it, hides it when it does (the
+    /// session header's keyboard button; swiping the keyboard away has no way back otherwise).
+    func toggleKeyboard(tabID: UUID) {
+        guard let view = entries[tabID]?.view, view.window != nil else { return }
+        if view.isFirstResponder {
+            _ = view.resignFirstResponder()
+        } else {
+            _ = view.becomeFirstResponder()
+        }
+    }
+
     /// Releases the views of sessions that are no longer open. SwiftTerm requires `updateUiClosed()`
     /// before a view is let go; when it returns false the entry is kept and released later.
     func retain(only openTabIDs: Set<UUID>) {

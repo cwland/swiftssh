@@ -120,6 +120,14 @@ struct SessionScreen: View {
     @ViewBuilder
     private var trailingButtons: some View {
         Button {
+            environment.terminalViews.toggleKeyboard(tabID: tab.id)
+        } label: {
+            Image(systemName: "keyboard")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 32, height: 32)
+        }
+        .accessibilityLabel("Show or hide keyboard")
+        Button {
             showsSnippets = true
         } label: {
             Image(systemName: "text.alignleft")
