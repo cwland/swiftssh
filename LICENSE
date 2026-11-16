@@ -1,0 +1,25 @@
+Copyright (c) 2026 Cory (github.com/cwland). All rights reserved.
+
+This repository and everything in it (source code, designs, icons, documentation
+and release builds), except the third-party components listed below, are the
+proprietary work of the copyright holder.
+
+No license is granted. You may not copy, modify, merge, publish, distribute,
+sublicense, sell, or use this software or any part of it, in source or binary
+form, without the prior written permission of the copyright holder.
+
+If this repository is public on GitHub, GitHub's Terms of Service let other
+GitHub users view it and fork it within GitHub. That is the only permission
+given, and it does not include any right to use, run, copy outside GitHub,
+modify for other purposes, or redistribute the software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM,
+DAMAGES OR OTHER LIABILITY ARISING FROM OR IN CONNECTION WITH THE SOFTWARE.
+
+Third-party components keep their own licenses:
+- Packages/Citadel: a modified copy of Citadel, MIT License (Packages/Citadel/LICENSE).
+- Bundled terminal color themes: MIT License, see
+  Packages/CoreSSH/Sources/AppCore/Resources/terminal-themes-notices.txt.
+- Swift packages fetched at build time (SwiftTerm, swift-nio-ssh and others) are
+  under their own licenses and are not part of this repository.

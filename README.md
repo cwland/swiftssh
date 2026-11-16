@@ -163,3 +163,7 @@ Pushing a tag `ios-vX.Y.Z` (matching `MARKETING_VERSION` in `App-iOS/project.yml
 ## Credits
 
 Terminal emulation by [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm); SSH by [Citadel](https://github.com/orlandos-nl/Citadel) and [swift-nio-ssh](https://github.com/apple/swift-nio-ssh). Bundled terminal themes are MIT-licensed by their authors: see `Packages/CoreSSH/Sources/AppCore/Resources/terminal-themes-notices.txt` (also in Settings → Terminal → Theme credits). Inspired by [Termius](https://termius.com); not affiliated with it.
+
+## License
+
+All rights reserved. SwiftSSH is not open source: you may read it here, but you may not copy, use, modify or redistribute it without written permission. See [LICENSE](LICENSE). Third-party parts (the modified Citadel copy and the bundled terminal themes) keep their own MIT licenses.
