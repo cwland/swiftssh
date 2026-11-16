@@ -44,11 +44,16 @@ final class OnePasswordSetup {
     /// 1Password (8, or 7) is running, as of the last `refresh()`.
     private(set) var isAppRunning = false
     /// Whether this app may look into 1Password's group container ("Data shared by 1Password"), as of
-    /// the last `refresh()`; nil when 1Password isn't installed (not looked at).
+    /// the last `refresh()`; nil when 1Password isn't installed or before the first look has answered
+    /// (it runs in the background: macOS may ask the user first).
     private(set) var containerAccess: OnePasswordPaths.Probe?
-    /// The agent keys saved hosts and identities are pinned to (set by `AppEnvironment` once the vault
-    /// is open), for "a host's key isn't offered".
-    @ObservationIgnored var pinnedKeys: @MainActor () -> [PinnedAgentKey] = { [] }
+    /// Reads the agent keys saved hosts and identities are pinned to (set by `AppEnvironment` once the
+    /// vault is open). Called by `refresh()` only, so views never decode the vault while drawing.
+    @ObservationIgnored var readPinnedKeys: @MainActor () -> [PinnedAgentKey] = { [] }
+    /// The pinned keys as of the last `refresh()`, for "a host's key isn't offered".
+    private(set) var pinnedKeys: [PinnedAgentKey] = []
+    /// Whether `~/.config/1Password/ssh/agent.toml` existed at the last `refresh()`.
+    private(set) var agentConfigExists = false
     private(set) var agentSocketStatus: AgentSocketStatus = .notFound
     private(set) var cliPath: String?
     /// `op --version`, once read.
@@ -67,6 +72,7 @@ final class OnePasswordSetup {
     private(set) var installError: String?
 
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
+    @ObservationIgnored private var containerTask: Task<Void, Never>?
     @ObservationIgnored private var versionTask: Task<Void, Never>?
     @ObservationIgnored private var testTask: Task<Void, Never>?
 
@@ -115,7 +121,8 @@ final class OnePasswordSetup {
         }
         return OnePasswordFacts(appInstalled: isAppInstalled, appRunning: isAppRunning, socket: agentSocketStatus,
                                 agent: agent, cliInstalled: isCLIReady, cliError: cliError,
-                                containerAccess: containerAccess, pinnedKeys: pinnedKeys())
+                                containerAccess: containerAccess, pinnedKeys: pinnedKeys,
+                                agentConfigExists: agentConfigExists)
     }
 
     /// Everything that keeps 1Password from working, most basic first; empty before the first check.
@@ -188,15 +195,29 @@ final class OnePasswordSetup {
     }
 
     /// Re-checks the app (installed, running), access to 1Password's group container, the socket, `op`
-    /// (and its version), Homebrew and the agent's keys. This lists the agent's keys and opens a file in
-    /// the group container, which can make macOS ask to access data from other apps: call it only from
-    /// the 1Password checklist (Settings, welcome), the vault chooser and the agent key picker. A CLI
-    /// test result is kept unless `op` moved; one that failed for a setup reason runs again.
+    /// (and its version), Homebrew, agent.toml, the pinned keys and the agent's keys. This lists the
+    /// agent's keys and opens a file in the group container, which can make macOS ask to access data from
+    /// other apps: call it only from the 1Password checklist (Settings, welcome), the vault chooser and
+    /// the agent key picker. The container look runs in the background, so such a prompt never stalls
+    /// the app. A CLI test result is kept unless `op` moved; one that failed for a setup reason runs again.
     func refresh() {
         appURL = Self.findApp()
         isAppRunning = OnePasswordApp.isRunning
-        // Opening (not reading) a file in the container: refused when macOS blocks it for this app.
-        containerAccess = appURL == nil ? nil : OnePasswordPaths.groupContainerAccess(home: NSHomeDirectory())
+        pinnedKeys = readPinnedKeys()
+        agentConfigExists = FileManager.default.fileExists(atPath: OnePasswordAgentConfigFile(home: NSHomeDirectory()).url.path)
+        // Opening (not reading) a file in the container: refused when macOS blocks it for this app. The
+        // last answer stays until the new one arrives.
+        containerTask?.cancel()
+        if appURL == nil {
+            containerAccess = nil
+        } else {
+            let home = NSHomeDirectory()
+            containerTask = Task { [weak self] in
+                let access = await OnePasswordPaths.groupContainerAccessInBackground(home: home)
+                guard !Task.isCancelled, let self, self.appURL != nil else { return }
+                self.containerAccess = access
+            }
+        }
         homebrewPath = OnePasswordLinks.homebrewPaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         let status = currentAgentSocketStatus()
         agentSocketStatus = status
@@ -294,6 +315,7 @@ final class OnePasswordSetup {
         case .copyCLIInstallCommand: Self.copy(OnePasswordLinks.homebrewInstallCommand)
         case .openCLIDownloadPage: openCLIDownloadPage()
         case .chooseVaults: break
+        case .recheck: refresh()
         }
     }
 

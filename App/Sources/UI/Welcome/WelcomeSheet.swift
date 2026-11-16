@@ -44,6 +44,10 @@ struct WelcomeSheet: View {
             .padding(16)
         }
         .frame(width: 640, height: 620)
+        .onChange(of: step) { _, _ in
+            // VoiceOver: say which step is showing now.
+            AccessibilityNotification.Announcement("\(step.progress): \(heading)").post()
+        }
     }
 
     private var header: some View {
@@ -51,7 +55,7 @@ struct WelcomeSheet: View {
             Text(step.progress)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text(step == .sync ? "Welcome to SwiftSSH" : step.title)
+            Text(heading)
                 .font(.system(size: 22, weight: .semibold))
             Text(subtitle)
                 .font(.system(size: 13))
@@ -59,7 +63,10 @@ struct WelcomeSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
+
+    private var heading: String { step == .sync ? "Welcome to SwiftSSH" : step.title }
 
     private var subtitle: String {
         switch step {

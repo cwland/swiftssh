@@ -40,8 +40,13 @@ final class AppEnvironment {
     let settingsNavigation = SettingsNavigation()
     /// The welcome sheet's "Don't show again" (per Mac).
     let welcomeSettings = WelcomeSettings()
-    /// Whether the main window shows the welcome sheet (first launch, or Help → Set Up SwiftSSH…).
-    var isShowingWelcome = false
+    /// Whether a main window shows the welcome sheet (first launch, or Help → Set Up SwiftSSH…).
+    private(set) var isShowingWelcome = false
+    /// The one main window that shows the welcome sheet, also with several main windows open (Cmd+N);
+    /// nil until a main window is there to show it (the first one that appears claims it).
+    private(set) var welcomeWindow: ObjectIdentifier?
+    /// The main `WindowGroup`'s id, for `openWindow(id:)` (Help → Set Up SwiftSSH… with no main window).
+    static let mainSceneID = "main"
     /// Set together with `.ready`.
     private(set) var sessions: SessionManager?
     /// Syncs the vault with the sync server (Settings → Sync, the Vaults tab's cloud icon).
@@ -56,6 +61,8 @@ final class AppEnvironment {
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
     @ObservationIgnored private var didStartLoading = false
     @ObservationIgnored private var didOfferWelcome = false
+    /// A vault that couldn't be read was moved aside this launch: the empty vault opened next is not a new Mac.
+    @ObservationIgnored private var movedVaultAside = false
     @ObservationIgnored private var runtime: SSHRuntimeDirectory?
 
     init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider(),
@@ -139,11 +146,12 @@ final class AppEnvironment {
             watcher.start()
             connectionWatcher = watcher
             OnePasswordApp.watchAgentSigning(sessions, focus: onePassword.promptFocus)
-            onePassword.pinnedKeys = { [weak vault] in vault.map { PinnedAgentKey.all(in: $0) } ?? [] }
+            onePassword.readPinnedKeys = { [weak vault] in vault.map { PinnedAgentKey.all(in: $0) } ?? [] }
             state = .ready(vault)
             startSync(vault: vault)
             offerWelcomeIfNew(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {
+            movedVaultAside = true
             state = .failed(.unreadable(movedTo: movedTo.path, keyWasCreated: keyWasCreated))
         } catch let error as RebrandMigrationError {
             // Nothing was created or moved aside; Try Again runs the migration again.
@@ -179,21 +187,45 @@ final class AppEnvironment {
     // MARK: Welcome
 
     /// Opens the welcome sheet once per launch on a Mac that looks new (`WelcomeSetup.shouldShowAtLaunch`):
-    /// an empty vault and no sync server. Never for a Mac with data or sync set up.
+    /// an empty vault and no sync server. Never for a Mac with data or sync set up, nor after a vault that
+    /// couldn't be read was moved aside (the user has data, in the moved file).
     private func offerWelcomeIfNew(vault: LocalVault) {
-        guard !didOfferWelcome else { return }
+        guard !didOfferWelcome, !movedVaultAside else { return }
         didOfferWelcome = true
         let syncConfigured = sync?.serverURL != nil
         if WelcomeSetup.shouldShowAtLaunch(liveCounts: vault.liveCounts(), syncServerConfigured: syncConfigured,
                                            settings: welcomeSettings) {
-            isShowingWelcome = true
+            presentWelcome()
         }
     }
 
-    /// Help → Set Up SwiftSSH…: shows the welcome sheet in the main window (once the vault is open).
-    func showWelcome() {
-        guard vault != nil else { return }
+    /// Help → Set Up SwiftSSH…: shows the welcome sheet in the frontmost main window (once the vault is
+    /// open). Returns false when no main window is open; the caller opens one, which then shows it.
+    @discardableResult
+    func showWelcome() -> Bool {
+        guard vault != nil else { return true }
+        presentWelcome()
+        return welcomeWindow != nil
+    }
+
+    /// The welcome sheet was closed.
+    func welcomeDismissed() {
+        isShowingWelcome = false
+        welcomeWindow = nil
+    }
+
+    private func presentWelcome() {
         isShowingWelcome = true
+        welcomeWindow = frontmostMainWindow()
+    }
+
+    /// The main window a prompt about the main tabs goes to, else any open main window; nil when none
+    /// is open (a terminal or the Settings window doesn't count).
+    private func frontmostMainWindow() -> ObjectIdentifier? {
+        if let id = promptWindow(showingWindowID: nil), windowScopes[id].map({ !$0.isTerminalWindow }) == true {
+            return id
+        }
+        return windowScopes.first { !$0.value.isTerminalWindow }?.key
     }
 
     // MARK: Sessions
@@ -557,6 +589,10 @@ final class AppEnvironment {
 
     func windowAttached(_ window: NSWindow, scope: WindowScope) {
         windowScopes[ObjectIdentifier(window)] = scope
+        // The welcome sheet waits for a main window (launch with none yet, or Help with none open).
+        if isShowingWelcome, welcomeWindow == nil, scope.windowID == nil {
+            welcomeWindow = ObjectIdentifier(window)
+        }
     }
 
     /// A window closed. Main windows (the launch window, Cmd+N ones) leave the main tabs running, as in
@@ -567,6 +603,8 @@ final class AppEnvironment {
         windowScopes[closedID] = nil
         // A window address can be reused: drop requests aimed at the window that just closed.
         if namingWorkspaceRequest?.window == closedID { namingWorkspaceRequest = nil }
+        // The welcome sheet moves to another main window, if one is open.
+        if welcomeWindow == closedID { welcomeWindow = frontmostMainWindow() }
         guard let windowID = scope.windowID else { return }
         sessions?.closeWindow(windowID)
         releaseClosedTerminalViews()

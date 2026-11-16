@@ -57,6 +57,12 @@ struct RootView: View {
 
     private var windowID: UUID? { windowRequest?.windowID }
 
+    /// Only the one main window the environment chose shows the welcome sheet.
+    private var showsWelcome: Bool {
+        guard !isTerminalWindow, environment.isShowingWelcome, let chosen = environment.welcomeWindow else { return false }
+        return window.window.map { ObjectIdentifier($0) } == chosen
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             TopBarView(
@@ -120,8 +126,8 @@ struct RootView: View {
         .ignoresSafeArea(.container, edges: .top)
         .focusedSceneValue(\.windowScope, WindowScope(windowID: windowID))
         // First launch on a new Mac, or Help → Set Up SwiftSSH…: main windows only.
-        .sheet(isPresented: Binding(get: { !isTerminalWindow && environment.isShowingWelcome },
-                                    set: { environment.isShowingWelcome = $0 })) {
+        .sheet(isPresented: Binding(get: { showsWelcome },
+                                    set: { if !$0 { environment.welcomeDismissed() } })) {
             WelcomeSheet(environment: environment)
         }
         .background {

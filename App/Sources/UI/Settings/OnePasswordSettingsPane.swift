@@ -205,19 +205,13 @@ struct OnePasswordChecklist: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.green)
         case .failed(let error):
+            // What to do is in the problem card at the top; here only that the test failed, and op's words.
             VStack(alignment: .leading, spacing: 4) {
-                if let problem = OnePasswordDiagnosis.problem(for: error) {
-                    OnePasswordProblemCard(problem: problem, setup: setup)
-                    // A `.cliFailed` card shows the details itself.
-                    if problem.id != "cliFailed" { OnePasswordErrorDetails(error: error) }
-                } else {
-                    Text(error.message)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.red)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    OnePasswordErrorDetails(error: error)
-                }
+                Text("The test didn\u{2019}t pass. What to do is shown at the top.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                OnePasswordErrorDetails(error: error)
             }
         }
     }

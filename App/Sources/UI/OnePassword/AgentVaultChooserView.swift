@@ -3,9 +3,10 @@ import AppCore
 import SSHCore
 
 /// "Choose vaults…": which 1Password vaults the SSH agent offers keys from. Lists the vaults with
-/// check boxes (vaults holding SSH keys chosen already), shows the current agent.toml, and "Use
-/// these vaults" writes the new file (the old one is backed up first), then asks the agent again.
-/// The logic is `AgentVaultChooser`.
+/// check boxes (the vaults agent.toml names chosen already; without the file, the vaults holding SSH
+/// keys), shows the current agent.toml, and "Use these vaults" writes the new file (the old one is
+/// backed up first; entries naming an item or an account are kept), then asks the agent again. It asks
+/// first when that would take something out of the file. The logic is `AgentVaultChooser`.
 struct AgentVaultChooserSheet: View {
     let setup: OnePasswordSetup
 
@@ -18,7 +19,7 @@ struct AgentVaultChooserSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Choose vaults for the SSH agent")
                     .font(.system(size: 17, weight: .semibold))
-                Text("1Password\u{2019}s SSH agent offers keys only from the vaults listed in \(OnePasswordAgentConfigFile.displayPath). Without that file it uses Private.")
+                Text("1Password\u{2019}s SSH agent offers keys only from the vaults listed in \(OnePasswordAgentConfigFile.displayPath). Without that file it uses the Private, Personal or Employee vault.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -47,9 +48,11 @@ struct AgentVaultChooserSheet: View {
                 listStatus(chooser)
                 vaultList(chooser)
                 addVaultField(chooser)
-                if let existing = chooser.existingText {
-                    CurrentFile(text: existing, hasOtherEntries: chooser.existingHasOtherEntries,
-                                backupURL: chooser.backupURL)
+                if let reason = chooser.existingReadError {
+                    UnreadableFile(reason: reason)
+                } else if let existing = chooser.existingText {
+                    CurrentFile(text: existing, keptCount: chooser.keptEntries.count,
+                                removals: chooser.removals, backupURL: chooser.backupURL)
                 }
                 result(chooser)
             }
@@ -72,12 +75,24 @@ struct AgentVaultChooserSheet: View {
             Button("Use these vaults") {
                 Task {
                     await chooser.apply()
-                    setup.refresh()
+                    if !chooser.isAskingToConfirm { setup.refresh() }
                 }
             }
             .keyboardShortcut(.defaultAction)
             .disabled(!chooser.canApply)
             .accessibilityHint("Saves \(OnePasswordAgentConfigFile.displayPath) with the chosen vaults")
+        }
+        .alert("Replace agent.toml?", isPresented: Binding(get: { chooser.isAskingToConfirm },
+                                                          set: { chooser.isAskingToConfirm = $0 })) {
+            Button("Replace") {
+                Task {
+                    await chooser.apply(confirmed: true)
+                    setup.refresh()
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(chooser.confirmationMessage)
         }
     }
 
@@ -122,9 +137,15 @@ struct AgentVaultChooserSheet: View {
                 }
                 .toggleStyle(.checkbox)
                 .disabled(chooser.isBusy)
-                .accessibilityLabel(row.sshKeyCount.map { "\(row.name), \($0) SSH keys" } ?? row.name)
+                .accessibilityLabel(Self.accessibilityLabel(row))
             }
         }
+    }
+
+    /// "Private", "Work, 1 SSH key", "SSH Key Vault, 3 SSH keys": the count only when the screen shows it.
+    private static func accessibilityLabel(_ row: AgentVaultChooser.Row) -> String {
+        guard let count = row.sshKeyCount, count > 0 else { return row.name }
+        return "\(row.name), \(count == 1 ? "1 SSH key" : "\(count) SSH keys")"
     }
 
     private func addVaultField(_ chooser: AgentVaultChooser) -> some View {
@@ -188,10 +209,14 @@ struct AgentVaultChooserSheet: View {
     }
 }
 
-/// The agent.toml there is now, and where the previous one went.
+/// The agent.toml there is now, what "Use these vaults" keeps and takes out, and where the previous
+/// one went.
 private struct CurrentFile: View {
     let text: String
-    let hasOtherEntries: Bool
+    /// Entries naming an item or an account (written back unchanged).
+    let keptCount: Int
+    /// What saving would take out (`AgentVaultChooser.removals`).
+    let removals: [String]
     let backupURL: URL?
     @State private var isExpanded = true
 
@@ -205,22 +230,51 @@ private struct CurrentFile: View {
                     .padding(8)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Theme.cardBackground))
                 if let backupURL {
-                    Text("The previous file was saved as \(backupURL.lastPathComponent).")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+                    note("The previous file was saved as \(backupURL.lastPathComponent).")
                 } else {
-                    Text(hasOtherEntries
-                         ? "It names items or accounts too. \u{201C}Use these vaults\u{201D} replaces it with vaults only; the old file is kept as a backup next to it."
-                         : "\u{201C}Use these vaults\u{201D} replaces it; the old file is kept as a backup next to it.")
+                    note("\u{201C}Use these vaults\u{201D} replaces it; the old file is kept as a backup next to it.")
+                }
+                if keptCount > 0 {
+                    note(keptCount == 1
+                         ? "The entry that names an item or an account is kept as it is."
+                         : "The \(keptCount) entries that name an item or an account are kept as they are.")
+                }
+                if !removals.isEmpty {
+                    Text("Saving takes out: " + removals.joined(separator: ", ") + ".")
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.warningForeground)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(.top, 4)
         }
         .font(.system(size: 12, weight: .medium))
+    }
+
+    private func note(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// An agent.toml that is there but couldn't be read: it is never treated as missing.
+private struct UnreadableFile: View {
+    let reason: String
+
+    var body: some View {
+        Label {
+            Text("\(OnePasswordAgentConfigFile.displayPath) exists but couldn\u{2019}t be read: \(reason.hasSuffix(".") ? reason : reason + ".") Saving will replace it (a backup is kept).")
+                .font(.system(size: 12))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(Theme.warningForeground)
+                .accessibilityHidden(true)
+        }
     }
 }
 

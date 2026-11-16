@@ -7,7 +7,7 @@ struct SwiftSSHApp: App {
     @State private var environment = AppEnvironment()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: AppEnvironment.mainSceneID) {
             RootView(environment: environment)
                 .environment(environment.settingsNavigation)
                 .environment(environment.onePassword)
@@ -165,14 +165,17 @@ private struct SessionCommands: Commands {
     }
 }
 
-/// Help → Set Up SwiftSSH…: opens the welcome sheet (sync server, 1Password) again.
+/// Help → Set Up SwiftSSH…: opens the welcome sheet (sync server, 1Password) again, in a new main
+/// window when none is open.
 private struct HelpCommands: Commands {
     let environment: AppEnvironment
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(after: .help) {
             Button("Set Up SwiftSSH\u{2026}") {
-                environment.showWelcome()
+                // With no main window open, open one: it shows the sheet once it appears.
+                if !environment.showWelcome() { openWindow(id: AppEnvironment.mainSceneID) }
             }
             .disabled(environment.vault == nil)
         }

@@ -75,8 +75,8 @@ struct OnePasswordProblemCard: View {
     }
 }
 
-/// A fix button. "Copy install command" says "Copied" for a moment; "Choose vaults…" opens the
-/// vault chooser sheet.
+/// A fix button. "Copy install command" says (and announces) "Copied" for a moment; "Choose vaults…"
+/// opens the vault chooser sheet; "Recheck" checks everything again.
 struct OnePasswordFixButton: View {
     let fix: OnePasswordFix
     let setup: OnePasswordSetup
@@ -91,6 +91,7 @@ struct OnePasswordFixButton: View {
             case .copyCLIInstallCommand:
                 setup.perform(fix)
                 copied = true
+                AccessibilityNotification.Announcement("Copied").post()
                 Task {
                     try? await Task.sleep(for: .seconds(2))
                     copied = false
@@ -99,7 +100,7 @@ struct OnePasswordFixButton: View {
                 setup.perform(fix)
             }
         }
-        .accessibilityLabel(fix.title)
+        .accessibilityLabel(copied ? "Copied" : fix.title)
         .accessibilityHint(fix.accessibilityHint)
         .help(fix.accessibilityHint)
         .sheet(isPresented: $choosingVaults) {
