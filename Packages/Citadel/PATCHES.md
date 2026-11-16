@@ -1,8 +1,8 @@
 # Citadel — local patch
 
 This is Citadel 0.12.1 (https://github.com/orlandos-nl/Citadel, revision `ae8562f`, MIT licence, see
-`LICENSE`), vendored so Termius Reimagined can tell **how an interactive shell ended**. Only
-`Sources/Citadel/TTY/Client/TTY.swift` is changed; every change is marked `PATCH (Termius Reimagined)`.
+`LICENSE`), vendored so SwiftSSH can tell **how an interactive shell ended**. Only
+`Sources/Citadel/TTY/Client/TTY.swift` is changed; every change is marked `PATCH (SwiftSSH)`.
 The example server and the tests are left out.
 
 ## Why

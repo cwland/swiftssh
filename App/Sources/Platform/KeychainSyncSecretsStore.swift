@@ -7,7 +7,7 @@ import SyncCore
 /// the login keychain, readable after the first unlock, on this device only (never synchronized
 /// through iCloud Keychain). Errors carry only an `OSStatus`, never the secret.
 struct KeychainSyncSecretsStore: SyncSecretsStore {
-    static let defaultService = "com.cwland.TermiusReimagined.sync"
+    static let defaultService = "com.cwland.SwiftSSH.sync"
     static let vaultKeyAccount = "vaultKey"
     static let apiKeyAccount = "apiKey"
 
@@ -23,7 +23,7 @@ struct KeychainSyncSecretsStore: SyncSecretsStore {
     }
 
     func saveVaultKey(_ key: VaultKey) throws {
-        try write(key.rawBytes, account: Self.vaultKeyAccount, label: "Termius Reimagined sync vault key")
+        try write(key.rawBytes, account: Self.vaultKeyAccount, label: "SwiftSSH sync vault key")
     }
 
     func loadAPIKey() throws -> String? {
@@ -35,7 +35,7 @@ struct KeychainSyncSecretsStore: SyncSecretsStore {
     }
 
     func saveAPIKey(_ key: String) throws {
-        try write(Data(key.utf8), account: Self.apiKeyAccount, label: "Termius Reimagined sync API key")
+        try write(Data(key.utf8), account: Self.apiKeyAccount, label: "SwiftSSH sync API key")
     }
 
     /// Removes both items; items that don't exist are not an error.

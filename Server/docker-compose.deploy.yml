@@ -1,10 +1,13 @@
 # Deploy from the prebuilt GHCR image (no build). Usage:
 #   docker login ghcr.io -u cwland        # PAT with read:packages (repo is private)
 #   echo 'SYNC_API_KEYS=key1,key2' > .env
-#   docker compose -f docker-compose.deploy.yml up -d
+#   docker compose -f docker-compose.deploy.yml up -d --remove-orphans
+# The volume keeps its name `sync-data` (Compose stores it as `<project>_sync-data`), so a server
+# that ran as "termius-sync" keeps its data after the rename to SwiftSSH; see Server/README.md.
 services:
-  termius-sync:
-    image: ghcr.io/cwland/termius-reimagined-sync:${SYNC_IMAGE_TAG:-latest}
+  swiftssh-sync:
+    container_name: swiftssh-sync
+    image: ghcr.io/cwland/swiftssh-sync:${SYNC_IMAGE_TAG:-latest}
     ports:
       # Published on all interfaces because the reverse proxy may run on another host.
       # If your proxy runs on the same host, publish only to localhost: "127.0.0.1:8080:8080".

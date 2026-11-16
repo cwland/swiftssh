@@ -169,4 +169,10 @@ final class EncryptedFileVaultPersistenceTests: XCTestCase {
             XCTAssertEqual(try Data(contentsOf: url), original, file: file, line: line)
         }
     }
+
+    /// The rebrand to SwiftSSH must not change the vault's authenticated data, or existing vaults
+    /// (and ones copied over from Termius Reimagined) would no longer open.
+    func testAuthenticatedDataKeepsTheFormerNameForCompatibility() {
+        XCTAssertEqual(EncryptedFileVaultPersistence.aad, Data("termius-reimagined-vault-v1".utf8))
+    }
 }

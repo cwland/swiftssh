@@ -27,7 +27,7 @@ struct KeychainVaultKeyProvider: VaultKeyProvider {
     let service: String
     let account: String
 
-    init(service: String = "com.cwland.TermiusReimagined", account: String = "local-vault-key") {
+    init(service: String = "com.cwland.SwiftSSH", account: String = "local-vault-key") {
         self.service = service
         self.account = account
     }
@@ -53,7 +53,7 @@ struct KeychainVaultKeyProvider: VaultKeyProvider {
         var attributes = baseQuery()
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        attributes[kSecAttrLabel as String] = "Termius Reimagined vault key"
+        attributes[kSecAttrLabel as String] = "SwiftSSH vault key"
 
         let addStatus = SecItemAdd(attributes as CFDictionary, nil)
         switch addStatus {

@@ -3,7 +3,7 @@ import Foundation
 import Security
 import AppCore
 import SyncCore
-@testable import TermiusReimagined
+@testable import SwiftSSH
 
 /// Uses the real login keychain with a unique service per test so the app's own vault key is
 /// never touched; items are deleted in `tearDown`.
@@ -13,7 +13,7 @@ final class KeychainVaultKeyProviderTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        service = "com.cwland.TermiusReimagined.tests.\(UUID().uuidString)"
+        service = "com.cwland.SwiftSSH.tests.\(UUID().uuidString)"
     }
 
     override func tearDown() {

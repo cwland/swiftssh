@@ -324,7 +324,7 @@ final class OnePasswordCLITests: XCTestCase {
     }
 
     func testIntegrationOffMessageIsExact() {
-        let expected = "The 1Password CLI can't reach the 1Password app. In 1Password \u{2192} Settings \u{2192} Developer, turn on \u{201C}Integrate with 1Password CLI\u{201D}. On macOS 27 or later, also turn on \u{201C}Data shared by 1Password\u{201D} for Termius Reimagined in System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, then quit and reopen Termius Reimagined."
+        let expected = "The 1Password CLI can't reach the 1Password app. In 1Password \u{2192} Settings \u{2192} Developer, turn on \u{201C}Integrate with 1Password CLI\u{201D}. On macOS 27 or later, also turn on \u{201C}Data shared by 1Password\u{201D} for SwiftSSH in System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, then quit and reopen SwiftSSH."
         XCTAssertEqual(OnePasswordError.integrationOff(details: nil).message, expected)
         XCTAssertEqual(OnePasswordError.integrationOff(details: "op's own words").message, expected,
                        "the details are shown separately, never in the message")

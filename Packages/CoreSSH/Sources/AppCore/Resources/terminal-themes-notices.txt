@@ -1,4 +1,4 @@
-Third-party terminal color themes bundled with Termius Reimagined
+Third-party terminal color themes bundled with SwiftSSH
 
 ================================================================================
 Flexoki — https://github.com/kepano/flexoki

@@ -584,8 +584,8 @@ struct TopBarView: View {
 /// into a terminal area; a workspace's prefix is one `WorkspaceDragPayload` doesn't read, so it only
 /// reorders in the bar.
 private enum TabDragPayload {
-    static let prefix = "termius-reimagined-tab:"
-    static let workspacePrefix = "termius-reimagined-workspace:"
+    static let prefix = "swiftssh-tab:"
+    static let workspacePrefix = "swiftssh-workspace:"
 
     static func string(for id: UUID) -> String { prefix + id.uuidString }
 

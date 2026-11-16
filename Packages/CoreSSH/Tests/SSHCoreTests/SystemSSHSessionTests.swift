@@ -45,7 +45,7 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(try permissions(askpass), 0o700)
         XCTAssertEqual(try String(contentsOf: askpass, encoding: .utf8), """
         #!/bin/sh
-        f="$TR_SECRET_FILE"
+        f="$SWIFTSSH_SECRET_FILE"
         [ -n "$f" ] && [ -f "$f" ] && cat "$f" && rm -f "$f"
 
         """)
@@ -64,10 +64,10 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: knownHosts, encoding: .utf8), "a ssh-ed25519 AAAA\nb ssh-ed25519 BBBB\n")
 
         // The helper prints the secret once (no prompt echo, no newline added) and deletes the file.
-        let first = try TestSSHServer.run("/usr/bin/env", ["TR_SECRET_FILE=\(secret.path)", askpass.path, "Password: "])
+        let first = try TestSSHServer.run("/usr/bin/env", ["SWIFTSSH_SECRET_FILE=\(secret.path)", askpass.path, "Password: "])
         XCTAssertEqual(first, "s3cret value")
         XCTAssertFalse(FileManager.default.fileExists(atPath: secret.path))
-        XCTAssertThrowsError(try TestSSHServer.run("/usr/bin/env", ["TR_SECRET_FILE=\(secret.path)", askpass.path, "Password: "]),
+        XCTAssertThrowsError(try TestSSHServer.run("/usr/bin/env", ["SWIFTSSH_SECRET_FILE=\(secret.path)", askpass.path, "Password: "]),
                              "a second ask finds no file and fails")
 
         try runtime.clean()
@@ -93,8 +93,8 @@ final class SystemSSHSessionTests: XCTestCase {
 
     func testDefaultControlDirectoryKeepsSocketPathsShort() {
         let mac = SSHRuntimeDirectory(root: URL(fileURLWithPath:
-            "/Users/corylanders/Library/Application Support/TermiusReimagined/run"))
-        XCTAssertEqual(mac.controlDirectory.path, "/tmp/tr-\(getuid())")
+            "/Users/corylanders/Library/Application Support/SwiftSSH/run"))
+        XCTAssertEqual(mac.controlDirectory.path, "/tmp/swiftssh-\(getuid())")
         let socket = mac.controlDirectory.appendingPathComponent(String(repeating: "f", count: 40)).path
         XCTAssertLessThan(socket.utf8.count, 104, "macOS sun_path limit")
         // ssh binds a temporary name (path + "." + 16 characters) before renaming it into place.
@@ -102,7 +102,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let args = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: mac,
                                                  knownHosts: mac.root.appendingPathComponent("s.known_hosts"),
                                                  auth: .none, hostKeyAlgorithms: "ssh-ed25519")
-        XCTAssertTrue(args.contains("ControlPath=\"/tmp/tr-\(getuid())/%C\""), "\(args)")
+        XCTAssertTrue(args.contains("ControlPath=\"/tmp/swiftssh-\(getuid())/%C\""), "\(args)")
     }
 
     func testUnsafeControlDirectoriesAreRefused() throws {
@@ -155,7 +155,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
     func testSSHArgumentsAreExact() {
         let root = URL(fileURLWithPath: "/a b/run")
-        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/swiftssh-501"))
         let knownHosts = root.appendingPathComponent("S.known_hosts")
         let common = [
             "-tt", "-F", "/dev/null", "-p", "2200", "-l", "cory",
@@ -163,7 +163,7 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "StrictHostKeyChecking=yes",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ControlMaster=auto",
-            "-o", "ControlPath=\"/tmp/tr-501/%C\"",
+            "-o", "ControlPath=\"/tmp/swiftssh-501/%C\"",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=2",
@@ -191,7 +191,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
         let command = SystemSSHSession.commandArguments(host: "example.com", port: 2200, username: "cory",
                                                         runtime: directory, knownHosts: knownHosts,
-                                                        controlSocket: "/tmp/tr-501/abc", hostKeyAlgorithms: "ssh-ed25519",
+                                                        controlSocket: "/tmp/swiftssh-501/abc", hostKeyAlgorithms: "ssh-ed25519",
                                                         command: "uname -s")
         XCTAssertEqual(command, [
             "-F", "/dev/null", "-p", "2200", "-l", "cory",
@@ -199,7 +199,7 @@ final class SystemSSHSessionTests: XCTestCase {
             "-o", "StrictHostKeyChecking=yes",
             "-o", "GlobalKnownHostsFile=/dev/null",
             "-o", "ControlMaster=no",
-            "-o", "ControlPath=\"/tmp/tr-501/abc\"",
+            "-o", "ControlPath=\"/tmp/swiftssh-501/abc\"",
             "-o", "ControlPersist=15",
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=2",
@@ -211,7 +211,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
     func testKeepAliveArgumentsForEachPreset() {
         let root = URL(fileURLWithPath: "/r")
-        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/swiftssh-501"))
         let knownHosts = root.appendingPathComponent("S.known_hosts")
         func alive(_ policy: KeepAlivePolicy) -> [String] {
             let interactive = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: directory,
@@ -314,7 +314,7 @@ final class SystemSSHSessionTests: XCTestCase {
     /// ssh's messages (OpenSSH 9.6) when the agent can't be reached or won't sign, for an `.agent` attempt.
     func testAgentFailureClassification() {
         let unavailable = SessionError.agentUnavailable(
-            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it.")
         func classify(_ s: String, agent: Bool = true) -> SessionError {
             SystemSSHSession.classifyFailure(Array(s.utf8), secrets: [], agent: agent)
         }
@@ -327,7 +327,7 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(classify("Error connecting to agent: Connection refused\r\n" + denied), unavailable)
         XCTAssertEqual(classify("Could not open a connection to your authentication agent.\r\n" + denied), unavailable)
         XCTAssertEqual(unavailable.errorDescription,
-                       "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+                       "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it.")
 
         // A missing socket makes OpenSSH 9.6 print only the refusal: the key was not accepted.
         XCTAssertEqual(classify(denied), .authenticationFailed)
@@ -932,7 +932,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
     func testSSHArgumentsWithADebugLog() {
         let root = URL(fileURLWithPath: "/a b/run")
-        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/swiftssh-501"))
         let args = SystemSSHSession.sshArguments(host: "h", port: 22, username: "u", runtime: directory,
                                                  knownHosts: root.appendingPathComponent("S.known_hosts"), auth: .password,
                                                  hostKeyAlgorithms: "ssh-ed25519",

@@ -3,7 +3,7 @@ import Observation
 import AppCore
 import CoreModels
 
-/// OS badge images and settings from `~/Library/Application Support/TermiusReimagined/Badges/`:
+/// OS badge images and settings from `~/Library/Application Support/SwiftSSH/Badges/`:
 /// `<id>.svg` or `<id>.png` (the newer one wins; ids from the bundled `OSCatalog`) and `settings.json`
 /// (per-OS "show in white", color, icon link and image source; see `BadgeSettings`; local only).
 ///
@@ -435,10 +435,10 @@ final class BadgeLogoStore {
         return failure
     }
 
-    /// `~/Library/Application Support/TermiusReimagined/Badges`, nil if Application Support is unknown.
+    /// `~/Library/Application Support/SwiftSSH/Badges`, nil if Application Support is unknown.
     static var directoryURL: URL? {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
-            .appendingPathComponent("TermiusReimagined", isDirectory: true)
+            .appendingPathComponent("SwiftSSH", isDirectory: true)
             .appendingPathComponent(BadgeStyle.logoFolderName, isDirectory: true)
     }
 

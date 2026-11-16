@@ -16,7 +16,7 @@ struct ThemeGallery: View {
     /// nil = Default.
     let selectedThemeID: String?
     /// What Default resolves to (drawn on the Default card and named in its subtitle);
-    /// nil = Automatic (Reimagined Light/Dark following the appearance).
+    /// nil = Automatic (SwiftSSH Light/Dark following the appearance).
     let inheritedTheme: TerminalTheme?
     let showsDefault: Bool
     let columns: Int
@@ -84,7 +84,7 @@ struct ThemeCard: View {
         let name = inherited?.name ?? "Automatic"
         subtitle = "Uses \(name)"
         helpText = inherited == nil
-            ? "Default \u{2014} Automatic: Reimagined Light or Reimagined Dark, following the appearance"
+            ? "Default \u{2014} Automatic: SwiftSSH Light or SwiftSSH Dark, following the appearance"
             : "Default \u{2014} uses \(name)"
         self.isSelected = isSelected
         self.select = select
@@ -130,7 +130,7 @@ struct ThemeCard: View {
 /// to cache): background with a thin muted border; row 1 a long foreground bar; row 2 a selection
 /// band holding two foreground bars; row 3 a short ANSI-green bar, two short foreground bars and a
 /// cursor block. Everything scales with `size` (designed at 72 × 48). `theme == nil` is Automatic:
-/// Reimagined Light and Reimagined Dark split on the diagonal.
+/// SwiftSSH Light and SwiftSSH Dark split on the diagonal.
 struct ThemeSwatch: View {
     static let defaultSize = CGSize(width: 72, height: 48)
     static let cornerRadius: CGFloat = 7

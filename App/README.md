@@ -1,4 +1,4 @@
-# Termius Reimagined — Mac app
+# SwiftSSH — Mac app
 
 SwiftUI app target for macOS 15+. All logic lives in the `CoreSSH` package
 (`../Packages/CoreSSH`, products `AppCore`, `CoreModels`, `SyncCore`, `SSHCore`); this folder
@@ -11,8 +11,8 @@ The Xcode project is generated from `project.yml` and is not committed.
 ```
 brew install xcodegen
 cd App && xcodegen generate
-xcodebuild -project TermiusReimagined.xcodeproj -scheme TermiusReimagined -destination 'platform=macOS' -skipPackagePluginValidation test
-open TermiusReimagined.xcodeproj   # then Run (Cmd+R)
+xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -destination 'platform=macOS' -skipPackagePluginValidation test
+open SwiftSSH.xcodeproj   # then Run (Cmd+R)
 ```
 
 The terminal view comes from [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm), whose
@@ -20,7 +20,7 @@ package runs a small build-tool plugin (`SwiftTermBuildInfoPlugin`, it writes ve
 Xcode asks once to "Trust & Enable" it; on the command line pass `-skipPackagePluginValidation`.
 
 If the test target fails with a "missing required module" (or "no such module 'AppCore'")
-error, add the `AppCore` and `SyncCore` package products to the `TermiusReimaginedTests`
+error, add the `AppCore` and `SyncCore` package products to the `SwiftSSHTests`
 dependencies in `project.yml` and regenerate.
 
 When the app runs as the unit-test host it skips loading the vault and Keychain key, so tests
@@ -30,10 +30,31 @@ Re-run `xcodegen generate` whenever files are added or removed under `Sources/` 
 
 ## Where things are stored
 
-- Vault: `~/Library/Application Support/TermiusReimagined/vault.bin` (AES-256-GCM).
+- Vault: `~/Library/Application Support/SwiftSSH/vault.bin` (AES-256-GCM).
   A vault that cannot be read is renamed to `vault.bin.unreadable-<timestamp>`, never deleted.
-- Vault key: login keychain, generic password, service `com.cwland.TermiusReimagined`,
+- Vault key: login keychain, generic password, service `com.cwland.SwiftSSH`,
   account `local-vault-key`, not synchronized.
+- Sync secrets: login keychain, service `com.cwland.SwiftSSH.sync`, accounts `vaultKey` and `apiKey`.
+- Settings: UserDefaults domain `com.cwland.SwiftSSH`.
+
+## Moving over from Termius Reimagined (first launch)
+
+The app used to be called Termius Reimagined. On the first launch of SwiftSSH (logic in
+`AppCore`'s `RebrandMigration`) it copies, once:
+
+1. The settings of `com.cwland.TermiusReimagined` (only keys SwiftSSH hasn't set).
+2. The vault key from Keychain service `com.cwland.TermiusReimagined` to `com.cwland.SwiftSSH`.
+   macOS asks whether SwiftSSH may use the old item: enter your login password and click
+   **Always Allow**. If you click Deny, nothing is copied and the window says so: click
+   **Try Again**.
+3. `vault.bin`, `workspaces.json` and `Badges/` from `Application Support/TermiusReimagined` to
+   `Application Support/SwiftSSH` (copied to a temporary name, then renamed; `run/` is skipped).
+4. The sync items of `com.cwland.TermiusReimagined.sync` (macOS may ask for each one). If one
+   can't be copied, Settings → Sync asks for the API key again.
+
+Then it records `migration.fromTermiusReimagined.done` in its settings and never runs again.
+Nothing old is changed or deleted: the old folder and Keychain items stay as a backup, and you
+can delete them yourself once SwiftSSH works. The vault file format is unchanged.
 
 ## OS icons (Settings → OS Icons)
 
@@ -72,7 +93,7 @@ Images are only ever decoded as images, off the main thread:
 
 Each image is then redrawn as a 256×256-pixel sRGB PNG (128 pt at 2x, transparent,
 aspect-fitted inside a 12% margin). Everything is stored on this Mac only, in
-`~/Library/Application Support/TermiusReimagined/Badges/`. The app creates the folder at launch,
+`~/Library/Application Support/SwiftSSH/Badges/`. The app creates the folder at launch,
 and **Show in Finder** at the bottom of the pane opens it.
 
 - `<id>.png` / `<id>.svg` holds the logo, where `<id>` is the catalog id (e.g. `ubuntu`,
@@ -154,15 +175,24 @@ permissions you gave it (for example **Files & Folders → "Data shared by 1Pass
 with your own free certificate once, and macOS keeps recognising the app:
 
 1. Open **Keychain Access → Keychain Access menu → Certificate Assistant → Create a Certificate…**
-2. Name: `Termius Reimagined Local` · Identity Type: **Self-Signed Root** · Certificate Type: **Code Signing** → **Create**.
+2. Name: `Termius Reimagined Local` (any name works; this is the one used so far) · Identity Type: **Self-Signed Root** · Certificate Type: **Code Signing** → **Create**.
 3. In Terminal, from the repo folder:
    ```
    echo 'CODE_SIGN_IDENTITY = Termius Reimagined Local' > App/Config/Local.xcconfig
    ```
 4. `cd App && xcodegen generate`, then build as usual. The first build may ask to use the key — click **Always Allow**.
-5. Give the permissions one last time (Files & Folders → Termius Reimagined → "Data shared by 1Password"); they now stick.
+5. Give the permissions one last time (Files & Folders → SwiftSSH → "Data shared by 1Password"); they now stick.
 
 `App/Config/Local.xcconfig` is ignored by git, so each Mac has its own.
+
+The certificate keeps its old name `Termius Reimagined Local` after the rename to SwiftSSH:
+it's only a label, and keeping it means no new certificate and no new Keychain trust. To rename
+it (optional), create a new certificate as above with a name such as `SwiftSSH Local`, put that
+name in `Local.xcconfig`, rebuild, and click **Always Allow** / grant the permissions once more.
+
+Because the bundle ID changed to `com.cwland.SwiftSSH`, macOS sees SwiftSSH as a new app: give
+it **Files & Folders → "Data shared by 1Password"** (and any other permission) once, even with
+the same certificate.
 
 ## App icon
 

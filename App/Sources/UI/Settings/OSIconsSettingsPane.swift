@@ -78,7 +78,7 @@ struct OSIconsSettingsPane: View {
                     .foregroundStyle(.red)
             }
             HStack(spacing: 8) {
-                Text("Images are stored on this Mac only, in Application Support/TermiusReimagined/Badges.")
+                Text("Images are stored on this Mac only, in Application Support/SwiftSSH/Badges.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                 if let directory = store.directory {

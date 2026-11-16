@@ -89,8 +89,8 @@ struct OnePasswordSettingsPane: View {
             SubStep(3, "macOS 27 or later: open System Settings \u{2192} Privacy & Security \u{2192} Files & Folders.") {
                 Button("Open Privacy Settings") { setup.openPrivacySettings() }
             }
-            SubStep(4, "Under Termius Reimagined, turn on \u{201C}Data shared by 1Password\u{201D}.")
-            SubStep(5, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(4, "Under SwiftSSH, turn on \u{201C}Data shared by 1Password\u{201D}.")
+            SubStep(5, "Quit SwiftSSH (Cmd+Q) and open it again.")
             SubStep(6, "Click Recheck.") {
                 Button("Recheck") { setup.refresh() }
             }
@@ -152,7 +152,7 @@ struct OnePasswordSettingsPane: View {
             }
             SubStep(2, "Open \(developer) and turn on \u{201C}Integrate with 1Password CLI\u{201D}.")
             SubStep(3, "Quit 1Password completely: click its menu bar icon and choose Quit 1Password (Cmd+Q alone may leave it running in the menu bar). Then open it again.")
-            SubStep(4, "Quit Termius Reimagined (Cmd+Q) and open it again.")
+            SubStep(4, "Quit SwiftSSH (Cmd+Q) and open it again.")
             SubStep(5, "Click Test, then approve 1Password\u{2019}s prompt if one appears.") {
                 Button("Test") { setup.testCLI() }
                     .disabled(!setup.isCLIReady || setup.cliTest == .running)

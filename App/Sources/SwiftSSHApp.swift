@@ -2,7 +2,7 @@ import SwiftUI
 import AppCore
 
 @main
-struct TermiusReimaginedApp: App {
+struct SwiftSSHApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var environment = AppEnvironment()
 

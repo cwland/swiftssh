@@ -1,4 +1,4 @@
-name: TermiusReimagined
+name: SwiftSSH
 
 options:
   bundleIdPrefix: com.cwland
@@ -22,7 +22,7 @@ settings:
     ENABLE_HARDENED_RUNTIME: NO
 
 targets:
-  TermiusReimagined:
+  SwiftSSH:
     type: application
     platform: macOS
     deploymentTarget: "15.0"
@@ -33,12 +33,12 @@ targets:
       - path: Sources
     settings:
       base:
-        PRODUCT_NAME: TermiusReimagined
-        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.TermiusReimagined
+        PRODUCT_NAME: SwiftSSH
+        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.SwiftSSH
         GENERATE_INFOPLIST_FILE: YES
         # Fragment merged with the generated Info.plist (carries NSAppTransportSecurity only).
         INFOPLIST_FILE: Info.plist
-        INFOPLIST_KEY_CFBundleDisplayName: "Termius Reimagined"
+        INFOPLIST_KEY_CFBundleDisplayName: "SwiftSSH"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         MARKETING_VERSION: "0.11.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -50,8 +50,8 @@ targets:
         script: |
           plist="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
           commit=$(git -C "${SRCROOT}/.." rev-parse --short HEAD 2>/dev/null || echo unknown)
-          /usr/libexec/PlistBuddy -c "Delete :TRGitCommit" "$plist" >/dev/null 2>&1 || true
-          /usr/libexec/PlistBuddy -c "Add :TRGitCommit string ${commit}" "$plist"
+          /usr/libexec/PlistBuddy -c "Delete :SwiftSSHGitCommit" "$plist" >/dev/null 2>&1 || true
+          /usr/libexec/PlistBuddy -c "Add :SwiftSSHGitCommit string ${commit}" "$plist"
     dependencies:
       - package: CoreSSH
         product: AppCore
@@ -64,7 +64,7 @@ targets:
       - package: SwiftTerm
         product: SwiftTerm
 
-  TermiusReimaginedTests:
+  SwiftSSHTests:
     type: bundle.unit-test
     platform: macOS
     deploymentTarget: "15.0"
@@ -75,24 +75,24 @@ targets:
       - path: Tests
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.TermiusReimaginedTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.SwiftSSHTests
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/TermiusReimagined.app/Contents/MacOS/TermiusReimagined"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SwiftSSH.app/Contents/MacOS/SwiftSSH"
         BUNDLE_LOADER: "$(TEST_HOST)"
     dependencies:
-      - target: TermiusReimagined
+      - target: SwiftSSH
 
 schemes:
-  TermiusReimagined:
+  SwiftSSH:
     build:
       targets:
-        TermiusReimagined: all
-        TermiusReimaginedTests: [test]
+        SwiftSSH: all
+        SwiftSSHTests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - TermiusReimaginedTests
+        - SwiftSSHTests
     archive:
       config: Release

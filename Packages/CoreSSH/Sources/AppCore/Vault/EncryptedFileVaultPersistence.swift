@@ -11,6 +11,9 @@ public enum VaultLoadError: Error, Equatable {
 /// Stores `VaultFileContents` as `CoreJSON`, sealed with AES-256-GCM (`combined`), in one file.
 /// Writes are atomic; a file that can't be opened is moved aside, never overwritten.
 public actor EncryptedFileVaultPersistence: VaultPersistence {
+    /// Authenticated data sealed into every vault file. It still carries the app's former name on
+    /// purpose: changing it would make every existing vault (including ones migrated from Termius
+    /// Reimagined) unreadable. Never rename it.
     static let aad = Data("termius-reimagined-vault-v1".utf8)
 
     private let fileURL: URL

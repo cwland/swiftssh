@@ -103,7 +103,7 @@ struct ThemeSidePanel: View {
     }
 
     /// What Default resolves to: for a saved host its groups' theme, else the app default; nil =
-    /// Automatic (the gallery draws Reimagined Light/Dark).
+    /// Automatic (the gallery draws SwiftSSH Light/Dark).
     private var inheritedTheme: TerminalTheme? {
         let catalog = TerminalThemeCatalog.shared
         // A pane's Default is its host's own choice.

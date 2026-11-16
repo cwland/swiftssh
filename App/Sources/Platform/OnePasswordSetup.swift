@@ -265,7 +265,7 @@ final class OnePasswordSetup {
         echo
         \(Self.shellQuoted(brew)) \(OnePasswordLinks.homebrewInstallArguments.map(Self.shellQuoted).joined(separator: " "))
         echo
-        echo "Done. Return to Termius Reimagined; the 1Password settings update by themselves."
+        echo "Done. Return to SwiftSSH; the 1Password settings update by themselves."
         read -k 1 -s "?Press any key to close this window."
         rm -f -- "$0"
 

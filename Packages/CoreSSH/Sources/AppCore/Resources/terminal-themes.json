@@ -12,11 +12,11 @@
     "nord": {"project": "Nord", "author": "Sven Greb", "license": "MIT", "copyright": "Copyright (c) 2016-present Sven Greb <development@svengreb.de> (https://www.svengreb.de)", "url": "https://github.com/nordtheme/alacritty", "files": "src/nord.yaml"}
   },
   "themes": [
-    {"id": "reimagined-light", "name": "Reimagined Light", "appearance": "light", "credit": null,
+    {"id": "reimagined-light", "name": "SwiftSSH Light", "appearance": "light", "credit": null,
      "background": "#EEF0F2", "foreground": "#1F2328", "cursor": "#3B82F6", "selection": "#B6D2FB",
      "ansi": ["#1F2328", "#C8323A", "#1E8A4C", "#9A6A00", "#2563EB", "#8B3FD1", "#0E7F93", "#8A919C",
               "#5E6673", "#E5484D", "#2DA160", "#B7860B", "#3B82F6", "#A855F7", "#1597AE", "#D5D9DF"]},
-    {"id": "reimagined-dark", "name": "Reimagined Dark", "appearance": "dark", "credit": null,
+    {"id": "reimagined-dark", "name": "SwiftSSH Dark", "appearance": "dark", "credit": null,
      "background": "#1B1D2A", "foreground": "#E4E6EB", "cursor": "#6CA2F8", "selection": "#3A4A6B",
      "ansi": ["#2A2D3E", "#F0656B", "#5FCB8A", "#E8C468", "#6CA2F8", "#C08CF0", "#4FC6D8", "#C9CDD6",
               "#5C6378", "#FF8A8F", "#84E0A7", "#F5D88E", "#93BBFF", "#D5AEFA", "#7FDAE6", "#F4F5F8"]},

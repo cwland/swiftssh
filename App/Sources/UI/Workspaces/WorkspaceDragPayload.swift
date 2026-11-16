@@ -5,12 +5,12 @@ import AppKit
 /// it as `public.utf8-plain-text`), a prefix naming the kind, then the id. Text dragged in from
 /// elsewhere has no prefix and is ignored by the drop zones.
 ///
-/// - Tab: `termius-reimagined-tab:<UUID>` — the tab bar's own format (`TopBarView`'s private
+/// - Tab: `swiftssh-tab:<UUID>` — the tab bar's own format (`TopBarView`'s private
 ///   `TabDragPayload` writes exactly this), so a tab dragged off the bar drops into a pane.
-/// - Host: `termius-reimagined-host:<UUID>` — a saved host's card (Hosts screen). The card's
+/// - Host: `swiftssh-host:<UUID>` — a saved host's card (Hosts screen). The card's
 ///   `.onDrag` returns `WorkspaceDragPayload.itemProvider(hostID:)`; dropping opens a new
 ///   connection to that host in the pane.
-/// - Pane: `termius-reimagined-pane:<UUID>` — a pane's header (or a Focus mode row) of a workspace;
+/// - Pane: `swiftssh-pane:<UUID>` — a pane's header (or a Focus mode row) of a workspace;
 ///   only drop zones of the same workspace accept it (they move the pane). A pane is never taken
 ///   for a tab, so it can't be dropped on the tab bar or onto a plain tab.
 enum WorkspaceDragPayload: Equatable, Sendable {
@@ -18,9 +18,9 @@ enum WorkspaceDragPayload: Equatable, Sendable {
     case host(UUID)
     case pane(UUID)
 
-    static let tabPrefix = "termius-reimagined-tab:"
-    static let hostPrefix = "termius-reimagined-host:"
-    static let panePrefix = "termius-reimagined-pane:"
+    static let tabPrefix = "swiftssh-tab:"
+    static let hostPrefix = "swiftssh-host:"
+    static let panePrefix = "swiftssh-pane:"
 
     /// The text this payload is dragged as.
     var string: String {

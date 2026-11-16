@@ -541,7 +541,7 @@ public final class CitadelSession: TerminalSession {
     /// Cancelling a forward this client never set up is harmless: the server answers
     /// SSH_MSG_REQUEST_FAILURE (RFC 4254 §4), and any answer proves the connection is alive.
     static var keepAliveProbe: GlobalRequest.TCPForwardingRequest {
-        .cancel(host: "keepalive@termius-reimagined", port: 0)
+        .cancel(host: "keepalive@swiftssh", port: 0)
     }
 
     private enum ProbeResult: Sendable {

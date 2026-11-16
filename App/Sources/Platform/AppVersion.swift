@@ -6,7 +6,7 @@ enum AppVersion {
     static var display: String {
         let info = Bundle.main.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "?"
-        let commit = info["TRGitCommit"] as? String ?? "unknown"
+        let commit = info["SwiftSSHGitCommit"] as? String ?? "unknown"
         return "v\(version) (\(commit))"
     }
 }

@@ -39,7 +39,7 @@ public struct ExecCommandStream {
                 stdout.finish(throwing: SSHClient.CommandFailed(exitCode: status))
                 stderr.finish(throwing: SSHClient.CommandFailed(exitCode: status))
             case .exitSignal(let signal):
-                // PATCH (Termius Reimagined): see PATCHES.md.
+                // PATCH (SwiftSSH): see PATCHES.md.
                 stdout.finish(throwing: SSHClient.CommandSignaled(signal: signal))
                 stderr.finish(throwing: SSHClient.CommandSignaled(signal: signal))
             }
@@ -104,7 +104,7 @@ final class ExecCommandHandler: ChannelDuplexHandler, Sendable {
         case stderr(ByteBuffer)
         case eof(Error?)
         case exit(Int)
-        /// PATCH (Termius Reimagined): the command was killed by a signal (`exit-signal`, RFC 4254
+        /// PATCH (SwiftSSH): the command was killed by a signal (`exit-signal`, RFC 4254
         /// 6.10), e.g. "HUP" or "TERM" when the server shuts down. See PATCHES.md.
         case exitSignal(String)
     }
@@ -141,7 +141,7 @@ final class ExecCommandHandler: ChannelDuplexHandler, Sendable {
         case let status as SSHChannelRequestEvent.ExitStatus:
             onOutput(context.channel, .exit(status.exitStatus))
         case let signal as SSHChannelRequestEvent.ExitSignal:
-            // PATCH (Termius Reimagined): see PATCHES.md.
+            // PATCH (SwiftSSH): see PATCHES.md.
             onOutput(context.channel, .exitSignal(signal.signalName))
         default:
             self.logger.debug("Received unknown channel event in command handler: \(event)")
@@ -185,14 +185,14 @@ extension SSHClient {
         public let exitCode: Int
     }
 
-    /// PATCH (Termius Reimagined): the command (or shell) was killed by a signal, e.g. "HUP" or "TERM"
+    /// PATCH (SwiftSSH): the command (or shell) was killed by a signal, e.g. "HUP" or "TERM"
     /// when the server shuts down or reboots. See PATCHES.md.
     public struct CommandSignaled: Error {
         /// The signal's name without the "SIG" prefix.
         public let signal: String
     }
 
-    /// PATCH (Termius Reimagined): a PTY shell's channel ended without an exit status or signal (the
+    /// PATCH (SwiftSSH): a PTY shell's channel ended without an exit status or signal (the
     /// server's session process went away). See PATCHES.md.
     public struct EndedWithoutExitStatus: Error {}
 
@@ -295,7 +295,7 @@ extension SSHClient {
 
         let hasReceivedChannelSuccess = NIOLockedValueBox<Bool>(false)
         let exitCode = NIOLockedValueBox<Int?>(nil)
-        // PATCH (Termius Reimagined): see PATCHES.md.
+        // PATCH (SwiftSSH): see PATCHES.md.
         let exitSignal = NIOLockedValueBox<String?>(nil)
         let isPTY: Bool
         if case .pty = mode { isPTY = true } else { isPTY = false }
@@ -311,12 +311,12 @@ extension SSHClient {
                 if let error {
                     streamContinuation.finish(throwing: error)
                 } else if let signal = exitSignal.withLockedValue({ $0 }) {
-                    // PATCH (Termius Reimagined): killed by a signal (e.g. the server shutting down).
+                    // PATCH (SwiftSSH): killed by a signal (e.g. the server shutting down).
                     streamContinuation.finish(throwing: CommandSignaled(signal: signal))
                 } else if let exitCode = exitCode.withLockedValue({ $0 }), exitCode != 0 {
                     streamContinuation.finish(throwing: CommandFailed(exitCode: exitCode))
                 } else if isPTY, exitCode.withLockedValue({ $0 }) == nil {
-                    // PATCH (Termius Reimagined): an interactive shell's channel ended with neither an
+                    // PATCH (SwiftSSH): an interactive shell's channel ended with neither an
                     // exit status nor a signal: the server side went away, not the user's `exit`.
                     streamContinuation.finish(throwing: EndedWithoutExitStatus())
                 } else {
@@ -335,7 +335,7 @@ extension SSHClient {
                 self.logger.debug("Process exited with status code \(status). Will await on EOF for correct exit")
                 exitCode.withLockedValue({ $0 = status })
             case .exitSignal(let signal):
-                // PATCH (Termius Reimagined): see PATCHES.md.
+                // PATCH (SwiftSSH): see PATCHES.md.
                 self.logger.debug("Process was killed by signal \(signal). Will await on EOF")
                 exitSignal.withLockedValue({ $0 = signal })
             }

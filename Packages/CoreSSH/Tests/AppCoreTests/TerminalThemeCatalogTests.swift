@@ -170,7 +170,7 @@ final class TerminalThemeCatalogTests: XCTestCase {
 
     func testEveryCreditIsMITAndAppearsInNotices() {
         let notices = TerminalThemeCatalog.noticesText
-        XCTAssertTrue(notices.hasPrefix("Third-party terminal color themes bundled with Termius Reimagined\n"))
+        XCTAssertTrue(notices.hasPrefix("Third-party terminal color themes bundled with SwiftSSH\n"))
         XCTAssertFalse(shared.credits.isEmpty)
         for credit in shared.credits {
             XCTAssertEqual(credit.license, "MIT", credit.key)
@@ -182,11 +182,14 @@ final class TerminalThemeCatalogTests: XCTestCase {
         XCTAssertEqual(notices.components(separatedBy: "Permission is hereby granted").count - 1, shared.credits.count)
     }
 
-    func testAutomaticPicksReimaginedLightOrDark() {
+    func testAutomaticPicksSwiftSSHLightOrDark() {
         XCTAssertEqual(shared.automatic(prefersDark: false).id, TerminalThemeCatalog.lightDefaultID)
         XCTAssertEqual(shared.automatic(prefersDark: true).id, TerminalThemeCatalog.darkDefaultID)
+        // The ids keep the former name: they are stored in settings and synced host records.
         XCTAssertEqual(TerminalThemeCatalog.lightDefaultID, "reimagined-light")
         XCTAssertEqual(TerminalThemeCatalog.darkDefaultID, "reimagined-dark")
+        XCTAssertEqual(shared.automatic(prefersDark: false).name, "SwiftSSH Light")
+        XCTAssertEqual(shared.automatic(prefersDark: true).name, "SwiftSSH Dark")
     }
 
     func testAutomaticInACatalogWithoutTheDefaultsPicksByAppearance() throws {

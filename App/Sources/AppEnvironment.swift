@@ -25,17 +25,17 @@ final class AppEnvironment {
     private(set) var state: State = .loading
     let navigation: AppNavigation
     /// Per-Mac connection preferences (Settings → Connection); read when a session is opened.
-    let connectionSettings = ConnectionSettings()
+    let connectionSettings: ConnectionSettings
     /// Network changes and wake from sleep make every session check its server at once.
     private var connectionWatcher: ConnectionWatcher?
     /// Per-Mac terminal preferences (Settings → Terminal).
-    let terminalSettings = TerminalSettings()
+    let terminalSettings: TerminalSettings
     /// Per-Mac 1Password path overrides (Settings → 1Password → Advanced).
     let onePasswordSettings: OnePasswordSettings
     /// The 1Password setup status; also finds the agent socket and `op` for sessions.
     let onePassword: OnePasswordSetup
     /// Per-Mac app appearance (Settings sidebar); applied to `NSApp.appearance` live.
-    let appAppearance = AppAppearanceSetting()
+    let appAppearance: AppAppearanceSetting
     /// The Settings window's selected pane ("Open 1Password Setup" selects 1Password).
     let settingsNavigation = SettingsNavigation()
     /// Set together with `.ready`.
@@ -58,6 +58,11 @@ final class AppEnvironment {
         self.keyProvider = keyProvider
         self.syncSecrets = syncSecrets
         self.navigation = AppNavigation()
+        // Before any settings object reads UserDefaults: bring over Termius Reimagined's settings.
+        AppEnvironment.migrateSettingsFromTermiusReimagined()
+        self.connectionSettings = ConnectionSettings()
+        self.terminalSettings = TerminalSettings()
+        self.appAppearance = AppAppearanceSetting()
         let onePasswordSettings = OnePasswordSettings()
         self.onePasswordSettings = onePasswordSettings
         self.onePassword = OnePasswordSetup(settings: onePasswordSettings)
@@ -74,7 +79,8 @@ final class AppEnvironment {
         }
     }
 
-    /// Loads the Keychain key and opens `~/Library/Application Support/TermiusReimagined/vault.bin`.
+    /// Loads the Keychain key and opens `~/Library/Application Support/SwiftSSH/vault.bin`, after
+    /// the one-time move from Termius Reimagined (`RebrandMigration`) on the first launch.
     /// Runs once per launch; a failed load is only tried again through `retry()`.
     func load() async {
         guard !didStartLoading else { return }
@@ -97,21 +103,31 @@ final class AppEnvironment {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return
         }
-        BadgeLogoStore.createDirectoryIfNeeded()
-        BadgeLogoStore.shared.startAutomaticDownloads() // background; never delays the vault opening
         var keyWasCreated = false
         do {
             let fileURL = try Self.vaultFileURL()
-            let runtime = prepareRuntimeDirectory(
-                root: fileURL.deletingLastPathComponent().appendingPathComponent("run", isDirectory: true))
             let provider = keyProvider
             // Keychain calls can block (e.g. an access prompt), so keep them off the main actor.
-            let loaded = try await Task.detached(priority: .userInitiated) { () throws -> (key: VaultKey, created: Bool) in
-                if let keychain = provider as? KeychainVaultKeyProvider {
-                    return try keychain.loadOrCreateKeyReportingCreation()
+            // The migration runs first and the key is loaded only once it succeeded: a fresh key
+            // must never be created while a Termius Reimagined vault is still waiting to be copied.
+            let (migration, loaded) = try await Task.detached(priority: .userInitiated) {
+                () throws -> (report: RebrandMigrationReport?, value: (key: VaultKey, created: Bool)) in
+                try AppEnvironment.makeRebrandMigration().migrateThenLoadKey { () throws -> (key: VaultKey, created: Bool) in
+                    if let keychain = provider as? KeychainVaultKeyProvider {
+                        return try keychain.loadOrCreateKeyReportingCreation()
+                    }
+                    return (try provider.loadOrCreateKey(), false)
                 }
-                return (try provider.loadOrCreateKey(), false)
             }.value
+            if migration?.filesCopied == true {
+                // Read before the copy (at init): read them again.
+                workspaceTemplates.reload()
+                BadgeLogoStore.shared.reload()
+            }
+            BadgeLogoStore.createDirectoryIfNeeded()
+            BadgeLogoStore.shared.startAutomaticDownloads() // background; never delays the vault opening
+            let runtime = prepareRuntimeDirectory(
+                root: fileURL.deletingLastPathComponent().appendingPathComponent("run", isDirectory: true))
             keyWasCreated = loaded.created
             let persistence = EncryptedFileVaultPersistence(fileURL: fileURL, key: loaded.key)
             let vault = try await LocalVault.open(persistence: persistence)
@@ -128,6 +144,9 @@ final class AppEnvironment {
             startSync(vault: vault)
         } catch VaultLoadError.unreadable(let movedTo) {
             state = .failed(.unreadable(movedTo: movedTo.path, keyWasCreated: keyWasCreated))
+        } catch let error as RebrandMigrationError {
+            // Nothing was created or moved aside; Try Again runs the migration again.
+            state = .failed(.other(error.errorDescription ?? "SwiftSSH couldn\u{2019}t move your Termius Reimagined vault over."))
         } catch {
             let detail = (error as? LocalizedError)?.errorDescription ?? "\(error)"
             state = .failed(.other("The vault could not be opened: \(detail)"))
@@ -158,7 +177,7 @@ final class AppEnvironment {
 
     // MARK: Sessions
 
-    /// Empties `~/Library/Application Support/TermiusReimagined/run` (left-over temporary files of
+    /// Empties `~/Library/Application Support/SwiftSSH/run` (left-over temporary files of
     /// an earlier run) and recreates the askpass helper, once per launch.
     private func prepareRuntimeDirectory(root: URL) -> SSHRuntimeDirectory {
         if let runtime { return runtime }
@@ -497,9 +516,46 @@ final class AppEnvironment {
         releaseClosedTerminalViews()
     }
 
+    // MARK: Migration from Termius Reimagined
+
+    /// The one-time move from the app's former name. Built where it runs (off the main actor for
+    /// the vault part); every part is real system access, so unit-test hosts never run it.
+    nonisolated private static func makeRebrandMigration() -> RebrandMigration {
+        let support = applicationSupportURL
+        var names = RebrandMigration.Names.standard
+        names.newVaultKeyService = KeychainVaultKeyProvider().service
+        names.vaultKeyAccount = KeychainVaultKeyProvider().account
+        names.newSyncService = KeychainSyncSecretsStore.defaultService
+        names.newDefaultsDomain = Bundle.main.bundleIdentifier ?? names.newDefaultsDomain
+        return RebrandMigration(
+            oldDirectory: support.appendingPathComponent(RebrandMigration.oldFolderName, isDirectory: true),
+            newDirectory: support.appendingPathComponent(supportFolderName, isDirectory: true),
+            keychain: KeychainRebrandMigrationStore(),
+            defaults: UserDefaults.standard,
+            names: names,
+            log: { NSLog("%@", $0) }
+        )
+    }
+
+    /// Copies Termius Reimagined's settings (keys not set yet) until the migration is done. The
+    /// app isn't sandboxed, so the old app's preferences domain is readable.
+    private static func migrateSettingsFromTermiusReimagined() {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        makeRebrandMigration().migrateSettingsIfNeeded()
+    }
+
     // MARK: Files
 
-    /// `~/Library/Application Support/TermiusReimagined`; created if needed.
+    /// The app's folder name in Application Support.
+    nonisolated static let supportFolderName = "SwiftSSH"
+
+    /// `~/Library/Application Support` (falls back to the usual path if the system doesn't say).
+    nonisolated private static var applicationSupportURL: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+    }
+
+    /// `~/Library/Application Support/SwiftSSH`; created if needed.
     static func supportDirectoryURL() throws -> URL {
         let fileManager = FileManager.default
         let support = try fileManager.url(
@@ -508,22 +564,20 @@ final class AppEnvironment {
             appropriateFor: nil,
             create: true
         )
-        let directory = support.appendingPathComponent("TermiusReimagined", isDirectory: true)
+        let directory = support.appendingPathComponent(supportFolderName, isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
 
-    /// `~/Library/Application Support/TermiusReimagined/workspaces.json`: saved workspaces, this Mac
+    /// `~/Library/Application Support/SwiftSSH/workspaces.json`: saved workspaces, this Mac
     /// only. The folder is created when the vault opens (before anything can be saved).
     static var workspacesFileURL: URL {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
-        return support
-            .appendingPathComponent("TermiusReimagined", isDirectory: true)
+        applicationSupportURL
+            .appendingPathComponent(supportFolderName, isDirectory: true)
             .appendingPathComponent("workspaces.json", isDirectory: false)
     }
 
-    /// `~/Library/Application Support/TermiusReimagined/vault.bin`; creates the folder if needed.
+    /// `~/Library/Application Support/SwiftSSH/vault.bin`; creates the folder if needed.
     static func vaultFileURL() throws -> URL {
         try supportDirectoryURL().appendingPathComponent("vault.bin", isDirectory: false)
     }

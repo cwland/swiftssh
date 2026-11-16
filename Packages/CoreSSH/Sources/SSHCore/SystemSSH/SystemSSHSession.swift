@@ -380,7 +380,7 @@ public final class SystemSSHSession: TerminalSession {
         var environment: [String: String] = [:]
         if let secretFile {
             environment = ["SSH_ASKPASS": runtime.askpassURL.path, "SSH_ASKPASS_REQUIRE": "force",
-                           "DISPLAY": ":0", "TR_SECRET_FILE": secretFile.path]
+                           "DISPLAY": ":0", "SWIFTSSH_SECRET_FILE": secretFile.path]
         }
         let (cols, rows) = state.withLock { ($0.cols, $0.rows) }
         let ssh: PTYProcess
@@ -931,7 +931,7 @@ public final class SystemSSHSession: TerminalSession {
 
     /// Shown when an agent attempt fails because the agent couldn't be reached or wouldn't sign.
     static let agentUnavailableMessage =
-        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it."
+        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it."
 
     /// ssh's messages (from a line before the session started) that the agent couldn't be used.
     static let agentFailureMarkers = [

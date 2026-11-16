@@ -44,7 +44,7 @@ final class AgentCredentialTests: XCTestCase {
 
     func testAgentArgumentsAreExact() {
         let root = URL(fileURLWithPath: "/a b/run")
-        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/tr-501"))
+        let directory = SSHRuntimeDirectory(root: root, controlDirectory: URL(fileURLWithPath: "/tmp/swiftssh-501"))
         let knownHosts = root.appendingPathComponent("S.known_hosts")
         func args(_ auth: SystemSSHSession.AuthArguments) -> [String] {
             SystemSSHSession.sshArguments(host: "example.com", port: 22, username: "cory", runtime: directory,

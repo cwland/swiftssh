@@ -1334,13 +1334,13 @@ extension SessionManagerTests {
 
     func testUnreachableAgentDisconnectsWithItsMessageAndSetupSuggestion() async throws {
         let unreachable = SessionError.agentUnavailable(
-            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it.")
         factory.onStart = { @Sendable s in s.emit(.closed(.failed(unreachable))) }
         manager = makeManager(initialSizeTimeout: .zero, agentSocket: { "/tmp/a.sock" })
         let tab = try manager.open(hostID: agentHost().id)
         await waitUntil("disconnected") { tab.state == .disconnected(unreachable.localizedDescription) }
         XCTAssertEqual(tab.state, .disconnected(
-            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it."))
+            "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it."))
         XCTAssertEqual(tab.suggestedAction, .openOnePasswordSetup)
         XCTAssertNil(tab.autoReconnect)
     }
@@ -1700,7 +1700,7 @@ final class SessionManagerOnePasswordTests: XCTestCase {
     }
 
     private let unreachable = SessionError.agentUnavailable(
-        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that Termius Reimagined may access it.")
+        "Couldn't reach 1Password's SSH agent. Make sure 1Password is running and unlocked, and that SwiftSSH may access it.")
 
     func testAutoReconnectStopsWhenTheAgentCantBeReached() async throws {
         manager = agentAndOpManager(socket: { "/tmp/a.sock" })
