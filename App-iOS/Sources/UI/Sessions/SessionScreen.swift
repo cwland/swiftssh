@@ -16,11 +16,17 @@ struct SessionScreen: View {
     @Environment(IOSEnvironment.self) private var environment
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var sizeClass
+    @State private var showsSnippets = false
 
     var body: some View {
         let appearance = resolvedAppearance
         VStack(spacing: 0) {
             header
+                .sheet(isPresented: $showsSnippets, onDismiss: {
+                    environment.terminalViews.focus(tabID: tab.id)
+                }) {
+                    SnippetsDrawer(tab: tab, vault: vault, deliver: deliver)
+                }
             if let banner = TerminalTabPresentation.banner(state: tab.state, autoReconnect: tab.autoReconnect,
                                                            hadLiveSession: tab.hadLiveSession) {
                 DisconnectedBanner(message: banner, suggestedAction: tab.suggestedAction,
@@ -31,6 +37,16 @@ struct SessionScreen: View {
                                   changeFontSize: { environment.terminalSettings.fontSize = $0 })
                 .padding(.leading, 4)
                 .background(appearance.theme.background.swiftUIColor)
+                .sheet(item: fillBinding) { request in
+                    if let snippet = vault.get(Snippet.self, id: request.snippetID) {
+                        PlaceholderFormSheet(template: SnippetTemplate(snippet.script), actionTitle: "Run") { text in
+                            environment.snippetToFill = nil
+                            deliver(text, .run)
+                        } onCancel: {
+                            environment.snippetToFill = nil
+                        }
+                    }
+                }
                 .overlay {
                     if showsConnectionScreen {
                         ConnectionScreen(tab: tab, vault: vault, startOver: reconnect,
@@ -103,6 +119,14 @@ struct SessionScreen: View {
 
     @ViewBuilder
     private var trailingButtons: some View {
+        Button {
+            showsSnippets = true
+        } label: {
+            Image(systemName: "text.alignleft")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 32, height: 32)
+        }
+        .accessibilityLabel("Snippets")
         if sizeClass != .regular {
             Button {
                 sessions.close(tabID: tab.id)
@@ -113,6 +137,27 @@ struct SessionScreen: View {
             }
             .accessibilityLabel("Close session")
         }
+    }
+
+    // MARK: Snippets
+
+    /// Paste goes through the terminal (bracketed paste when the shell asked for it); Run types the
+    /// text and Return.
+    private func deliver(_ text: String, _ delivery: SnippetDelivery) {
+        switch delivery {
+        case .paste:
+            if !environment.terminalViews.paste(text, tabID: tab.id) {
+                sessions.deliver(text, as: .paste, toTab: tab.id)
+            }
+        case .run:
+            sessions.deliver(text, as: .run, toTab: tab.id)
+        }
+    }
+
+    /// A snippet chosen on the Snippets screen for this session, waiting for its placeholder values.
+    private var fillBinding: Binding<SnippetRequest?> {
+        Binding(get: { environment.snippetToFill.flatMap { $0.tabID == tab.id ? $0 : nil } },
+                set: { if $0 == nil { environment.snippetToFill = nil } })
     }
 
     // MARK: State

@@ -170,4 +170,34 @@ final class CompanionJoinTests: XCTestCase {
         XCTAssertTrue(CompanionJoin.isJoined(.offline("down")))
         XCTAssertTrue(CompanionJoin.isJoined(.failed("tampered")))
     }
+    // MARK: Leave sync
+
+    func testLeavingForgetsSyncEmptiesTheVaultAndDeletesTheKeys() async throws {
+        let (transport, host) = try await serverWithAVault()
+        let phone = try await device("phone", transport: transport)
+        let form = CompanionJoin(coordinator: phone.coordinator)
+        fill(form)
+        let joined = await form.join()
+        XCTAssertTrue(joined)
+        _ = try await phone.vault.save(KnownHost(hostPort: "nas.lan:22", keyType: "ssh-ed25519", fingerprintSHA256: "SHA256:x"))
+        let library = ImportedKeyLibrary(storage: InMemoryImportedKeyStorage())
+        try library.importKey(text: KeyFixtures.plainEd25519, name: nil, passphrase: nil)
+
+        try await form.leave(vault: phone.vault, keys: library)
+
+        XCTAssertEqual(phone.coordinator.phase, .notConfigured)
+        XCTAssertFalse(CompanionJoin.isJoined(phone.coordinator.phase))
+        XCTAssertTrue(phone.vault.all(Host.self).isEmpty)
+        XCTAssertTrue(phone.vault.all(KnownHost.self).isEmpty)
+        XCTAssertNil(try phone.secrets.loadAPIKey())
+        XCTAssertNil(try phone.secrets.loadVaultKey())
+        XCTAssertTrue(library.keys.isEmpty)
+        XCTAssertEqual(form.serverAddress, url.absoluteString, "the address stays filled in for joining again")
+
+        // Joining again (e.g. after "vault changed") brings the hosts back.
+        fill(form)
+        let rejoined = await form.join()
+        XCTAssertTrue(rejoined)
+        XCTAssertEqual(phone.vault.all(Host.self).map(\.id), [host.id])
+    }
 }

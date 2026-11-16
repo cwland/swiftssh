@@ -61,6 +61,17 @@ final class CompanionHostsTests: XCTestCase {
         XCTAssertEqual(navigation.searchRequests, 2)
     }
 
+    func testOpeningAKeyFileShowsKeysWithTheFileWaiting() async {
+        let navigation = CompanionNavigation()
+        navigation.openKeyFile(data: Data("key".utf8), name: "laptop.key")
+        XCTAssertEqual(navigation.section, .keys)
+        XCTAssertEqual(navigation.phonePath, [.keys])
+        let file = navigation.takePendingKeyFile()
+        XCTAssertEqual(file?.data, Data("key".utf8))
+        XCTAssertEqual(file?.name, "laptop.key")
+        XCTAssertNil(navigation.takePendingKeyFile(), "taken once")
+    }
+
     // MARK: Host details (read-only)
 
     func testDetailsOfAPasswordHost() async throws {

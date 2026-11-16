@@ -39,6 +39,8 @@ final class IOSEnvironment {
     let terminalSettings = TerminalSettings()
     /// Why the last host couldn't be opened; the root view shows it.
     var connectProblem: ConnectProblem?
+    /// A snippet chosen on the Snippets screen for a session, waiting for its placeholder values.
+    var snippetToFill: SnippetRequest?
     /// One terminal view per open session, kept while it is open.
     @ObservationIgnored let terminalViews = TerminalViewStore()
 
@@ -175,6 +177,43 @@ final class IOSEnvironment {
         guard let vault, !importedKeys.keys.isEmpty,
               CompanionConnect.needsImportedKeys(hostID: hostID, vault: vault) else { return true }
         return await keyStorage.authorize(reason: "Use your imported SSH key")
+    }
+
+    // MARK: Leaving sync and key files
+
+    /// Settings → Leave sync: closes every session, then forgets the sync setup and deletes the local
+    /// data and the imported keys (`CompanionJoin.leave`). The join screen shows next.
+    func leaveSync() async throws {
+        guard let vault, let join else { return }
+        await sessions?.closeAll()
+        terminalViews.retain(only: [])
+        hosts?.searchText = ""
+        hosts?.openGroup(nil)
+        navigation.show(.hosts)
+        try await join.leave(vault: vault, keys: importedKeys)
+    }
+
+    /// A key file opened in SwiftSSH ("Open in SwiftSSH", the share sheet, Files): read it and hand
+    /// it to the Keys screen's import form. iOS gives the app its own copy (in Documents/Inbox); that
+    /// copy is deleted at once, so no private key is left on disk outside the Keychain.
+    func openKeyFile(_ url: URL) {
+        guard url.isFileURL else { return }
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { url.stopAccessingSecurityScopedResource() }
+            if Self.isInboxCopy(url) { try? FileManager.default.removeItem(at: url) }
+        }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= 64 * 1024, let data = try? Data(contentsOf: url) else { return }
+        sessions?.selectedTabID = nil
+        navigation.openKeyFile(data: data, name: url.lastPathComponent)
+    }
+
+    /// Whether `url` is the app's own copy of an opened file (Documents/Inbox).
+    private static func isInboxCopy(_ url: URL) -> Bool {
+        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return false }
+        let inbox = documents.appendingPathComponent("Inbox", isDirectory: true).standardizedFileURL.path
+        return url.standardizedFileURL.path.hasPrefix(inbox + "/")
     }
 
     // MARK: Lifecycle

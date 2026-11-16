@@ -71,6 +71,20 @@ public final class CompanionJoin {
         return true
     }
 
+    /// Settings → Leave sync: stops syncing and forgets this device's sync setup (API key, vault key,
+    /// server state), deletes every local record (all of it came from sync, or is a known host or
+    /// connection log that is already on the server) and every imported key. The address stays filled
+    /// in, so joining again (for example after the vault was replaced on the Mac) only needs the keys.
+    public func leave(vault: LocalVault, keys: ImportedKeyLibrary) async throws {
+        if let url = coordinator.serverURL { serverAddress = url.absoluteString }
+        apiKey = ""
+        passphrase = ""
+        errorMessage = nil
+        coordinator.disconnect()
+        try await vault.syncRemoveAll()
+        try keys.deleteAll()
+    }
+
     private static func isBlank(_ text: String) -> Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }

@@ -167,6 +167,12 @@ public final class ImportedKeyLibrary {
         keys.removeAll { $0.id == id }
     }
 
+    /// Deletes every imported key (leaving sync).
+    public func deleteAll() throws {
+        for info in keys { try delete(info.id) }
+        keys = try storage.list()
+    }
+
     /// Every imported key with its private key, in import order, for `ConnectionPlanner`'s `.ios` routing.
     /// Reads every key from storage (on iOS this may ask for Face ID).
     public func candidates() throws -> [SSHKeyCandidate] {

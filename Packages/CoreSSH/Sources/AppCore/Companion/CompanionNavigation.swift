@@ -71,6 +71,16 @@ public final class CompanionNavigation {
     public var isQuickConnectShown = false
     /// Bumped by ⌘F; the Hosts screen focuses its search field on each change.
     public private(set) var searchRequests = 0
+    /// A key file opened in SwiftSSH ("Open in SwiftSSH", share sheet) waiting for the Keys screen's
+    /// import form.
+    public private(set) var pendingKeyFile: KeyFile?
+
+    /// A file's contents and name. The contents are a private key: never logged or kept longer than
+    /// the import takes.
+    public struct KeyFile: Equatable, Sendable {
+        public let data: Data
+        public let name: String
+    }
 
     public init() {}
 
@@ -78,6 +88,18 @@ public final class CompanionNavigation {
     public func show(_ section: CompanionSection) {
         self.section = section
         phonePath = section == .hosts ? [] : [section]
+    }
+
+    /// A key file was opened in the app: shows Keys, which takes the file into its import form.
+    public func openKeyFile(data: Data, name: String) {
+        pendingKeyFile = KeyFile(data: data, name: name)
+        show(.keys)
+    }
+
+    /// The waiting key file, once.
+    public func takePendingKeyFile() -> KeyFile? {
+        defer { pendingKeyFile = nil }
+        return pendingKeyFile
     }
 
     /// ⌘F: shows Hosts and asks it to focus its search field.

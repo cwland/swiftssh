@@ -184,12 +184,6 @@ final class KeychainImportedKeyStorage: ImportedKeyStorage, @unchecked Sendable 
         return status == errSecInteractionNotAllowed || status == errSecUserCanceled || status == errSecAuthFailed
     }
 
-    /// Deletes every imported key and the list (Settings → Leave sync).
-    func deleteAll() throws {
-        for info in try list() { try deleteItem(account: info.id.uuidString) }
-        try deleteItem(account: Self.indexAccount)
-    }
-
     private func deleteItem(account: String) throws {
         let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError.status(status) }

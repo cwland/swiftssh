@@ -16,6 +16,7 @@ struct SwiftSSHMobileApp: App {
                 .environment(environment)
                 .tint(Theme.accent)
                 .task { await environment.load() }
+                .onOpenURL { url in environment.openKeyFile(url) }
         }
         .commands {
             CompanionCommands(environment: environment)

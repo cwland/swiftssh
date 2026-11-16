@@ -3,15 +3,23 @@ import AppCore
 import CoreModels
 import SwiftSSHUI
 
-/// Settings: sync status and Sync Now, the app lock.
+/// Settings: sync (status, Sync Now, Leave sync), the app lock, the terminal's default theme and
+/// text size on this device, and the version.
 struct SettingsScreen: View {
     @Environment(IOSEnvironment.self) private var environment
+    @State private var confirmsLeaving = false
+    @State private var isLeaving = false
+    @State private var leaveError: String?
 
     var body: some View {
+        @Bindable var terminal = environment.terminalSettings
         Form {
             if let sync = environment.sync {
-                Section("Sync") {
+                Section {
                     LabeledContent("Status", value: Self.status(of: sync.phase))
+                    if let server = sync.serverURL {
+                        LabeledContent("Server", value: server.host() ?? server.absoluteString)
+                    }
                     if let last = sync.lastSyncedAt {
                         LabeledContent("Last synced") {
                             Text(last, style: .relative)
@@ -20,7 +28,20 @@ struct SettingsScreen: View {
                     Button("Sync Now") {
                         Task { await sync.syncNow() }
                     }
-                    .disabled(sync.phase == .syncing)
+                    .disabled(sync.phase == .syncing || isLeaving)
+                    Button("Leave Sync\u{2026}", role: .destructive) {
+                        confirmsLeaving = true
+                    }
+                    .disabled(isLeaving)
+                } header: {
+                    Text("Sync")
+                } footer: {
+                    if let leaveError {
+                        Text(leaveError)
+                            .foregroundStyle(Theme.warningForeground)
+                    } else {
+                        Text("Hosts, groups, identities and snippets come from your Mac. Leave sync to join again, for example after the vault was replaced on your Mac.")
+                    }
                 }
             }
             Section {
@@ -30,10 +51,55 @@ struct SettingsScreen: View {
             } footer: {
                 Text("Locks SwiftSSH when it opens and when you come back after more than \(Int(AppLock.gracePeriod)) seconds.")
             }
+            Section {
+                Picker("Default theme", selection: $terminal.defaultThemeID) {
+                    Text("Automatic").tag(String?.none)
+                    ForEach(TerminalThemeCatalog.shared.themes) { theme in
+                        Text(theme.name).tag(Optional(theme.id))
+                    }
+                }
+                .pickerStyle(.navigationLink)
+                Stepper(value: $terminal.fontSize, in: TerminalSettings.fontSizeRange) {
+                    LabeledContent("Text size", value: "\(terminal.fontSize) pt")
+                }
+            } header: {
+                Text("Terminal")
+            } footer: {
+                Text("A host\u{2019}s own theme (set on the Mac) wins over the default. Pinch a terminal to change the text size.")
+            }
+            Section("About") {
+                LabeledContent("Version", value: Self.version)
+            }
         }
         .scrollContentBackground(.hidden)
         .background(Theme.contentBackground)
         .navigationTitle("Settings")
+        .confirmationDialog("Leave sync?", isPresented: $confirmsLeaving, titleVisibility: .visible) {
+            Button("Leave Sync", role: .destructive) {
+                Task { await leave() }
+            }
+        } message: {
+            Text("This closes your sessions and removes the hosts, snippets, known hosts and imported keys from this device. Your Mac and the sync server keep everything; join again to get it back.")
+        }
+    }
+
+    private func leave() async {
+        isLeaving = true
+        defer { isLeaving = false }
+        do {
+            try await environment.leaveSync()
+            leaveError = nil
+        } catch {
+            leaveError = "Couldn\u{2019}t finish leaving sync: \(error.localizedDescription)"
+        }
+    }
+
+    /// "1.0.0 (42)".
+    static var version: String {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
     }
 
     /// Plain-language sync status.
