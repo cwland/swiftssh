@@ -89,15 +89,18 @@ public final class HostsViewModel {
         editingGroupID = nil
     }
 
-    /// Nothing selected (another kind of card, e.g. a workspace tile, was clicked); an open panel stays.
+    /// Nothing selected (another kind of card, e.g. a workspace tile, was clicked); an open panel closes.
     public func clearSelection() {
+        closeEditor()
         selectedHostIDs = []
         selectedGroupID = nil
         selectionAnchor = nil
     }
 
-    /// A click on a group card: highlights it (double-click opens it, `openGroup`).
+    /// A click on a group card: highlights it (double-click opens it, `openGroup`). Any other card's
+    /// open panel closes; the group's own panel stays.
     public func select(groupID: UUID) {
+        if editingGroupID != groupID { closeEditor() }
         selectedGroupID = groupID
         selectedHostIDs = []
         selectionAnchor = nil
@@ -175,6 +178,8 @@ public final class HostsViewModel {
     /// last plain- or ⌘-clicked one to it, in the shown order (replacing the selection; without such
     /// a host, just this one). A click never opens Host Details (`edit(hostID:)` does).
     public func click(hostID: UUID, modifier: ClickModifier) {
+        // Clicking any other card closes the open panel (its edits are already saved).
+        if editingHostID != hostID { closeEditor() }
         var selection = selectedHostIDs
         switch modifier {
         case .none:

@@ -328,6 +328,8 @@ struct HostsView: View {
     /// Highlights the tile (hosts and groups are deselected).
     private func selectTemplate(_ id: UUID) {
         model.clearSelection()
+        // Another tile's panel closes; this tile's own panel stays.
+        if editingTemplateID != id { editingTemplateID = nil }
         selectedTemplateID = id
     }
 
@@ -359,6 +361,7 @@ struct HostsView: View {
                             model.openGroup(group.id)
                         }
                         .simultaneousGesture(TapGesture().onEnded {
+                            editingTemplateID = nil
                             model.select(groupID: group.id)
                         })
                         .popover(isPresented: themeGalleryBinding(for: group.id), arrowEdge: .bottom) {
@@ -438,6 +441,7 @@ struct HostsView: View {
                     // Simultaneous, so selecting doesn't wait for the double-click interval.
                     // ⌘ toggles, ⇧ extends (read from the click's modifier keys).
                     .simultaneousGesture(TapGesture().onEnded {
+                        editingTemplateID = nil
                         model.click(hostID: host.id, modifier: Self.clickModifier(NSEvent.modifierFlags))
                     })
                     // Onto a terminal: opens the host beside it, as a workspace.

@@ -37,12 +37,73 @@ final class HostsCardActionsTests: XCTestCase {
         XCTAssertEqual(vm.editingHostID, a.id)
         XCTAssertEqual(vm.editingHost?.id, a.id)
         XCTAssertEqual(vm.selectedHostIDs, [a.id])
-        // Another click leaves the open panel alone.
-        vm.click(hostID: b.id, modifier: .none)
-        XCTAssertEqual(vm.editingHostID, a.id)
         vm.closeEditor()
         XCTAssertNil(vm.editingHostID)
-        XCTAssertEqual(vm.selectedHostIDs, [b.id], "closing the panel keeps the selection")
+        XCTAssertEqual(vm.selectedHostIDs, [a.id], "closing the panel keeps the selection")
+    }
+
+    // MARK: Clicking another card closes the panel
+
+    func testClickingAnotherHostClosesHostDetails() async throws {
+        let vm = try await makeModel()
+        let a = try await host("a")
+        let b = try await host("b")
+        vm.edit(hostID: a.id)
+        vm.click(hostID: b.id, modifier: .none)
+        XCTAssertNil(vm.editingHostID)
+        XCTAssertEqual(vm.selectedHostIDs, [b.id])
+    }
+
+    func testCommandClickingAnotherHostAlsoClosesHostDetails() async throws {
+        let vm = try await makeModel()
+        let a = try await host("a")
+        let b = try await host("b")
+        vm.edit(hostID: a.id)
+        vm.click(hostID: b.id, modifier: .toggle)
+        XCTAssertNil(vm.editingHostID)
+    }
+
+    func testClickingTheEditedHostKeepsHostDetailsOpen() async throws {
+        let vm = try await makeModel()
+        let a = try await host("a")
+        vm.edit(hostID: a.id)
+        vm.click(hostID: a.id, modifier: .none)
+        XCTAssertEqual(vm.editingHostID, a.id)
+    }
+
+    func testClickingAHostClosesTheGroupPanel() async throws {
+        let vm = try await makeModel()
+        let g = try await vault.save(HostGroup(name: "G"))
+        let a = try await host("a")
+        vm.edit(groupID: g.id)
+        vm.click(hostID: a.id, modifier: .none)
+        XCTAssertNil(vm.editingGroupID)
+    }
+
+    func testClickingAGroupClosesHostDetails() async throws {
+        let vm = try await makeModel()
+        let g = try await vault.save(HostGroup(name: "G"))
+        let a = try await host("a")
+        vm.edit(hostID: a.id)
+        vm.select(groupID: g.id)
+        XCTAssertNil(vm.editingHostID)
+        XCTAssertEqual(vm.selectedGroupID, g.id)
+    }
+
+    func testClickingTheEditedGroupKeepsItsPanelOpen() async throws {
+        let vm = try await makeModel()
+        let g = try await vault.save(HostGroup(name: "G"))
+        vm.edit(groupID: g.id)
+        vm.select(groupID: g.id)
+        XCTAssertEqual(vm.editingGroupID, g.id)
+    }
+
+    func testClickingAnotherKindOfCardClosesThePanel() async throws {
+        let vm = try await makeModel()
+        let a = try await host("a")
+        vm.edit(hostID: a.id)
+        vm.clearSelection()
+        XCTAssertNil(vm.editingHostID)
     }
 
     func testEditingAGroupClosesHostDetailsAndTheOtherWayRound() async throws {
@@ -77,14 +138,14 @@ final class HostsCardActionsTests: XCTestCase {
         XCTAssertNil(vm.selectedGroupID)
     }
 
-    func testClearSelectionDeselectsHostsAndGroupsButKeepsAnOpenPanel() async throws {
+    func testClearSelectionDeselectsHostsAndGroupsAndClosesAnOpenPanel() async throws {
         let vm = try await makeModel()
         let g = try await vault.save(HostGroup(name: "G"))
         let a = try await host("a")
         vm.edit(hostID: a.id)
         vm.clearSelection()
         XCTAssertTrue(vm.selectedHostIDs.isEmpty)
-        XCTAssertEqual(vm.editingHostID, a.id)
+        XCTAssertNil(vm.editingHostID)
         vm.select(groupID: g.id)
         vm.clearSelection()
         XCTAssertNil(vm.selectedGroupID)

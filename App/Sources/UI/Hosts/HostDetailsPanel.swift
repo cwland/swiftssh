@@ -68,8 +68,11 @@ private struct HostDetailsContent: View {
                 }
                 .padding(16)
             }
-            connectButton
-                .padding(16)
+            HStack(spacing: 10) {
+                saveButton
+                connectButton
+            }
+            .padding(16)
         }
         .frame(width: Theme.detailsPanelWidth)
         .frame(maxHeight: .infinity)
@@ -128,6 +131,28 @@ private struct HostDetailsContent: View {
         }
         .padding(.horizontal, 16)
         .frame(height: 52)
+    }
+
+    /// Every edit is already saved as it's made; Save finishes the field being typed in (tags are
+    /// tidied) and closes the panel.
+    private var saveButton: some View {
+        Button {
+            normalizeTagsText()
+            onClose()
+        } label: {
+            Text("Save")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.accent)
+                .frame(maxWidth: .infinity)
+                .frame(height: 40)
+                .background {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Theme.accent.opacity(0.12))
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Save and close")
     }
 
     private var connectButton: some View {
