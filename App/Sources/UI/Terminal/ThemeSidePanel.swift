@@ -7,7 +7,8 @@ import CoreModels
 /// and the panel stays open, so themes can be compared on the live terminal. For a saved host the choice
 /// is saved to the host (all its tabs follow, and it syncs); a quick connect tab, and a workspace's
 /// pane, change only themselves (the workspace saves a pane's theme).
-/// The close button and Esc close the panel (while it is open, Esc does not reach the terminal). A host
+/// The close button closes the panel, and so does Esc while the keyboard focus is in the panel; the
+/// terminal keeps the focus while themes are tried, so there Esc goes to the terminal. A host
 /// choice is saved shortly after the last click (`SessionManager.applyTheme`), and at once when the panel
 /// closes.
 struct ThemeSidePanel: View {
@@ -50,6 +51,8 @@ struct ThemeSidePanel: View {
         .onDisappear {
             sessions.flushPendingThemeSaves()
         }
+        // Esc with the focus in the panel closes it; Esc in the terminal stays there.
+        .onExitCommand(perform: close)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Theme panel")
     }
@@ -74,9 +77,8 @@ struct ThemeSidePanel: View {
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            // Esc closes the panel while it is open.
-            .keyboardShortcut(.cancelAction)
-            .help("Close (Esc). While this panel is open, Esc closes it instead of reaching the terminal.")
+            // No Esc shortcut here: it would take Esc from the terminal (see `onExitCommand`).
+            .help("Close")
             .accessibilityLabel("Close theme panel")
         }
         .padding(.horizontal, 14)

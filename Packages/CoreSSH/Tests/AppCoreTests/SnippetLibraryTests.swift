@@ -40,6 +40,95 @@ final class SnippetLibraryTests: XCTestCase {
         }
     }
 
+    /// The text outside single quotes: what the login shell itself parses (a `sh -c '…'` body is quoted).
+    private func unquoted(_ script: String) -> String {
+        var result = ""
+        var inSingleQuotes = false
+        for character in script {
+            if character == "'" {
+                inSingleQuotes.toggle()
+            } else if !inSingleQuotes {
+                result.append(character)
+            }
+        }
+        return result
+    }
+
+    /// Syntax bash and zsh run but fish 3.x does not: if/then/fi, `[ … ]` tests, `$(…)` (not inside
+    /// double quotes in fish), `${VAR}` and backticks.
+    private func posixOnlyConstructs(in script: String) -> [String] {
+        let text = unquoted(script)
+        let words = text.split(whereSeparator: { " ;&|()".contains($0) }).map(String.init)
+        var found: [String] = []
+        for keyword in ["if", "then", "elif", "else", "fi", "[", "[[", "case", "esac", "do", "done"] where words.contains(keyword) {
+            found.append(keyword)
+        }
+        for construct in ["$(", "${", "`"] where text.contains(construct) {
+            found.append(construct)
+        }
+        return found
+    }
+
+    func testEveryEntryRunsInFishToo() {
+        // Run as typed by any login shell: bash, zsh, sh and fish 3.x.
+        for entry in SnippetLibrary.entries {
+            XCTAssertEqual(posixOnlyConstructs(in: entry.script), [], "\(entry.id): POSIX-only syntax outside sh -c '…'")
+            if entry.script.contains("sh -c '") {
+                XCTAssertTrue(entry.script.hasPrefix("sh -c '") || entry.script.hasPrefix("sudo sh -c '"),
+                              "\(entry.id): the whole command is wrapped")
+            }
+        }
+    }
+
+    func testTheCheckCatchesPOSIXOnlySyntax() {
+        XCTAssertEqual(posixOnlyConstructs(in: "if command -v ufw >/dev/null; then ufw status; fi"), ["if", "then", "fi"])
+        XCTAssertEqual(posixOnlyConstructs(in: "[ -f /x ] && cat /x || echo no"), ["["])
+        XCTAssertEqual(posixOnlyConstructs(in: "tar -czf \"$(date +%F).tgz\" ${HOME}"), ["$(", "${"])
+        XCTAssertEqual(posixOnlyConstructs(in: "sh -c 'if [ -f /x ]; then cat \"$(echo /x)\"; fi'"), [])
+        XCTAssertEqual(posixOnlyConstructs(in: "dpkg-query -W -f='${Status}\\n' x 2>/dev/null || rpm -q x"), [])
+    }
+
+    func testFilesArchivePassesTheFolderToShAsAnArgument() {
+        let archive = SnippetLibrary.entries.first { $0.id == "files.archive" }
+        let filled = SnippetTemplate(archive?.script ?? "").filled(with: ["folder": "/srv/app"])
+        XCTAssertTrue(filled.hasPrefix("sh -c '"), filled)
+        XCTAssertTrue(filled.hasSuffix("' sh /srv/app"), filled)
+    }
+
+    /// Parses every entry (placeholders filled with their defaults or "x") with `sh -n`, `bash -n` and,
+    /// when installed, `fish --no-execute`.
+    func testEveryEntryParsesInShBashAndFish() throws {
+        let shells: [(name: String, flags: [String])] = [("sh", ["-n", "-c"]), ("bash", ["-n", "-c"]),
+                                                         ("fish", ["--no-execute", "-c"])]
+        var ran = 0
+        for shell in shells {
+            guard let path = Self.executable(shell.name) else { continue }
+            ran += 1
+            for entry in SnippetLibrary.entries {
+                let template = SnippetTemplate(entry.script)
+                let values = Dictionary(template.placeholders.map { ($0.name, $0.defaultValue ?? "x") },
+                                        uniquingKeysWith: { a, _ in a })
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: path)
+                process.arguments = shell.flags + [template.filled(with: values)]
+                let errors = Pipe()
+                process.standardError = errors
+                process.standardOutput = FileHandle.nullDevice
+                try process.run()
+                process.waitUntilExit()
+                let message = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                XCTAssertEqual(process.terminationStatus, 0, "\(shell.name): \(entry.id): \(message)")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(ran, 2, "sh and bash are always there")
+    }
+
+    private static func executable(_ name: String) -> String? {
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"
+        let dirs = path.split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
+        return dirs.map { "\($0)/\(name)" }.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
     func testPlaceholdersAreRealOnesAndDockerTemplatesStayLiteral() {
         let restart = SnippetLibrary.entries.first { $0.id == "services.restart" }
         XCTAssertEqual(SnippetTemplate(restart?.script ?? "").placeholders.map(\.name), ["service"])

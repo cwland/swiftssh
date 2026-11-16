@@ -8,6 +8,11 @@ import CoreModels
 /// Rules for entries: one line; mostly read-only; anything that changes the server (restart, stop,
 /// kill, install) asks for its target with a `{{placeholder}}`; nothing that wipes data. Docker's own
 /// `{{.Field}}` templates stay literal (a placeholder name can't start with a dot).
+///
+/// Every entry runs as typed in bash, zsh, sh and fish 3.x (the login shell is whatever the server
+/// has): no `if`/`then`/`fi`, `[ … ]`, `$(…)` or `${…}` in the command itself. A command that needs
+/// them is wrapped in `sh -c '…'`, with any placeholder passed after it as an argument (`sh -c '… "$1" …'
+/// sh {{x}}`), so the value is never pasted inside the quoted script.
 public enum SnippetLibrary {
     public struct Entry: Identifiable, Hashable, Sendable {
         /// Stable: "<category>.<name>".
@@ -37,7 +42,7 @@ public enum SnippetLibrary {
         e("system.cpu", "System", "CPU info", "CPU model, cores and threads.", "lscpu"),
         e("system.hostname", "System", "Host name and time", "Host name, time zone and clock sync status.", "hostnamectl; timedatectl"),
         e("system.lastboot", "System", "Recent reboots", "When the server last rebooted.", "last -x reboot | head -n 10"),
-        e("system.rebootrequired", "System", "Reboot required?", "Whether updates are waiting for a reboot (Debian/Ubuntu).", "[ -f /var/run/reboot-required ] && cat /var/run/reboot-required || echo 'No reboot required'"),
+        e("system.rebootrequired", "System", "Reboot required?", "Whether updates are waiting for a reboot (Debian/Ubuntu).", "cat /var/run/reboot-required 2>/dev/null || echo 'No reboot required'"),
 
         // Disk
         e("disk.usage", "Disk", "Disk usage", "Free space on every mounted filesystem.", "df -h"),
@@ -64,7 +69,7 @@ public enum SnippetLibrary {
         e("network.dns", "Network", "DNS lookup", "Looks up a name's addresses.", "getent ahosts {{name:example.com}}"),
         e("network.ping", "Network", "Ping a host", "Five pings to a host.", "ping -c 5 {{host:1.1.1.1}}"),
         e("network.port", "Network", "Test a port", "Checks whether a TCP port answers.", "nc -zv -w 3 {{host}} {{port}}"),
-        e("network.firewall", "Network", "Firewall rules", "ufw status if present, otherwise nftables rules.", "if command -v ufw >/dev/null; then sudo ufw status verbose; else sudo nft list ruleset; fi"),
+        e("network.firewall", "Network", "Firewall rules", "ufw status if present, otherwise nftables rules.", "sh -c 'if command -v ufw >/dev/null; then sudo ufw status verbose; else sudo nft list ruleset; fi'"),
 
         // Services
         e("services.failed", "Services", "Failed services", "systemd units that failed.", "systemctl --failed"),
@@ -115,7 +120,7 @@ public enum SnippetLibrary {
         e("files.search", "Files", "Search text in files", "Lines containing some text (taken literally) under a directory.", "grep -rnF --color=always -e \"{{text}}\" {{path:.}} 2>/dev/null | head -n 50"),
         e("files.tail", "Files", "Follow a file", "A file's last lines, then new ones.", "tail -n 100 -f {{file}}"),
         e("files.permissions", "Files", "Permissions along a path", "Owner and permissions of every folder down to a file.", "namei -l {{path}}"),
-        e("files.archive", "Files", "Archive a folder", "Packs a folder into a dated .tar.gz in the current folder.", "tar -czf \"$(basename {{folder}})-$(date +%Y%m%d).tar.gz\" -C \"$(dirname {{folder}})\" \"$(basename {{folder}})\""),
+        e("files.archive", "Files", "Archive a folder", "Packs a folder into a dated .tar.gz in the current folder.", "sh -c 'tar -czf \"$(basename \"$1\")-$(date +%Y%m%d).tar.gz\" -C \"$(dirname \"$1\")\" \"$(basename \"$1\")\"' sh {{folder}}"),
     ]
 }
 

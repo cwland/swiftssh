@@ -253,20 +253,23 @@ final class AppEnvironment {
     /// Closes the tab at once, connected or not (no confirmation). A workspace pane closes as a pane
     /// (the workspace turns back into a plain tab when one is left). When that pane is the one before
     /// the last, the workspace has unsaved changes and "Ask to save workspaces when closing" is on, its
-    /// window's tab bar first asks Save / Don't Save / Cancel (`closingPaneRequest`); the pane closes
+    /// window's tab bar first asks Save / Don't Save / Cancel (`closingPaneRequest`, taken by one window
+    /// only: the key window when it shows the workspace, else the frontmost one that does); the pane closes
     /// after Save or Don't Save (`closeTabWithoutAsking`). If no tab bar takes the request soon
     /// (no window shows that workspace), the pane closes without asking, so a stale request never
     /// blocks closing it again or pops up later in a window that opens.
     func closeTab(tabID: UUID) {
         guard let sessions else { return }
-        if sessions.workspaceToSaveBeforeClosing(pane: tabID,
-                                                 asksToSave: connectionSettings.askToSaveWorkspaces) != nil {
+        if let workspace = sessions.workspaceToSaveBeforeClosing(pane: tabID,
+                                                                 asksToSave: connectionSettings.askToSaveWorkspaces) {
             closingPaneRequestCount += 1
             let request = closingPaneRequestCount
-            closingPaneRequest = tabID
+            closingPaneRequest = WindowTargetedRequest(subjectID: tabID,
+                                                       window: promptWindow(showingWindowID: workspace.windowID))
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: Self.closingPaneRequestTimeout)
-                guard let self, self.closingPaneRequestCount == request, self.closingPaneRequest == tabID else { return }
+                guard let self, self.closingPaneRequestCount == request,
+                      self.closingPaneRequest?.subjectID == tabID else { return }
                 self.closingPaneRequest = nil
                 self.closeTabWithoutAsking(tabID: tabID)
             }
@@ -275,8 +278,9 @@ final class AppEnvironment {
         closeTabWithoutAsking(tabID: tabID)
     }
 
-    /// A pane waiting for the tab bar's Save / Don't Save / Cancel before it closes (see `closeTab`).
-    var closingPaneRequest: UUID?
+    /// A pane waiting for the tab bar's Save / Don't Save / Cancel before it closes (see `closeTab`), and
+    /// the window (`ObjectIdentifier` of its `NSWindow`) whose tab bar asks.
+    var closingPaneRequest: WindowTargetedRequest<ObjectIdentifier>?
     /// Tells a request apart from a later one for the same pane (see `closeTab`).
     @ObservationIgnored private var closingPaneRequestCount = 0
     /// How long a tab bar has to take a `closingPaneRequest` before the pane closes without asking.
@@ -340,13 +344,24 @@ final class AppEnvironment {
     }
 
     /// Cmd+W: closes the focused window's selected terminal tab; in a workspace, its focused pane (the
-    /// last two follow the dissolve rule: one left = a plain tab). With Vaults selected (or another kind
-    /// of window, such as Settings, focused), closes the window.
+    /// last two follow the dissolve rule: one left = a plain tab). With Vaults selected, closes the window.
+    /// With Settings (or any other window without tabs) key, that window closes (standard close), never a
+    /// tab of a window behind it (`WindowRouting.closeCommand`).
     func closeSelectedTabOrWindow(in scope: WindowScope?) {
-        if let tab = activeTab(in: commandScope(scope)) {
-            closeTab(tabID: tab.id)
-        } else {
-            NSApp.keyWindow?.performClose(nil)
+        let keyWindow = NSApp.keyWindow
+        // A sheet or a popover counts as the window it belongs to.
+        let kind: WindowRouting.KeyWindow? = keyWindow.map { window in
+            var owner = window
+            while let parent = owner.sheetParent ?? owner.parent { owner = parent }
+            return windowScopes[ObjectIdentifier(owner)] == nil ? WindowRouting.KeyWindow.otherWindow : .appWindow
+        }
+        // The focused scene's scope is ignored when another kind of window is key.
+        let tab = kind == .otherWindow ? nil : activeTab(in: commandScope(scope))
+        switch WindowRouting.closeCommand(keyWindow: kind, hasActiveTab: tab != nil) {
+        case .closeTabOrPane:
+            if let tab { closeTab(tabID: tab.id) }
+        case .closeKeyWindow:
+            keyWindow?.performClose(nil)
         }
     }
 
@@ -413,14 +428,16 @@ final class AppEnvironment {
         sessions?.setViewMode(workspace.viewMode == .split ? .focus : .split, for: workspace.id)
     }
 
-    /// Cmd+S on a never-saved workspace: its window's tab bar asks for the name, then saves.
-    var namingWorkspaceID: UUID?
+    /// Cmd+S on a never-saved workspace: its window's tab bar asks for the name, then saves. Only the
+    /// window named in the request asks (two main windows show the same workspace).
+    var namingWorkspaceRequest: WindowTargetedRequest<ObjectIdentifier>?
 
     /// Cmd+S: saves the shown workspace to its template; the first time, asks for its name first.
     func saveSelectedWorkspace(in scope: WindowScope?) throws {
         guard let workspace = selectedWorkspace(in: commandScope(scope)) else { return }
         guard workspaceTemplates.hasSavedCopy(of: workspace) else {
-            namingWorkspaceID = workspace.id
+            namingWorkspaceRequest = WindowTargetedRequest(subjectID: workspace.id,
+                                                           window: promptWindow(showingWindowID: workspace.windowID))
             return
         }
         try saveWorkspace(workspace)
@@ -495,6 +512,17 @@ final class AppEnvironment {
 
     /// The scope of every open window that shows a `RootView`, by window (see `commandScope`).
     @ObservationIgnored private var windowScopes: [ObjectIdentifier: WindowScope] = [:]
+
+    /// The one window that shows a prompt about tabs of `windowID` (nil = the main tabs): the key window
+    /// when it shows them, else the frontmost window that does, else the key window.
+    func promptWindow(showingWindowID windowID: UUID?) -> ObjectIdentifier? {
+        let showing = NSApp.orderedWindows.compactMap { window -> ObjectIdentifier? in
+            let id = ObjectIdentifier(window)
+            guard let scope = windowScopes[id], scope.windowID == windowID else { return nil }
+            return id
+        }
+        return WindowRouting.promptWindow(among: showing, keyWindow: NSApp.keyWindow.map { ObjectIdentifier($0) })
+    }
 
     func windowAttached(_ window: NSWindow, scope: WindowScope) {
         windowScopes[ObjectIdentifier(window)] = scope

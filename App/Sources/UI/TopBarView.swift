@@ -48,14 +48,17 @@ struct TopBarView: View {
     var asksToSaveWorkspaces: () -> Bool = { false }
     /// Whether saving updates an existing saved copy; a first save asks for a name.
     var hasSavedCopy: (Workspace) -> Bool = { _ in true }
-    /// ⌘S on a never-saved workspace (from the menu): the window showing it asks for the name.
-    var namingRequest: UUID? = nil
+    /// Whether a window token in a request (`ObjectIdentifier` of an `NSWindow`) is this window: two main
+    /// windows show the same tabs, so only the window a request names takes it.
+    var isThisWindow: (ObjectIdentifier) -> Bool = { _ in false }
+    /// ⌘S on a never-saved workspace (from the menu): the window it names asks for the name.
+    var namingRequest: WindowTargetedRequest<ObjectIdentifier>? = nil
     var clearNamingRequest: () -> Void = {}
     /// Opens a saved workspace (each pane connects).
     var openTemplate: (WorkspaceTemplate) throws -> Void = { _ in }
     /// A pane whose closing would turn its unsaved workspace into a plain tab: the window showing it
-    /// asks Save / Don't Save / Cancel (`AppEnvironment.closeTab`).
-    var closingPaneRequest: UUID? = nil
+    /// asks Save / Don't Save / Cancel (`AppEnvironment.closeTab`); only the window the request names.
+    var closingPaneRequest: WindowTargetedRequest<ObjectIdentifier>? = nil
     var clearClosingPaneRequest: () -> Void = {}
     /// Closes a pane without asking again (after Save or Don't Save).
     var closePaneNow: (UUID) -> Void = { _ in }
@@ -436,20 +439,28 @@ struct TopBarView: View {
         }
     }
 
-    /// ⌘S from the menu on a never-saved workspace of this window.
+    /// ⌘S from the menu on a never-saved workspace of this window (the one the request names).
     private func takeNamingRequest() {
-        guard let id = namingRequest, let workspace = sessions?.workspace(id),
+        guard let request = namingRequest, isTarget(request),
+              let workspace = sessions?.workspace(request.subjectID),
               workspace.windowID == windowID else { return }
         clearNamingRequest()
         beginNaming(workspace, then: .nothing)
     }
 
-    /// A pane close (Cmd+W, its ×, its menu) waiting for Save / Don't Save / Cancel, in this window.
+    /// A pane close (Cmd+W, its ×, its menu) waiting for Save / Don't Save / Cancel, in this window (the
+    /// one the request names).
     private func takeClosingPaneRequest() {
-        guard let id = closingPaneRequest, let workspace = sessions?.workspace(containing: id),
-              workspace.windowID == windowID else { return }
+        guard let request = closingPaneRequest, isTarget(request) else { return }
+        let id = request.subjectID
+        guard let workspace = sessions?.workspace(containing: id), workspace.windowID == windowID else { return }
         clearClosingPaneRequest()
         closingPaneID = id
+    }
+
+    private func isTarget(_ request: WindowTargetedRequest<ObjectIdentifier>) -> Bool {
+        guard let window = request.window else { return false }
+        return isThisWindow(window)
     }
 
     private var closingPaneTitle: String {
