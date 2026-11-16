@@ -47,6 +47,11 @@ final class IOSEnvironment {
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
     @ObservationIgnored private var didStartLoading = false
+    /// Checks the sessions after the background and on network changes; set with `.ready`.
+    @ObservationIgnored private var recheck: ConnectionRecheck?
+    @ObservationIgnored private var networkWatcher: NetworkWatcher?
+    /// Extra time asked for while in the background (see `didEnterBackground`).
+    @ObservationIgnored private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init(keyProvider: any VaultKeyProvider = KeychainVaultKeyProvider(service: "com.cwland.SwiftSSH.mobile",
                                                                        thisDeviceOnly: true),
@@ -106,6 +111,7 @@ final class IOSEnvironment {
             join = CompanionJoin(coordinator: coordinator)
             state = .ready(vault)
             coordinator.start()
+            startRechecking()
         } catch VaultLoadError.unreadable(let movedTo) {
             // Everything in it came from sync: joining again brings it back.
             state = .failed("The vault on this device couldn\u{2019}t be read, so it was set aside (\(movedTo.lastPathComponent)). "
@@ -218,14 +224,60 @@ final class IOSEnvironment {
 
     // MARK: Lifecycle
 
-    /// The app went to the background.
+    /// The app went to the background. iOS suspends it soon after, freezing the sessions; asking for
+    /// extra time (about 30 s) keeps them alive through a quick trip to another app (copying a
+    /// password from 1Password, say) and lets the vault finish saving. The time ends early when no
+    /// session is open once the vault is saved, at its expiry, or on the return.
     func didEnterBackground() {
         appLock.didEnterBackground()
+        recheck?.didEnterBackground()
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "SwiftSSH sessions") { [weak self] in
+            MainActor.assumeIsolated { self?.endBackgroundTask() }
+        }
+        let vault = self.vault
+        Task { [weak self] in
+            await vault?.flush()
+            guard let self, self.sessions?.tabs.isEmpty ?? true else { return }
+            self.endBackgroundTask()
+        }
     }
 
-    /// The app is active again.
+    /// The app is active again: may lock, and checks the sessions at once when it was in the
+    /// background (`ConnectionRecheck`).
     func didBecomeActive() {
         appLock.didBecomeActive()
+        endBackgroundTask()
+        recheck?.didBecomeActive()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+
+    /// From `.ready` on: the app's return and network changes check the sessions.
+    private func startRechecking() {
+        let recheck = ConnectionRecheck { [weak self] in self?.checkSessions() }
+        self.recheck = recheck
+        let watcher = NetworkWatcher { [weak recheck] summary in recheck?.pathChanged(summary) }
+        networkWatcher = watcher
+        watcher.start()
+    }
+
+    /// Every live session checks that its server still answers; a dead one drops and auto-reconnect
+    /// brings it back in the same tab (never a second session). Sessions counting down to a try start
+    /// it now, and again shortly after, so one that the check just found dead doesn't wait out its
+    /// first countdown.
+    private func checkSessions() {
+        guard let sessions else { return }
+        sessions.checkConnections()
+        sessions.reconnectWaitingNow()
+        Task { [weak sessions] in
+            try? await Task.sleep(for: .seconds(2))
+            sessions?.reconnectWaitingNow()
+        }
     }
 
     // MARK: Files
