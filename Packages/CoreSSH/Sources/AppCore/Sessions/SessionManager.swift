@@ -309,6 +309,12 @@ fileprivate final class SessionAttempt {
 /// `opClient()` before each attempt starts (after the agent check; agent plans never read). The value is
 /// used for that attempt only and never stored. A typed password that is a reference is read the same
 /// way; with "save", the reference as typed is stored, never its value.
+///
+/// Host updates: by default (the Mac) a ready connection saves the host's `lastConnectedAt` and the
+/// detected OS badge, a typed password can be saved and theme changes are saved on the host. With
+/// `recordsHostUpdates: false` (iOS, which may hold a stale copy of a host that sync would then spread)
+/// none of these rewrite a synced record: the detected badge is kept in memory (`detectedBadge(hostID:)`)
+/// and shown on tabs; connection logs (new records) are still saved.
 @MainActor @Observable
 public final class SessionManager {
     /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
@@ -363,6 +369,11 @@ public final class SessionManager {
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
     @ObservationIgnored private var probedHosts: Set<UUID> = []
+    /// False on iOS: connecting never rewrites a saved host (or identity); see the type's doc.
+    @ObservationIgnored private let recordsHostUpdates: Bool
+    /// OS badges detected in this app session, kept here instead of on the host when
+    /// `recordsHostUpdates` is false.
+    private var detectedBadges: [UUID: OSBadge] = [:]
 
     public init(vault: LocalVault, knownHosts: KnownHostsStore,
                 makeSession: @escaping @MainActor (ConnectionPlan, any HostKeyEvaluator) -> any TerminalSession,
@@ -375,7 +386,9 @@ public final class SessionManager {
                 agentSocket: @escaping @MainActor () -> String? = { nil },
                 opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil },
                 agentKeys: (@Sendable (String) async throws -> [AgentKey])? = nil,
-                terminalType: @escaping @MainActor () -> TerminalType = { .default }) {
+                terminalType: @escaping @MainActor () -> TerminalType = { .default },
+                recordsHostUpdates: Bool = true) {
+        self.recordsHostUpdates = recordsHostUpdates
         self.terminalType = terminalType
         self.agentKeys = agentKeys
         self.agentSocket = agentSocket
@@ -399,7 +412,7 @@ public final class SessionManager {
     @discardableResult
     public func open(hostID: UUID) throws -> TerminalTab {
         let plan = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
-        let badge = vault.get(SavedHost.self, id: hostID)?.osBadge
+        let badge = displayBadge(hostID: hostID)
         return add(TerminalTab(target: .host(hostID), title: plan.label, badge: badge), plan: plan)
     }
 
@@ -625,7 +638,7 @@ public final class SessionManager {
 
     /// A tab for a saved host with its plan made already.
     func appendTab(hostID: UUID, plan: ConnectionPlan, inWindow windowID: UUID?) -> TerminalTab {
-        let tab = TerminalTab(target: .host(hostID), title: plan.label, badge: vault.get(SavedHost.self, id: hostID)?.osBadge)
+        let tab = TerminalTab(target: .host(hostID), title: plan.label, badge: displayBadge(hostID: hostID))
         tab.windowID = windowID
         tabs.append(tab)
         connect(tab, plan: plan)
@@ -742,6 +755,7 @@ public final class SessionManager {
     private func commitPendingTheme(hostID: UUID) {
         themeSaveTasks.removeValue(forKey: hostID)?.cancel()
         guard let pending = pendingHostThemes.removeValue(forKey: hostID),
+              recordsHostUpdates,
               var host = vault.get(SavedHost.self, id: hostID), host.themeID != pending.themeID else { return }
         host.themeID = pending.themeID
         vault.saveNow(host)
@@ -874,7 +888,7 @@ public final class SessionManager {
         guard let tab = tab(tabID), case .awaitingPassword = tab.state else { return }
         endAutoReconnect(of: tab)
         tab.enteredPassword = password
-        tab.saveEnteredPassword = save && tab.canSavePassword
+        tab.saveEnteredPassword = save && tab.canSavePassword && recordsHostUpdates
         connect(tab, plan: nil)
     }
 
@@ -973,7 +987,7 @@ public final class SessionManager {
         let plans = try ids.map { try ConnectionPlanner.plan(hostID: $0, vault: vault) }
         let typed = Self.deliveryText(text, as: .run)
         return zip(ids, plans).map { id, plan in
-            let tab = TerminalTab(target: .host(id), title: plan.label, badge: vault.get(SavedHost.self, id: id)?.osBadge)
+            let tab = TerminalTab(target: .host(id), title: plan.label, badge: displayBadge(hostID: id))
             tab.textAfterFirstReady = typed
             return add(tab, plan: plan)
         }
@@ -1079,7 +1093,7 @@ public final class SessionManager {
         // An automatic reconnect try gives up fast while the server is still down.
         if case .reconnecting = tab.autoReconnect { plan.connectTimeout = .seconds(5) }
         tab.title = plan.label
-        if let hostID = tab.hostID, let host = vault.get(SavedHost.self, id: hostID) { tab.badge = host.osBadge }
+        if let hostID = tab.hostID, vault.get(SavedHost.self, id: hostID) != nil { tab.badge = displayBadge(hostID: hostID) }
 
         if let agentKey = plan.agentKey {
             guard let socket = agentSocket() else {
@@ -1346,8 +1360,10 @@ public final class SessionManager {
         tab.enteredPassword = nil
         tab.saveEnteredPassword = false
         if let hostID = plan.hostID, var host = vault.get(SavedHost.self, id: hostID) {
-            host.lastConnectedAt = Date()
-            vault.saveNow(host)
+            if recordsHostUpdates {
+                host.lastConnectedAt = Date()
+                vault.saveNow(host)
+            }
             // Once per host per app session, and again on the next connection after the user chose
             // "Automatic" in Host Details (`vault.requestOSProbe`), even if nothing was detected.
             if !host.osBadgeIsManual {
@@ -1412,11 +1428,30 @@ public final class SessionManager {
 
     private func applyProbe(_ output: String, hostID: UUID) {
         guard let badge = OSDetector.badge(fromProbeOutput: output),
-              var host = vault.get(SavedHost.self, id: hostID),
-              !host.osBadgeIsManual, host.osBadge != badge else { return }
-        host.osBadge = badge
-        vault.saveNow(host)
+              var host = vault.get(SavedHost.self, id: hostID), !host.osBadgeIsManual else { return }
+        if !recordsHostUpdates {
+            detectedBadges[hostID] = badge
+        } else {
+            guard host.osBadge != badge else { return }
+            host.osBadge = badge
+            vault.saveNow(host)
+        }
         for tab in tabs where tab.hostID == hostID { tab.badge = badge }
+    }
+
+    /// The OS badge detected for the host in this app session when host updates aren't recorded
+    /// (`recordsHostUpdates: false`); nil otherwise (the Mac saves it on the host), when nothing was
+    /// detected yet, or when the host's badge is set by hand.
+    public func detectedBadge(hostID: UUID) -> OSBadge? {
+        guard let badge = detectedBadges[hostID],
+              vault.get(SavedHost.self, id: hostID)?.osBadgeIsManual != true else { return nil }
+        return badge
+    }
+
+    /// The badge a tab for the host shows: one detected in this app session (see `detectedBadge`),
+    /// otherwise the saved one.
+    private func displayBadge(hostID: UUID) -> OSBadge? {
+        detectedBadge(hostID: hostID) ?? vault.get(SavedHost.self, id: hostID)?.osBadge
     }
 
     private func endLog(of attempt: SessionAttempt) {

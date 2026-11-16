@@ -2,6 +2,7 @@ import XCTest
 import Synchronization
 import CoreModels
 import SSHCore
+import SyncCore
 @testable import AppCore
 
 private typealias SavedHost = CoreModels.Host
@@ -332,6 +333,79 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertEqual(log.deviceName, "Test Mac")
         XCTAssertNil(log.endedAt)
         XCTAssertNotNil(vault.get(SavedHost.self, id: host.id)?.lastConnectedAt)
+    }
+
+    // MARK: recordsHostUpdates: false (iOS)
+
+    private func makeReadOnlyHostsManager() -> SessionManager {
+        let factory = factory!
+        return SessionManager(vault: vault, knownHosts: store,
+                              makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                              deviceName: "Test iPhone", defaultUsername: "me", initialSizeTimeout: .zero,
+                              recordsHostUpdates: false)
+    }
+
+    private func storedRecord(_ id: UUID) -> PlainRecord? { vault.allRecords.first { $0.id == id } }
+
+    /// iOS may hold a stale copy of a host: connecting must not rewrite it (no `lastConnectedAt`, no
+    /// detected OS badge), while the connection log is still written and the badge is shown in memory.
+    func testConnectingWithoutHostUpdatesLeavesTheHostRecordUnchanged() async throws {
+        manager = makeReadOnlyHostsManager()
+        let host = passwordHost(label: "Auto")
+        let before = try XCTUnwrap(storedRecord(host.id))
+
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("log") { !self.vault.all(ConnectionLog.self).isEmpty }
+        await waitUntil("detected") { self.manager.detectedBadge(hostID: host.id) == .ubuntu }
+        await settle()
+
+        let after = try XCTUnwrap(storedRecord(host.id))
+        XCTAssertEqual(after.payload, before.payload)
+        XCTAssertEqual(after.updatedAt, before.updatedAt)
+        XCTAssertEqual(after, before)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.lastConnectedAt)
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.osBadge)
+        XCTAssertEqual(factory.sessions[0].recorded.commands, [OSDetector.probeCommand])
+        XCTAssertEqual(tab.badge, .ubuntu)
+        XCTAssertEqual(vault.all(ConnectionLog.self).first?.hostID, host.id)
+        XCTAssertEqual(vault.all(ConnectionLog.self).first?.deviceName, "Test iPhone")
+
+        // A new tab for the same host shows the detected badge right away.
+        let second = try manager.open(hostID: host.id)
+        XCTAssertEqual(second.badge, .ubuntu)
+        await waitUntil("second connected") { second.state == .connected }
+        await settle()
+        XCTAssertEqual(storedRecord(host.id), before)
+    }
+
+    func testWithoutHostUpdatesAManualBadgeIsKeptAndNotProbed() async throws {
+        manager = makeReadOnlyHostsManager()
+        let host = passwordHost(label: "Manual", badge: .debian, manual: true)
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("connected") { tab.state == .connected }
+        await settle()
+        XCTAssertEqual(factory.sessions[0].recorded.commands, [])
+        XCTAssertNil(manager.detectedBadge(hostID: host.id))
+        XCTAssertEqual(tab.badge, .debian)
+    }
+
+    func testWithoutHostUpdatesATypedPasswordIsNeverSaved() async throws {
+        manager = makeReadOnlyHostsManager()
+        let host = vault.saveNow(SavedHost(label: "NoPw", address: "np.example", username: "root"))
+        let before = try XCTUnwrap(storedRecord(host.id))
+        let tab = try manager.open(hostID: host.id)
+        manager.providePassword(tabID: tab.id, "typed", save: true)
+        await waitUntil("connected") { tab.state == .connected }
+        await settle()
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.password)
+        XCTAssertEqual(storedRecord(host.id), before)
+    }
+
+    func testDetectedBadgeIsNilWhenHostUpdatesAreRecorded() async throws {
+        let host = passwordHost(label: "Auto")
+        _ = try manager.open(hostID: host.id)
+        await waitUntil("badge") { self.vault.get(SavedHost.self, id: host.id)?.osBadge == .ubuntu }
+        XCTAssertNil(manager.detectedBadge(hostID: host.id), "the Mac saves the badge on the host instead")
     }
 
     func testOSDetectionUpdatesBadgeUnlessManual() async throws {
