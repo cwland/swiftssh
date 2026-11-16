@@ -127,6 +127,16 @@ struct SessionScreen: View {
                 .frame(width: 32, height: 32)
         }
         .accessibilityLabel("Show or hide keyboard")
+        // The system Paste button: reads the clipboard (including Universal Clipboard from a Mac)
+        // without the "Allow Paste" prompt, and pastes it into the session as typed-in text would be.
+        PasteButton(payloadType: String.self) { strings in
+            guard let text = strings.first, !text.isEmpty else { return }
+            Task { @MainActor in deliver(text, .paste) }
+        }
+        .labelStyle(.iconOnly)
+        .buttonBorderShape(.circle)
+        .tint(Theme.topBarForeground)
+        .controlSize(.small)
         Button {
             showsSnippets = true
         } label: {
