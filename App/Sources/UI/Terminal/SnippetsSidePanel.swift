@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The tab's snippets panel (Cmd+., or "Snippets…" in the tab's menu): floats over the terminal's right
 /// edge like the theme panel (the terminal is not resized). A search field (name and script), then the

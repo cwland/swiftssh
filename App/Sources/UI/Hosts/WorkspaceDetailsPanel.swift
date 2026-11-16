@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand Workspace panel (a workspace tile's pencil, or Edit): its name, the view mode it opens
 /// in, its terminals (remove one; at least two stay), Open, and Delete. Each change saves at once to

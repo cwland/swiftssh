@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The Snippets screen: search bar, toolbar, snippet cards in group sections, and the snippet editor
 /// on the right, opened by a card's pencil or Edit Snippet (a click only selects; double-click runs on

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 struct SidebarView: View {
     let navigation: AppNavigation

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// The theme gallery used everywhere a theme is chosen: Settings → Terminal, the Host Details
 /// popover, the group "Theme…" popover and the tab's Change Theme side panel.

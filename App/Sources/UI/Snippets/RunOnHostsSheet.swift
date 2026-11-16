@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// "Run on hosts…": a searchable host list with checkboxes (grouped by group), "Save targets", Run.
 /// A snippet with placeholders shows `PlaceholderForm` first; Run then hands over the filled command.

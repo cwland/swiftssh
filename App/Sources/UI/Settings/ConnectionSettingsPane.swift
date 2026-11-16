@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// Settings → Connection: reconnecting automatically, a note on how drops are noticed (fixed, nothing to
 /// tune), and whether closing an unsaved workspace asks to save it. Saved by `ConnectionSettings`, on

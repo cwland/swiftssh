@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// A saved snippet: a "curlybraces" badge, the name, the script's first line in monospaced secondary
 /// text and, when it has one, a chip naming its snippet group (`package`). Selection draws a blue border (like host cards).

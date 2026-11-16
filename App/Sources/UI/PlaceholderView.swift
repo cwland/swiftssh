@@ -1,4 +1,5 @@
 import SwiftUI
+import SwiftSSHUI
 
 /// Fills a content area that a later milestone will implement.
 struct PlaceholderView: View {

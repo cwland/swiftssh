@@ -3,6 +3,7 @@ import AppKit
 import AppCore
 import CoreModels
 import SSHCore
+import SwiftSSHUI
 
 /// The full-tab screen shown while a tab connects, while it reconnects on its own, and when a try fails,
 /// modelled on Termius's: on the app's own light/dark background, a narrow column near the top with

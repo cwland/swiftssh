@@ -3,6 +3,7 @@ import AppKit
 import CoreText
 import AppCore
 import SSHCore
+import SwiftSSHUI
 
 /// Settings → Terminal: font, text size, the app-wide default theme (package A's `ThemeGallery`,
 /// "Default" = Automatic first) and Behaviour (highlighting has its own pane,

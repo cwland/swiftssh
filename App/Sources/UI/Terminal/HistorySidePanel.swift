@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The tab's shell history panel (Cmd+Y, or "History…" in the tab's menu): floats over the terminal's
 /// right edge like the snippets panel. It reads the server's own history files (bash, zsh, fish) over a

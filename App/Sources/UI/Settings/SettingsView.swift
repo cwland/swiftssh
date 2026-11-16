@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// The Settings window (Cmd+,): a Termius-style sidebar of panes on the left and the selected
 /// pane on the right. New panes are added to AppCore's `SettingsPane` and to `pane(for:)`. The selection

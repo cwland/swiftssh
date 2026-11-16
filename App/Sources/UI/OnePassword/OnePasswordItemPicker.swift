@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// "Pick from 1Password…": search the items `op` lists, choose one, then choose a field; the
 /// field's `op://…` reference is handed back. Only titles, vaults and categories are fetched here

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AppCore
+import SwiftSSHUI
 
 /// The navy tab strip that replaces the window's title bar: Vaults, then one item per terminal tab or
 /// workspace of this window (`SessionManager.strip(inWindow:)`; a workspace's panes are not listed on

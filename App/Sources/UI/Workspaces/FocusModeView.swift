@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// A workspace in Focus mode: on the left the list "Terminals • N" (OS badge, name, "ssh, <user>",
 /// status dot; the selected row is highlighted and has × to close it; a row dropped on another row

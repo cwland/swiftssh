@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// A workspace tab's content: its panes in Split view (all visible, laid out by the split tree,
 /// resizable dividers) or Focus mode (`FocusModeView`: one large terminal and the list of all).

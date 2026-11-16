@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand Host Details panel. Each edit saves at once through `HostDetailsViewModel`.
 /// Create one panel per host (`.id(hostID)`): the view model keeps per-host UI state. The view

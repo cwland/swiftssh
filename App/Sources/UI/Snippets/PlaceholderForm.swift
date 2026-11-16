@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// Asks for each `{{name}}` / `{{name:default}}` of a snippet before it is pasted or run: one field per
 /// distinct placeholder (prefilled with its default, the first one focused), a live preview of the final

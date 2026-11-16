@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// A saved workspace on the Hosts screen, styled like a host card: a teal split-view badge, the name
 /// and "3 terminals · Split view". Click selects, double-click opens, the pencil edits.

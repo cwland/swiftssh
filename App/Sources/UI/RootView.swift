@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AppCore
+import SwiftSSHUI
 
 /// Opens a terminal window: its own id (its tabs' `windowID`) and what to show once it appears, a
 /// copy of the tab `sourceTabID` ("Duplicate in New Window"), a new tab for the saved host `hostID`

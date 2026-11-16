@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand Group panel (a group card's pencil, or Edit Group): name, parent group, theme,
 /// tmux and startup snippet for the group's hosts, and Delete. Each change saves at once through `HostsViewModel`.

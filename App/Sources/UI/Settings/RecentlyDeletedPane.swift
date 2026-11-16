@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// Settings → Recently Deleted: deleted hosts, host groups and snippets (from any of your Macs), in
 /// sections (empty ones hidden), newest first. Restore brings one back with its details (and on your

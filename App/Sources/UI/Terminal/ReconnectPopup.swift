@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// The card over the top-left of a terminal whose connection dropped and is being re-opened
 /// automatically: a countdown ring, how many sessions are waiting, Reconnect (Return) and

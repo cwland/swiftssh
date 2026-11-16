@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand identity editor (same style as Host Details). It edits a local copy and saves
 /// every change at once through `KeychainViewModel.update(_:)`. Create one per identity

@@ -3,6 +3,7 @@ import Foundation
 import AppCore
 import CoreModels
 import SyncCore
+import SwiftSSHUI
 
 /// Settings → Sync: connect to Cory's sync server, create or join the encrypted vault, then
 /// status, "Sync now", "Change passphrase…" and "Disconnect…". Which step shows follows

@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import AppCore
 import SSHCore
+import SwiftSSHUI
 
 /// Settings → 1Password: a setup checklist with live status (re-checked on appear and whenever the
 /// app becomes active), then Advanced path overrides saved by `OnePasswordSettings`.

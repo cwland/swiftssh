@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// The Logs screen: a table of past connections (newest first) with a bookmark toggle per row.
 /// All behavior comes from `LogsViewModel`.

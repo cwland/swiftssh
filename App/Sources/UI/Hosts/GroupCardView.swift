@@ -1,8 +1,9 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
-/// A host group: folder symbol, name and "N hosts".
+/// A host group: folder symbol, name and "N hosts" (the shared `GroupCard`).
 struct GroupCardView: View {
     let group: HostGroup
     let hostCount: Int
@@ -10,10 +11,6 @@ struct GroupCardView: View {
     var onEdit: (() -> Void)? = nil
 
     var body: some View {
-        CardRow(title: group.name.isEmpty ? "Untitled group" : group.name,
-                subtitle: hostCount == 1 ? "1 host" : "\(hostCount) hosts",
-                isSelected: isSelected, onEdit: onEdit) {
-            SymbolBadge(symbol: "folder.fill", background: Theme.accent.opacity(0.15), foreground: Theme.accent)
-        }
+        GroupCard(name: group.name, hostCount: hostCount, isSelected: isSelected, onEdit: onEdit)
     }
 }

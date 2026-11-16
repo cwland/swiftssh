@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The tab's "Change Theme…" panel: floats over the terminal's right edge (the terminal is not resized,
 /// so nothing reflows) and lists the theme gallery in one column, Default first. A click applies at once

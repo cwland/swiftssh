@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// A workspace pane's title bar: OS badge, host name, "ssh, <user>", status dot, then Broadcast,
 /// Focus mode and Close. Dragging it moves the pane (the drag is set up by `WorkspaceView`); its

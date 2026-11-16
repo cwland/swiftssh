@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// Settings → OS Icons: the OS catalog grouped by category, each group an adaptive grid of tiles
 /// (badge and name). Clicking a tile opens a sheet with that OS's settings (`OSIconPopup`). Icons

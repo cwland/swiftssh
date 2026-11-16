@@ -1,8 +1,9 @@
 name: ios
 
-# Compile check for SwiftSSH on iPhone and iPad (branch "ios"): builds the CoreSSH package for the
-# iOS Simulator and, once App-iOS/project.yml exists, the iOS app itself (unsigned). Nothing is
-# uploaded or released; TestFlight uploads are a separate workflow.
+# Compile check for SwiftSSH on iPhone and iPad (branch "ios"): builds the CoreSSH and SwiftSSHUI
+# packages for the iOS Simulator and, once App-iOS/project.yml exists, the iOS app itself
+# (unsigned). The "mac" job compiles the Mac app (unsigned, Debug), so every push proves both apps
+# still build. Nothing is uploaded or released; TestFlight uploads are a separate workflow.
 #
 # Package versions: Packages/CoreSSH/Package.resolved pins the package build; the iOS app uses a
 # copy of App/Package.resolved, so both apps build the same package versions.
@@ -58,6 +59,8 @@ jobs:
         if: hashFiles('Packages/SwiftSSHUI/Package.swift') != ''
         run: |
           cd Packages/SwiftSSHUI
+          # Same remote package versions as CoreSSH (SwiftSSHUI's only remote packages come through it).
+          cp ../CoreSSH/Package.resolved Package.resolved
           log="$RUNNER_TEMP/swiftsshui-ios.log"
           xcodebuild -scheme SwiftSSHUI -destination 'generic/platform=iOS Simulator' \
             -skipPackagePluginValidation -derivedDataPath "$RUNNER_TEMP/dd-ui" build > "$log" 2>&1 || {
@@ -95,4 +98,47 @@ jobs:
         with:
           name: ios-build-logs
           path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+
+  mac:
+    # The Mac app, built as release.yml builds it (App/Package.resolved pins every package), but in
+    # Debug and without signing: only a compile check.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+
+      - name: Build the Mac app
+        run: |
+          cd App
+          xcodegen generate
+          resolved_dir=SwiftSSH.xcodeproj/project.xcworkspace/xcshareddata/swiftpm
+          mkdir -p "$resolved_dir"
+          cp Package.resolved "$resolved_dir/"
+          log="$RUNNER_TEMP/app-mac.log"
+          xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -configuration Debug \
+            -destination 'generic/platform=macOS' -skipPackagePluginValidation \
+            -onlyUsePackageVersionsFromResolvedFile -derivedDataPath "$RUNNER_TEMP/dd-mac" \
+            CODE_SIGNING_ALLOWED=NO build > "$log" 2>&1 || {
+              grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | sort -u | head -80
+              echo "::error::Mac app build failed (full log in the mac-build-log artifact)"
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" "$log"
+
+      - name: Upload the build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-build-log
+          path: ${{ runner.temp }}/app-mac.log
           if-no-files-found: ignore

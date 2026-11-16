@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// One OS in the Settings → OS Icons grid: its badge and name. Clicking opens that OS's popup.
 struct OSIconTile: View {

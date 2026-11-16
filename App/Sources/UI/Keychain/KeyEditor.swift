@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand key editor (same style as Host Details): label, type, read-only public key with
 /// Copy, passphrase, and Delete with a usage warning. It edits a local copy and saves every change

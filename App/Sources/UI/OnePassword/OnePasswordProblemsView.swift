@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// The top of the 1Password checklist: each problem `OnePasswordDiagnosis` found, in plain words,
 /// with the buttons that fix it. "All set" when there are none.

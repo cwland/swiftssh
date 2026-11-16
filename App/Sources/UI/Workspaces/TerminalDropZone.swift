@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 import AppCore
+import SwiftSSHUI
 
 /// Drop target over a terminal area (a workspace pane, Focus mode's terminal, or a plain terminal
 /// tab): while a terminal tab, a host card or a pane is dragged over it, a green translucent highlight

@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The Hosts screen: search bar, toolbar, breadcrumbs, group and host cards, and the Host Details or
 /// Group panel. All behavior comes from `HostsViewModel`.

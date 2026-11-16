@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// Shown at the top of a terminal whose session ended: why, and a Reconnect button (Cmd+R, from
 /// the Session menu). When the failure is fixed in Settings → 1Password, also "Open 1Password Setup";

@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// Settings → Highlighting: your own highlighting rules (synced to your other Macs through the
 /// vault, `HighlightRulesStore`), a live preview line, and the built-in keyword highlighting

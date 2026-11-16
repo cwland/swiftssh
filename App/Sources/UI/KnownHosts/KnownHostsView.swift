@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import AppCore
+import SwiftSSHUI
 
 /// The Known Hosts screen: search bar, a summary toolbar, and the trusted server keys as cards in one
 /// section per host:port (one card per key). A click selects a key, ⌘-click selects several; the

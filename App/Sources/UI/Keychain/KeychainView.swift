@@ -3,6 +3,7 @@ import AppKit
 import UniformTypeIdentifiers
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The Keychain screen: search, "New" menu, identity and key cards, and a right-hand editor for
 /// the selected identity or key. All behavior comes from `KeychainViewModel`.

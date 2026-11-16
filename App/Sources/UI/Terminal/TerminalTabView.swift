@@ -2,6 +2,7 @@ import SwiftUI
 import AppCore
 import CoreModels
 import SSHCore
+import SwiftSSHUI
 
 /// A terminal tab: the disconnected banner (when the session ended), the terminal (with the Change
 /// Theme or Snippets panel over its right edge), and sheets for the host key and password prompts.

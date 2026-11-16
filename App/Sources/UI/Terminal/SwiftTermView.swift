@@ -3,6 +3,7 @@ import AppKit
 import Observation
 import AppCore
 import SwiftTerm
+import SwiftSSHUI
 
 // SwiftTerm also defines `Color`; this file uses only AppKit colors. Theme colors come from
 // AppCore's `TerminalThemeCatalog` (conversions in TerminalTheme+AppKit.swift).

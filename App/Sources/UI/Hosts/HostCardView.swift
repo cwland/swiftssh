@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// A saved host: badge, label and "ssh, <username>" subtitle. Selection draws a blue border.
 struct HostCardView: View {

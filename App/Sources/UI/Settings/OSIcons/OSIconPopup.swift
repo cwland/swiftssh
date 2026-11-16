@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The sheet for one OS (a sheet, not a popover, so the color panel and the file picker can't
 /// dismiss it; the file importer and alert live on this view so they present from the sheet itself): icon link (editing saves and downloads at once), Download, Choose Image…,

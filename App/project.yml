@@ -9,6 +9,9 @@ options:
 packages:
   CoreSSH:
     path: ../Packages/CoreSSH
+  # Shared look (theme tokens, cards, badges) with the iPhone/iPad app.
+  SwiftSSHUI:
+    path: ../Packages/SwiftSSHUI
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     minorVersion: 1.99.3
@@ -61,6 +64,8 @@ targets:
         product: SyncCore
       - package: CoreSSH
         product: SSHCore
+      - package: SwiftSSHUI
+        product: SwiftSSHUI
       - package: SwiftTerm
         product: SwiftTerm
 

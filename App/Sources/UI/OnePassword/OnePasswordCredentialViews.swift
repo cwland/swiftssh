@@ -2,6 +2,7 @@ import SwiftUI
 import AppCore
 import CoreModels
 import SSHCore
+import SwiftSSHUI
 
 /// How a host's direct credentials or an identity log in.
 enum LoginMethod: Hashable {

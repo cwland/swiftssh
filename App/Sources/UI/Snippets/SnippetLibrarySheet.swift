@@ -1,5 +1,6 @@
 import SwiftUI
 import AppCore
+import SwiftSSHUI
 
 /// "New Snippet from Library…": ready-made admin snippets by category. Check the ones you want and
 /// click Add to Snippets; each becomes an ordinary snippet in a snippet group (stored as `package`) named after its category.

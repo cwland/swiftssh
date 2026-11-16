@@ -2,6 +2,7 @@ import SwiftUI
 import AppKit
 import AppCore
 import CoreModels
+import SwiftSSHUI
 
 /// The right-hand snippet editor, styled like Host Details. Each edit saves at once through
 /// `SnippetsViewModel.update` (idempotent); Save confirms it and closes the editor. Create one panel per snippet (`.id(snippetID)`): the

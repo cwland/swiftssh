@@ -1,6 +1,7 @@
 import SwiftUI
 import AppCore
 import SSHCore
+import SwiftSSHUI
 
 /// "Choose vaults…": which 1Password vaults the SSH agent offers keys from. Lists the vaults with
 /// check boxes (the vaults agent.toml names chosen already; without the file, the vaults holding SSH

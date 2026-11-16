@@ -2,6 +2,7 @@ import SwiftUI
 import Foundation
 import AppCore
 import SyncCore
+import SwiftSSHUI
 
 // MARK: - Phase presentation
 
