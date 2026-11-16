@@ -6,6 +6,17 @@
 	     servers can be reached over plain http on Tailscale/LAN addresses. -->
 	<!-- One window: every session lives in one SessionManager, so a second window would show the
 	     same tabs twice. -->
+	<!-- Launch screen: the app logo on the navy background, the same as the first SwiftUI screen
+	     (SplashView), so the app opens straight onto it instead of a black screen. -->
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>AppLogo</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

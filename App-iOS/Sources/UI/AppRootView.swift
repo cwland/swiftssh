@@ -47,9 +47,11 @@ struct AppRootView: View {
     private var content: some View {
         switch environment.state {
         case .loading:
-            ProgressView("Opening SwiftSSH\u{2026}")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.contentBackground)
+            SplashView {
+                ProgressView()
+                    .tint(Theme.topBarForeground)
+                    .accessibilityLabel("Opening SwiftSSH")
+            }
         case .failed(let message):
             VaultProblemView(message: message) {
                 Task { await environment.retry() }
