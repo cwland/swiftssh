@@ -51,7 +51,7 @@ struct AppRootView: View {
             }
         case .ready:
             if environment.isJoined {
-                HomeView()
+                RootView()
             } else if let join = environment.join {
                 JoinView(form: join)
             }

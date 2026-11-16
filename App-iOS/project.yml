@@ -48,13 +48,14 @@ targets:
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: "1"
         GENERATE_INFOPLIST_FILE: YES
-        # Fragment merged with the generated Info.plist (carries NSAppTransportSecurity only).
+        # Fragment merged with the generated Info.plist (NSAppTransportSecurity, the scene manifest).
         INFOPLIST_FILE: Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: "SwiftSSH"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_NSFaceIDUsageDescription: "SwiftSSH uses Face ID to unlock the app and your imported SSH keys."
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "SwiftSSH connects to your SSH servers and your sync server on the local network."
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # The scene manifest is in Info.plist (one window only).
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: NO
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"

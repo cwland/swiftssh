@@ -27,9 +27,18 @@ final class IOSEnvironment {
     private(set) var join: CompanionJoin?
     /// Set together with `.ready`.
     private(set) var knownHosts: KnownHostsStore?
+    /// Set together with `.ready`: the Hosts screen's state (search, the open group), kept while
+    /// sessions are shown.
+    private(set) var hosts: HostsViewModel?
     let importedKeys: ImportedKeyLibrary
     let keyStorage: KeychainImportedKeyStorage
     let appLock: AppLock
+    /// The section shown and requests from keyboard shortcuts.
+    let navigation = CompanionNavigation()
+    /// Default terminal theme and text size, on this device only (UserDefaults).
+    let terminalSettings = TerminalSettings()
+    /// Why the last host couldn't be opened; the root view shows it.
+    var connectProblem: ConnectProblem?
 
     @ObservationIgnored private let keyProvider: any VaultKeyProvider
     @ObservationIgnored private let syncSecrets: any SyncSecretsStore
@@ -50,6 +59,11 @@ final class IOSEnvironment {
     var vault: LocalVault? {
         if case .ready(let vault) = state { return vault }
         return nil
+    }
+
+    /// The vault is open, sync joined and the app unlocked: the hosts and sessions are on screen.
+    var isReady: Bool {
+        vault != nil && isJoined && !appLock.isLocked
     }
 
     /// Whether this device has joined the sync server (otherwise the join screen shows).
@@ -81,6 +95,7 @@ final class IOSEnvironment {
             let vault = try await LocalVault.open(persistence: EncryptedFileVaultPersistence(fileURL: fileURL, key: key))
             let knownHosts = KnownHostsStore(vault: vault)
             self.knownHosts = knownHosts
+            hosts = HostsViewModel(vault: vault)
             sessions = makeSessionManager(vault: vault, knownHosts: knownHosts)
             let coordinator = SyncCoordinator(vault: vault, secrets: syncSecrets)
             sync = coordinator
@@ -121,6 +136,19 @@ final class IOSEnvironment {
         }
     }
 
+    // MARK: Connecting
+
+    /// Opens a session for the saved host and shows it. When the host can't be planned (no
+    /// address, a key that isn't imported, an RSA key…) no session opens and `connectProblem` says why.
+    func connect(hostID: UUID) async {
+        guard let sessions else { return }
+        do {
+            try sessions.open(hostID: hostID)
+        } catch {
+            connectProblem = ConnectProblem(error)
+        }
+    }
+
     // MARK: Lifecycle
 
     /// The app went to the background.
@@ -143,5 +171,25 @@ final class IOSEnvironment {
         let directory = support.appendingPathComponent("SwiftSSH", isDirectory: true)
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("vault.bin", isDirectory: false)
+    }
+}
+
+/// A host that couldn't be opened: the message, and whether importing a key would help.
+struct ConnectProblem: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
+    /// Offer "Import Key" (a 1Password key isn't imported on this device).
+    let offersImport: Bool
+
+    init(_ error: any Error) {
+        let planError = error as? ConnectionPlanError
+        title = planError?.alertTitle ?? "Can\u{2019}t connect"
+        message = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+        if case .noImportedKeys = planError {
+            offersImport = true
+        } else {
+            offersImport = false
+        }
     }
 }

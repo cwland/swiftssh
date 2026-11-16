@@ -17,5 +17,8 @@ struct SwiftSSHMobileApp: App {
                 .tint(Theme.accent)
                 .task { await environment.load() }
         }
+        .commands {
+            CompanionCommands(environment: environment)
+        }
     }
 }

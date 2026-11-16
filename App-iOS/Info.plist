@@ -4,6 +4,13 @@
 <dict>
 	<!-- Merged by Xcode with the generated keys (GENERATE_INFOPLIST_FILE = YES). As on the Mac, sync
 	     servers can be reached over plain http on Tailscale/LAN addresses. -->
+	<!-- One window: every session lives in one SessionManager, so a second window would show the
+	     same tabs twice. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
