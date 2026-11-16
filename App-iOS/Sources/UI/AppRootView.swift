@@ -12,7 +12,12 @@ struct AppRootView: View {
 
     var body: some View {
         ZStack {
-            content
+            // While locked the app's views are taken out, not just covered: that closes any sheet
+            // (sheets sit above the cover) and takes the keyboard away from the terminal, so nothing
+            // can be read or typed into a session until the lock is opened.
+            if !environment.appLock.isLocked {
+                content
+            }
             if environment.appLock.showsCover(isActive: scenePhase == .active) {
                 LockCoverView(lock: environment.appLock)
                     .transition(.opacity)

@@ -4,7 +4,7 @@ import AppCore
 /// Hardware keyboard shortcuts (iPad and iPhone with a keyboard; hold ⌘ to see them): ⌘F search
 /// hosts, ⌘K quick connect, ⌘W close the session, ⌘1…9 switch to a session, ⌘[ / ⌘] previous and
 /// next session. Menu key commands come before the terminal's own key handling, so they work while
-/// typing in a session.
+/// typing in a session. None of them does anything while the app is locked.
 struct CompanionCommands: Commands {
     let environment: IOSEnvironment
 
@@ -24,22 +24,25 @@ struct CompanionCommands: Commands {
         }
         CommandMenu("Session") {
             Button("Close Session") {
-                guard let sessions = environment.sessions, let id = sessions.selectedTabID else { return }
+                guard environment.isReady, let sessions = environment.sessions,
+                      let id = sessions.selectedTabID else { return }
                 sessions.close(tabID: id)
             }
             .keyboardShortcut("w")
             Button("Previous Session") {
+                guard environment.isReady else { return }
                 environment.sessions?.selectPreviousTab(inWindow: nil)
             }
             .keyboardShortcut("[")
             Button("Next Session") {
+                guard environment.isReady else { return }
                 environment.sessions?.selectNextTab(inWindow: nil)
             }
             .keyboardShortcut("]")
             Divider()
             ForEach(1...9, id: \.self) { number in
                 Button("Session \(number)") {
-                    guard let sessions = environment.sessions else { return }
+                    guard environment.isReady, let sessions = environment.sessions else { return }
                     let tabs = sessions.tabs
                     guard number <= tabs.count else { return }
                     sessions.selectedTabID = tabs[number - 1].id
