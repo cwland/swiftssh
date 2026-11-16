@@ -1,0 +1,98 @@
+name: ios
+
+# Compile check for SwiftSSH on iPhone and iPad (branch "ios"): builds the CoreSSH package for the
+# iOS Simulator and, once App-iOS/project.yml exists, the iOS app itself (unsigned). Nothing is
+# uploaded or released; TestFlight uploads are a separate workflow.
+#
+# Package versions: Packages/CoreSSH/Package.resolved pins the package build; the iOS app uses a
+# copy of App/Package.resolved, so both apps build the same package versions.
+
+on:
+  push:
+    branches: [ios]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # -e and pipefail: a failing command in a pipeline fails the step.
+    shell: bash
+
+jobs:
+  build:
+    # Xcode 27 image (arm64), as in release.yml.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          swift --version
+
+      - name: Build CoreSSH for iOS
+        run: |
+          cd Packages/CoreSSH
+          log="$RUNNER_TEMP/coressh-ios.log"
+          xcodebuild -scheme CoreSSH-Package -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation -derivedDataPath "$RUNNER_TEMP/dd-core" build > "$log" 2>&1 || {
+              grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | sort -u | head -80
+              echo "::error::CoreSSH iOS build failed (full log in the ios-build-logs artifact)"
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" "$log"
+
+      - name: Build SwiftSSHUI for iOS
+        if: hashFiles('Packages/SwiftSSHUI/Package.swift') != ''
+        run: |
+          cd Packages/SwiftSSHUI
+          log="$RUNNER_TEMP/swiftsshui-ios.log"
+          xcodebuild -scheme SwiftSSHUI -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation -derivedDataPath "$RUNNER_TEMP/dd-ui" build > "$log" 2>&1 || {
+              grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | sort -u | head -80
+              echo "::error::SwiftSSHUI iOS build failed (full log in the ios-build-logs artifact)"
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" "$log"
+
+      - name: Build the iOS app
+        if: hashFiles('App-iOS/project.yml') != ''
+        run: |
+          cd App-iOS
+          xcodegen generate
+          project=$(ls -d *.xcodeproj | head -1)
+          scheme="${project%.xcodeproj}"
+          resolved_dir="$project/project.xcworkspace/xcshareddata/swiftpm"
+          if [ -f ../App/Package.resolved ]; then
+            mkdir -p "$resolved_dir"
+            cp ../App/Package.resolved "$resolved_dir/"
+          fi
+          log="$RUNNER_TEMP/app-ios.log"
+          xcodebuild -project "$project" -scheme "$scheme" -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation \
+            -derivedDataPath "$RUNNER_TEMP/dd-app" CODE_SIGNING_ALLOWED=NO build > "$log" 2>&1 || {
+              grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | sort -u | head -80
+              echo "::error::iOS app build failed (full log in the ios-build-logs artifact)"
+              exit 1
+            }
+          grep -E "BUILD SUCCEEDED" "$log"
+
+      - name: Upload the build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore

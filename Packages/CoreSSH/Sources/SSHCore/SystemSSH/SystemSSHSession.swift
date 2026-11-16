@@ -1,3 +1,5 @@
+// Mac-only (and Linux, where the package tests run): iOS has no child processes (Process, forkpty).
+#if os(macOS) || os(Linux)
 import CoreModels
 import Foundation
 import Synchronization
@@ -920,14 +922,12 @@ public final class SystemSSHSession: TerminalSession {
     /// Why ssh can't be given `path` as `IdentityAgent="…"`, or nil when it can. The value is double-quoted
     /// (ssh has no escape for `"` or `\` inside it), must be one line without control characters, and ssh
     /// expands `${NAME}` from the environment (an error when unset). `%` is fine: it is written as `%%`.
+    /// Forwards to `AgentSocketPath.problem` (kept outside this Mac-only type for shared callers).
     package static func agentSocketProblem(_ path: String) -> String? {
-        let unusable = path.unicodeScalars.contains { scalar in
-            scalar == "\"" || scalar == "\\" || scalar.properties.generalCategory == .control
-        } || path.contains("${")
-        return unusable ? agentPathProblemMessage : nil
+        AgentSocketPath.problem(path)
     }
 
-    static let agentPathProblemMessage = "The 1Password agent path contains characters ssh can't use."
+    static let agentPathProblemMessage = AgentSocketPath.problemMessage
 
     /// Shown when an agent attempt fails because the agent couldn't be reached or wouldn't sign.
     static let agentUnavailableMessage =
@@ -1161,3 +1161,4 @@ final class ControlMasterRegistry: Sendable {
         }
     }
 }
+#endif

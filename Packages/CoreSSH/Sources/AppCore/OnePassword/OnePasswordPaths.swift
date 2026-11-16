@@ -139,7 +139,7 @@ public enum OnePasswordPaths {
     /// again before ssh starts.
     public static func validateSocketOverride(_ path: String) -> String? {
         guard let path = nonBlank(path) else { return nil }
-        return SystemSSHSession.agentSocketProblem(path)
+        return AgentSocketPath.problem(path)
     }
 
     static func nonBlank(_ text: String?) -> String? {

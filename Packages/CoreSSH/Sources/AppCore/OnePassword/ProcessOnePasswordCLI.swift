@@ -1,3 +1,5 @@
+// Mac-only (and Linux, where the package tests run): iOS has no child processes (Process, forkpty).
+#if os(macOS) || os(Linux)
 import Foundation
 import Synchronization
 #if canImport(Glibc)
@@ -455,3 +457,4 @@ final class ChildProcess: Sendable {
         continuation.resume(returning: result)
     }
 }
+#endif

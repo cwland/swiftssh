@@ -1,3 +1,5 @@
+// Mac-only (and Linux, where the package tests run): iOS has no child processes (Process, forkpty).
+#if os(macOS) || os(Linux)
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -310,3 +312,4 @@ private final class CStringArray {
         pointer.deallocate()
     }
 }
+#endif
