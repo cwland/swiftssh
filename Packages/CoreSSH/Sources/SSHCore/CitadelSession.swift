@@ -261,6 +261,16 @@ public final class CitadelSession: TerminalSession {
                     return .failure(.keyUnreadable)
                 }
             }
+        case .privateKeys(let candidates):
+            // Ed25519 only (Citadel signs RSA with legacy ssh-rsa only); unreadable keys are skipped.
+            let keys = candidates.filter { $0.type == .ed25519 }.compactMap { candidate in
+                try? Curve25519.Signing.PrivateKey(sshEd25519: candidate.pem, decryptionKey: nil)
+            }.prefix(SSHKeyCandidate.maxAttempts)
+            guard !candidates.isEmpty else { return .failure(.authenticationFailed) }
+            guard !keys.isEmpty else { return .failure(.keyUnreadable) }
+            // Immutable key values; swift-crypto does not mark them Sendable on every platform.
+            let wrapped = UncheckedSendable(value: Array(keys))
+            return .success { .custom(KeyCandidatesAuthentication(username: username, keys: wrapped.value)) }
         case .agent:
             // Signing with an agent needs system ssh (plans with an agent credential always use it).
             return .failure(.connectionFailed("The built-in SSH engine can't sign in with an SSH agent."))
@@ -736,7 +746,7 @@ public final class CitadelSession: TerminalSession {
         switch plan.credential {
         case .password(let password): [password].filter { !$0.isEmpty }
         case .privateKey(_, _, let passphrase): [passphrase].compactMap { $0 }.filter { !$0.isEmpty }
-        case .agent, .none: []
+        case .agent, .privateKeys, .none: []
         }
     }
 
@@ -818,7 +828,7 @@ public final class CitadelSession: TerminalSession {
     static func authenticationMethodName(for credential: SSHCredential) -> String {
         switch credential {
         case .password, .none: "password"
-        case .privateKey: "key"
+        case .privateKey, .privateKeys: "key"
         case .agent: "1Password agent"
         }
     }
@@ -1259,6 +1269,28 @@ private final class ReadGate: ChannelOutboundHandler, RemovableChannelHandler {
         }
         // Its job is done: later writes skip it, and the pipeline looks as it did before.
         context.pipeline.syncOperations.removeHandler(context: context, promise: nil)
+    }
+}
+
+/// Offers each key in turn (public key auth), the next one after the server refuses one; fails with
+/// Citadel's "all options failed" (an authentication failure) once every key was refused. One instance
+/// per connection attempt.
+final class KeyCandidatesAuthentication: NIOSSHClientUserAuthenticationDelegate {
+    /// One single-offer Citadel method per key, in order.
+    private var remaining: [SSHAuthenticationMethod]
+
+    init(username: String, keys: [Curve25519.Signing.PrivateKey]) {
+        remaining = keys.prefix(SSHKeyCandidate.maxAttempts).map { .ed25519(username: username, privateKey: $0) }
+    }
+
+    func nextAuthenticationType(availableMethods: NIOSSHAvailableUserAuthenticationMethods,
+                                nextChallengePromise: EventLoopPromise<NIOSSHUserAuthenticationOffer?>) {
+        guard !remaining.isEmpty else {
+            nextChallengePromise.fail(SSHClientError.allAuthenticationOptionsFailed)
+            return
+        }
+        remaining.removeFirst().nextAuthenticationType(availableMethods: availableMethods,
+                                                       nextChallengePromise: nextChallengePromise)
     }
 }
 

@@ -88,7 +88,10 @@ public final class SSHAuthenticationMethod: NIOSSHClientUserAuthenticationDelega
             return
         }
         
-        let implementation = implementations.removeFirst()
+        // PATCH (SwiftSSH): a custom delegate stays in place and is asked again after a refusal, so it can
+        // offer several keys in turn; it fails the promise itself once it has nothing left to offer.
+        let implementation = implementations[0]
+        if case .user = implementation { implementations.removeFirst() }
 
         switch implementation {
         case .user(let username, offer: let offer):

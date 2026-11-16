@@ -401,6 +401,51 @@ final class SessionManagerTests: XCTestCase {
         XCTAssertEqual(storedRecord(host.id), before)
     }
 
+    // MARK: Imported keys (iOS planner)
+
+    private func makeIOSManager(keys: [SSHKeyCandidate]) -> SessionManager {
+        let factory = factory!
+        return SessionManager(vault: vault, knownHosts: store,
+                              makeSession: { plan, evaluator in factory.make(plan, evaluator) },
+                              deviceName: "Test iPhone", defaultUsername: "me", initialSizeTimeout: .zero,
+                              recordsHostUpdates: false,
+                              hostPlanner: { id, vault in
+                                  try ConnectionPlanner.plan(hostID: id, vault: vault, platform: .ios, importedKeys: keys)
+                              })
+    }
+
+    func testIOSAgentHostOffersImportedKeysAndAllRefusedSuggestsImport() async throws {
+        let key = SSHKeyCandidate(type: .ed25519, pem: "PEM", label: "laptop", publicKey: "ssh-ed25519 AAAA")
+        manager = makeIOSManager(keys: [key])
+        factory.onStart = { @Sendable s in s.emit(.closed(.failed(.authenticationFailed))) }
+        let host = vault.saveNow(SavedHost(label: "Web", address: "web.example", username: "root",
+                                           agentKey: AgentKeyChoice(publicKey: nil)))
+        let tab = try manager.open(hostID: host.id)
+        await waitUntil("refused") { if case .disconnected = tab.state { true } else { false } }
+        guard case .privateKeys(let offered) = factory.sessions[0].plan.credential else {
+            return XCTFail("\(factory.sessions[0].plan.credential)")
+        }
+        XCTAssertEqual(offered, [key])
+        XCTAssertEqual(factory.sessions[0].plan.engine, .citadel)
+        XCTAssertEqual(tab.suggestedAction, .importKey)
+        guard case .disconnected(let message?) = tab.state else { return XCTFail("\(tab.state)") }
+        XCTAssertTrue(message.contains("imported"), message)
+        await settle()
+        XCTAssertEqual(factory.sessions.count, 1, "no automatic retry after the keys were refused")
+        XCTAssertNil(tab.autoReconnect)
+    }
+
+    func testIOSAgentHostWithoutImportedKeysOpensNoTab() async throws {
+        manager = makeIOSManager(keys: [])
+        let host = vault.saveNow(SavedHost(label: "Web", address: "web.example", username: "root",
+                                           agentKey: AgentKeyChoice(publicKey: nil)))
+        XCTAssertThrowsError(try manager.open(hostID: host.id)) {
+            XCTAssertEqual($0 as? ConnectionPlanError, .noImportedKeys(hostLabel: "Web"))
+        }
+        XCTAssertTrue(manager.tabs.isEmpty)
+        XCTAssertTrue(factory.sessions.isEmpty)
+    }
+
     func testDetectedBadgeIsNilWhenHostUpdatesAreRecorded() async throws {
         let host = passwordHost(label: "Auto")
         _ = try manager.open(hostID: host.id)

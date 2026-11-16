@@ -315,6 +315,10 @@ fileprivate final class SessionAttempt {
 /// `recordsHostUpdates: false` (iOS, which may hold a stale copy of a host that sync would then spread)
 /// none of these rewrite a synced record: the detected badge is kept in memory (`detectedBadge(hostID:)`)
 /// and shown on tabs; connection logs (new records) are still saved.
+///
+/// Imported keys (iOS): `hostPlanner` plans saved hosts (`ConnectionPlanner.plan(hostID:vault:platform:importedKeys:)`).
+/// When the server refuses every offered key (`.privateKeys`), the tab says so and suggests `.importKey`;
+/// auto-reconnect doesn't retry it.
 @MainActor @Observable
 public final class SessionManager {
     /// Every open tab of every window, in tab bar order (`tabs(inWindow:)` gives one window's).
@@ -369,6 +373,8 @@ public final class SessionManager {
     @ObservationIgnored private var liveAttempts: [ObjectIdentifier: SessionAttempt] = [:]
     /// Hosts whose OS was probed (or is being probed) in this app session.
     @ObservationIgnored private var probedHosts: Set<UUID> = []
+    /// Plans a saved host's connection; nil = `ConnectionPlanner.plan(hostID:vault:)` (the Mac).
+    @ObservationIgnored private let hostPlanner: (@MainActor (UUID, LocalVault) throws -> ConnectionPlan)?
     /// False on iOS: connecting never rewrites a saved host (or identity); see the type's doc.
     @ObservationIgnored private let recordsHostUpdates: Bool
     /// OS badges detected in this app session, kept here instead of on the host when
@@ -387,8 +393,10 @@ public final class SessionManager {
                 opClient: @escaping @MainActor () -> (any OnePasswordCLI)? = { nil },
                 agentKeys: (@Sendable (String) async throws -> [AgentKey])? = nil,
                 terminalType: @escaping @MainActor () -> TerminalType = { .default },
-                recordsHostUpdates: Bool = true) {
+                recordsHostUpdates: Bool = true,
+                hostPlanner: (@MainActor (UUID, LocalVault) throws -> ConnectionPlan)? = nil) {
         self.recordsHostUpdates = recordsHostUpdates
+        self.hostPlanner = hostPlanner
         self.terminalType = terminalType
         self.agentKeys = agentKeys
         self.agentSocket = agentSocket
@@ -411,7 +419,7 @@ public final class SessionManager {
     /// (missing, no address, no username); no tab is created then.
     @discardableResult
     public func open(hostID: UUID) throws -> TerminalTab {
-        let plan = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+        let plan = try planHost(hostID)
         let badge = displayBadge(hostID: hostID)
         return add(TerminalTab(target: .host(hostID), title: plan.label, badge: badge), plan: plan)
     }
@@ -429,7 +437,7 @@ public final class SessionManager {
 
     @discardableResult
     public func open(hostID: UUID, inWindow windowID: UUID?) throws -> TerminalTab {
-        let plan = try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+        let plan = try planHost(hostID)
         let tab = appendTab(hostID: hostID, plan: plan, inWindow: windowID)
         select(tabID: tab.id, inWindow: windowID)
         return tab
@@ -647,7 +655,7 @@ public final class SessionManager {
 
     /// A tab for a saved host that may not be plannable: then it shows as disconnected with the reason.
     func appendTab(hostID: UUID, fallbackTitle: String, inWindow windowID: UUID?) -> TerminalTab {
-        if let plan = try? ConnectionPlanner.plan(hostID: hostID, vault: vault) {
+        if let plan = try? planHost(hostID) {
             return appendTab(hostID: hostID, plan: plan, inWindow: windowID)
         }
         let tab = TerminalTab(target: .host(hostID), title: fallbackTitle, badge: nil)
@@ -667,7 +675,7 @@ public final class SessionManager {
     }
 
     func plan(hostID: UUID) throws -> ConnectionPlan {
-        try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+        try planHost(hostID)
     }
 
     /// Closes every tab of the window (nil = the main window), workspaces included: its window was
@@ -984,7 +992,7 @@ public final class SessionManager {
     public func runOnHosts(_ hostIDs: [UUID], text: String) throws -> [TerminalTab] {
         var seen: Set<UUID> = []
         let ids = hostIDs.filter { seen.insert($0).inserted }
-        let plans = try ids.map { try ConnectionPlanner.plan(hostID: $0, vault: vault) }
+        let plans = try ids.map { try planHost($0) }
         let typed = Self.deliveryText(text, as: .run)
         return zip(ids, plans).map { id, plan in
             let tab = TerminalTab(target: .host(id), title: plan.label, badge: displayBadge(hostID: id))
@@ -1113,7 +1121,7 @@ public final class SessionManager {
             case .password, .none:
                 plan.credential = .password(entered)
                 enteredPassword = entered
-            case .privateKey, .agent:
+            case .privateKey, .privateKeys, .agent:
                 break
             }
         }
@@ -1137,7 +1145,7 @@ public final class SessionManager {
         switch credential {
         case .password(let password): SecretReference.isReference(password)
         case .privateKey(_, _, let passphrase?): SecretReference.isReference(passphrase)
-        case .privateKey, .none, .agent: false
+        case .privateKey, .privateKeys, .none, .agent: false
         }
     }
 
@@ -1180,7 +1188,7 @@ public final class SessionManager {
             return .password(try await client.read(reference: Self.trimmed(reference)))
         case .privateKey(let type, let pem, let passphrase?) where SecretReference.isReference(passphrase):
             return .privateKey(type: type, pem: pem, passphrase: try await client.read(reference: Self.trimmed(passphrase)))
-        case .password, .privateKey, .none, .agent:
+        case .password, .privateKey, .privateKeys, .none, .agent:
             return credential
         }
     }
@@ -1263,10 +1271,16 @@ public final class SessionManager {
         }
     }
 
+    /// The plan for a saved host, from `hostPlanner` when given (iOS: `platform: .ios` with the imported keys).
+    private func planHost(_ hostID: UUID) throws -> ConnectionPlan {
+        if let hostPlanner { return try hostPlanner(hostID, vault) }
+        return try ConnectionPlanner.plan(hostID: hostID, vault: vault)
+    }
+
     private func currentPlan(for target: SessionTarget) throws -> ConnectionPlan {
         switch target {
         case .host(let id):
-            try ConnectionPlanner.plan(hostID: id, vault: vault)
+            try planHost(id)
         case .quickConnect(let quick):
             ConnectionPlanner.plan(quickConnect: quick, defaultUsername: defaultUsername)
         }
@@ -1477,6 +1491,9 @@ public final class SessionManager {
                 return .awaitingPassword(prompt: "Password for \(who) (the saved one was rejected)")
             case .privateKey:
                 return .disconnected("The server rejected the key for \(who).")
+            case .privateKeys:
+                tab.suggestedAction = .importKey
+                return .disconnected("The server didn't accept any of the keys imported on this device for \(who). Import the key this server knows (its public half must be in ~/.ssh/authorized_keys on the server).")
             case .agent:
                 // 1Password may hold another key, be locked, or not have been allowed to sign.
                 tab.suggestedAction = .openOnePasswordSetup

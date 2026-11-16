@@ -26,7 +26,8 @@ struct DisconnectedBanner: View {
                 OpenOnePasswordSetupButton()
             case .chooseOnePasswordVaults?:
                 ChooseVaultsButton()
-            case nil:
+            case .importKey?, nil:
+                // .importKey is iPhone/iPad only (keys imported there); the Mac never suggests it.
                 EmptyView()
             }
             Button("Reconnect", action: reconnect)

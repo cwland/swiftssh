@@ -2,6 +2,8 @@ import AppCore
 import CoreModels
 import Foundation
 import NIOCore
+import NIOPosix
+@preconcurrency import NIOSSH
 import XCTest
 @testable import SSHCore
 
@@ -79,6 +81,59 @@ final class CitadelSessionTests: XCTestCase {
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForFinish()
         XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
+    }
+
+    // MARK: Imported keys (.privateKeys)
+
+    private func candidate(_ key: (privateKey: String, publicKey: String)) -> SSHKeyCandidate {
+        SSHKeyCandidate(type: .ed25519, pem: key.privateKey, label: "k", publicKey: key.publicKey)
+    }
+
+    func testImportedKeysSignInWithTheFirstAcceptedOne() async throws {
+        let refused = SSHKeyGenerator.ed25519(comment: "refused")
+        let accepted = SSHKeyGenerator.ed25519(comment: "accepted")
+        try server.authorize(publicKeyLine: accepted.publicKey)
+        try await assertShellWorks(.privateKeys([candidate((refused.privateKey, refused.publicKey)),
+                                                 candidate((accepted.privateKey, accepted.publicKey))]))
+    }
+
+    func testImportedKeysAllRefusedFailsWithAuthenticationFailed() async throws {
+        let keys = (1...3).map { _ in SSHKeyGenerator.ed25519(comment: "stranger") }
+        let session = CitadelSession(plan: plan(.privateKeys(keys.map { candidate(($0.privateKey, $0.publicKey)) })),
+                                     hostKeys: TestEvaluator(decision: .trusted))
+        let recorder = EventRecorder(session.events)
+        await session.start(cols: 80, rows: 24)
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.authenticationFailed))])
+    }
+
+    func testImportedKeysOfferAtMostFive() throws {
+        let keys = (1...7).map { _ in SSHKeyGenerator.ed25519(comment: "k") }
+        guard case .success(let factory) = CitadelSession.authenticationFactory(
+            for: plan(.privateKeys(keys.map { candidate(($0.privateKey, $0.publicKey)) }))) else { return XCTFail() }
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        defer { try? group.syncShutdownGracefully() }
+        let loop = group.next()
+        let delegate = factory()
+        var offers = 0
+        while offers < 10 {
+            let promise = loop.makePromise(of: NIOSSHUserAuthenticationOffer?.self)
+            loop.execute { delegate.nextAuthenticationType(availableMethods: .all, nextChallengePromise: promise) }
+            guard (try? promise.futureResult.wait()) != nil else { break }
+            offers += 1
+        }
+        XCTAssertEqual(offers, SSHKeyCandidate.maxAttempts)
+    }
+
+    func testImportedKeysThatCantBeReadAreReportedBeforeConnecting() throws {
+        let unreadable = SSHKeyCandidate(type: .ed25519, pem: "not a key", label: "k", publicKey: "ssh-ed25519 AAAA")
+        let rsa = SSHKeyCandidate(type: .rsa, pem: "rsa", label: "k", publicKey: "ssh-rsa AAAA")
+        guard case .failure(.keyUnreadable) = CitadelSession.authenticationFactory(for: plan(.privateKeys([unreadable, rsa]))) else {
+            return XCTFail()
+        }
+        guard case .failure(.authenticationFailed) = CitadelSession.authenticationFactory(for: plan(.privateKeys([]))) else {
+            return XCTFail()
+        }
     }
 
     func testWrongPasswordFailsWithAuthenticationFailed() async throws {

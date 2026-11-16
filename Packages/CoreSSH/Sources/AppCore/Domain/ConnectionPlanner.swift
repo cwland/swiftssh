@@ -16,6 +16,10 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
     case missingUsername(UsernameSource)
     /// The host is set to use an identity, but none is in effect (none chosen, or the chosen one is gone).
     case identityNotChosen(hostLabel: String)
+    /// iPhone/iPad: the host signs in with a 1Password SSH key, and no usable key is imported on this device.
+    case noImportedKeys(hostLabel: String)
+    /// iPhone/iPad: the host signs in with an RSA key, which the built-in engine can't use.
+    case rsaUnsupported(hostLabel: String)
 
     /// Title for the alert that shows this error.
     public var alertTitle: String { "Can't connect" }
@@ -30,6 +34,10 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
             "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} is set to use an identity, but none is chosen. Choose an identity in Host Details."
         case .missingUsername(.host(let label)):
             "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} has no username. Add one in Host Details."
+        case .noImportedKeys(let label):
+            "\u{201C}\(Self.display(label, fallback: "Untitled host"))\u{201D} signs in with an SSH key from 1Password. Import that key on this device first: export it from 1Password, then use Import Key in Keys."
+        case .rsaUnsupported:
+            "RSA keys aren't supported on iPhone/iPad yet; use an Ed25519 key."
         }
     }
 
@@ -39,6 +47,12 @@ public enum ConnectionPlanError: Error, Equatable, LocalizedError {
     }
 }
 
+/// Which app a plan is for: the Mac (both engines, 1Password's agent) or iPhone/iPad (the built-in
+/// engine only, keys imported on the device instead of an agent, no RSA keys).
+public enum ConnectionPlatform: Sendable, Equatable {
+    case mac, ios
+}
+
 public enum ConnectionPlanner {
     /// Builds the plan for a saved host. Credentials come from `CredentialResolution` (explicit
     /// identity > host's direct credentials > group default identity); whatever is still missing is
@@ -46,6 +60,18 @@ public enum ConnectionPlanner {
     /// credential is `.none` and its engine `.systemSSH`.
     @MainActor
     public static func plan(hostID: UUID, vault: LocalVault) throws -> ConnectionPlan {
+        try plan(hostID: hostID, vault: vault, platform: .mac, importedKeys: [])
+    }
+
+    /// The plan for `platform`. `.mac` is `plan(hostID:vault:)` (`importedKeys` unused). `.ios` always uses
+    /// the built-in engine (`useSystemSSH` is ignored) and:
+    /// - a host or identity using a 1Password agent key gets `.privateKeys` from `importedKeys` (Ed25519
+    ///   only): the one matching the pinned public key first, then the others in order, at most
+    ///   `SSHKeyCandidate.maxAttempts`; `agentKey` stays nil. None usable → `.noImportedKeys`.
+    /// - an RSA private key → `.rsaUnsupported`.
+    @MainActor
+    public static func plan(hostID: UUID, vault: LocalVault, platform: ConnectionPlatform,
+                            importedKeys: [SSHKeyCandidate]) throws -> ConnectionPlan {
         guard let host = vault.get(SavedHost.self, id: hostID) else { throw ConnectionPlanError.hostNotFound }
         let address = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !address.isEmpty else { throw ConnectionPlanError.missingAddress }
@@ -65,6 +91,11 @@ public enum ConnectionPlanner {
             throw ConnectionPlanError.missingUsername(.host(label: host.label))
         }
 
+        if platform == .ios {
+            return try iosPlan(host: host, address: address, username: username, resolved: resolved,
+                               directory: directory, vault: vault, importedKeys: importedKeys)
+        }
+
         let credential: SSHCredential
         if let key {
             credential = .privateKey(type: key.keyType, pem: key.privateKey, passphrase: key.passphrase)
@@ -80,16 +111,51 @@ public enum ConnectionPlanner {
         // Only system ssh signs with an agent; the session manager fills in the socket at connect time.
         if resolved.agentKey != nil { engine = .systemSSH }
 
-        // A snippet with {{placeholders}} can't be filled at startup: don't type it with the braces.
-        // The host's own snippet, else its nearest group's (see `HostDirectory.effectiveStartupSnippetID`).
-        let script = directory.effectiveStartupSnippetID(for: host) { vault.get(Snippet.self, id: $0) != nil }
-            .flatMap { vault.get(Snippet.self, id: $0)?.script }
-            .flatMap { SnippetTemplate($0).hasPlaceholders ? nil : $0 }
-
         return ConnectionPlan(hostID: host.id, label: host.label, host: address,
                               port: directory.effectivePort(for: host), username: username,
-                              credential: credential, engine: engine, startupScript: script,
+                              credential: credential, engine: engine,
+                              startupScript: startupScript(for: host, directory: directory, vault: vault),
                               agentKey: resolved.agentKey)
+    }
+
+    @MainActor
+    private static func iosPlan(host: SavedHost, address: String, username: String, resolved: CredentialResolution,
+                                directory: HostDirectory, vault: LocalVault,
+                                importedKeys: [SSHKeyCandidate]) throws -> ConnectionPlan {
+        let credential: SSHCredential
+        if let agentKey = resolved.agentKey {
+            let usable = importedKeys.filter { $0.type == .ed25519 }
+            guard !usable.isEmpty else { throw ConnectionPlanError.noImportedKeys(hostLabel: host.label) }
+            credential = .privateKeys(Array(ordered(usable, pinned: agentKey.publicKey).prefix(SSHKeyCandidate.maxAttempts)))
+        } else if let key = resolved.key {
+            guard key.keyType != .rsa else { throw ConnectionPlanError.rsaUnsupported(hostLabel: host.label) }
+            credential = .privateKey(type: key.keyType, pem: key.privateKey, passphrase: key.passphrase)
+        } else if let password = resolved.password {
+            credential = .password(password)
+        } else {
+            credential = .none
+        }
+        return ConnectionPlan(hostID: host.id, label: host.label, host: address,
+                              port: directory.effectivePort(for: host), username: username,
+                              credential: credential, engine: .citadel,
+                              startupScript: startupScript(for: host, directory: directory, vault: vault))
+    }
+
+    /// The key matching `pinned` (by type and key, ignoring comments) first, then the rest in order.
+    static func ordered(_ keys: [SSHKeyCandidate], pinned: String?) -> [SSHKeyCandidate] {
+        guard let pinned else { return keys }
+        let identity = SSHKeyCandidate.keyIdentity(pinned)
+        let isPinned: (SSHKeyCandidate) -> Bool = { SSHKeyCandidate.keyIdentity($0.publicKey) == identity }
+        return keys.filter(isPinned) + keys.filter { !isPinned($0) }
+    }
+
+    /// A snippet with {{placeholders}} can't be filled at startup: don't type it with the braces.
+    /// The host's own snippet, else its nearest group's (see `HostDirectory.effectiveStartupSnippetID`).
+    @MainActor
+    private static func startupScript(for host: SavedHost, directory: HostDirectory, vault: LocalVault) -> String? {
+        directory.effectiveStartupSnippetID(for: host) { vault.get(Snippet.self, id: $0) != nil }
+            .flatMap { vault.get(Snippet.self, id: $0)?.script }
+            .flatMap { SnippetTemplate($0).hasPlaceholders ? nil : $0 }
     }
 
     public static func plan(quickConnect target: QuickConnectTarget, defaultUsername: String) -> ConnectionPlan {

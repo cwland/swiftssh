@@ -324,7 +324,7 @@ public final class SystemSSHSession: TerminalSession {
                     return
                 }
                 agentKeyFile = try track(runtime.writePublicKey(line))
-            case .agent(_, nil):
+            case .agent(_, nil), .privateKeys:
                 break
             case .password(let password):
                 secretFile = try track(runtime.writeSecret(password))
@@ -373,7 +373,8 @@ public final class SystemSSHSession: TerminalSession {
         case .password: auth = .password
         case .privateKey: auth = keyFile.map(AuthArguments.key) ?? .none
         case .agent(let socket, _): auth = .agent(socket: socket, publicKeyFile: agentKeyFile)
-        case .none: auth = .none
+        // Imported keys (iPhone/iPad) are for the built-in engine only; the planner never routes them here.
+        case .privateKeys, .none: auth = .none
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
                                           knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms,
@@ -638,7 +639,7 @@ public final class SystemSSHSession: TerminalSession {
         switch plan.credential {
         case .password(let password): [password].filter { !$0.isEmpty }
         case .privateKey(_, _, let passphrase): [passphrase ?? ""].filter { !$0.isEmpty }
-        case .agent, .none: []
+        case .agent, .privateKeys, .none: []
         }
     }
 

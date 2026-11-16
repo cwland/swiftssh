@@ -12,6 +12,9 @@ public enum SSHCredential: Sendable, CustomStringConvertible, CustomDebugStringC
     /// Sign in with the keys of an SSH agent (1Password's) at `socketPath`, through system ssh only.
     /// `publicKey` ("type base64 comment") pins one agent key; nil lets the agent offer any key.
     case agent(socketPath: String, publicKey: String?)
+    /// Sign in with the first of these keys the server accepts, offered in order (built-in engine only,
+    /// Ed25519; at most `SSHKeyCandidate.maxAttempts`). Used on iPhone/iPad for keys imported there.
+    case privateKeys([SSHKeyCandidate])
     case none
 
     /// Secrets are never printed; of a pinned agent key only its type is.
@@ -23,6 +26,8 @@ public enum SSHCredential: Sendable, CustomStringConvertible, CustomDebugStringC
             "privateKey(type: \(type.rawValue), pem: <redacted>, passphrase: \(passphrase == nil ? "nil" : "<redacted>"))"
         case .agent(let socketPath, let publicKey):
             "agent(socketPath: \(socketPath), publicKey: \(publicKey.map { Self.keyType(of: $0) + " <pinned>" } ?? "nil"))"
+        case .privateKeys(let keys):
+            "privateKeys(\(keys.count) keys: <redacted>)"
         case .none:
             "none"
         }
@@ -32,6 +37,36 @@ public enum SSHCredential: Sendable, CustomStringConvertible, CustomDebugStringC
         publicKeyLine.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? "?"
     }
 
+    public var debugDescription: String { description }
+}
+
+/// A private key offered by `SSHCredential.privateKeys`. Neither the key nor its public half is ever printed.
+public struct SSHKeyCandidate: Sendable, Equatable, CustomStringConvertible, CustomDebugStringConvertible {
+    /// The most keys one connection offers: servers count each refused key as a failed login
+    /// (OpenSSH's default `MaxAuthTries` is 6).
+    public static let maxAttempts = 5
+
+    public let type: KeyType
+    /// The unencrypted private key (OpenSSH format).
+    public let pem: String
+    /// The name shown for the key (not secret, but not printed either).
+    public let label: String
+    /// The public key, "type base64" (a trailing comment is allowed), to match a host's pinned key.
+    public let publicKey: String
+
+    public init(type: KeyType, pem: String, label: String, publicKey: String) {
+        self.type = type
+        self.pem = pem
+        self.label = label
+        self.publicKey = publicKey
+    }
+
+    /// "type base64" of `publicKey` (or of any public key line), without a comment.
+    public static func keyIdentity(_ publicKeyLine: String) -> String {
+        publicKeyLine.split(whereSeparator: \.isWhitespace).prefix(2).joined(separator: " ")
+    }
+
+    public var description: String { "SSHKeyCandidate(type: \(type.rawValue), <redacted>)" }
     public var debugDescription: String { description }
 }
 
