@@ -2,7 +2,8 @@ name: release
 
 # Builds SwiftSSH on a GitHub Mac and publishes a .dmg on a GitHub Release.
 #   Push a tag:   git tag v1.0.0 && git push origin v1.0.0
-#   Or run it by hand (Actions -> release -> Run workflow) to get the .dmg as an artifact only.
+#   A "build-*" tag (e.g. build-0.12.0-1) builds the .dmg as an artifact only, without a release:
+#   a compile check of a branch on a real Mac. Actions -> release -> Run workflow does the same.
 #
 # Signing and notarization use these repository secrets when they exist (otherwise the .dmg is
 # ad-hoc signed and macOS shows its "unidentified developer" warning):
@@ -15,7 +16,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "build-*"]
   workflow_dispatch:
 
 permissions:
