@@ -200,7 +200,8 @@ final class IOSEnvironment {
     }
 
     /// A key file opened in SwiftSSH ("Open in SwiftSSH", the share sheet, Files): read it and hand
-    /// it to the Keys screen's import form. iOS gives the app its own copy (in Documents/Inbox); that
+    /// it to the Keys screen's import form. iOS gives the app its own copy (Documents/Inbox or
+    /// tmp/<bundle id>-Inbox); that
     /// copy is deleted at once, so no private key is left on disk outside the Keychain.
     func openKeyFile(_ url: URL) {
         guard url.isFileURL else { return }
@@ -215,11 +216,11 @@ final class IOSEnvironment {
         navigation.openKeyFile(data: data, name: url.lastPathComponent)
     }
 
-    /// Whether `url` is the app's own copy of an opened file (Documents/Inbox).
+    /// Whether `url` is the app's own copy of an opened file (Documents/Inbox, or tmp/<bundle id>-Inbox).
     private static func isInboxCopy(_ url: URL) -> Bool {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return false }
-        let inbox = documents.appendingPathComponent("Inbox", isDirectory: true).standardizedFileURL.path
-        return url.standardizedFileURL.path.hasPrefix(inbox + "/")
+        return OpenedKeyFile.isAppOwnedCopy(url, documentsDirectory: documents,
+                                            temporaryDirectory: FileManager.default.temporaryDirectory)
     }
 
     // MARK: Lifecycle

@@ -58,6 +58,35 @@ public struct CompanionSidebarCounts: Equatable, Sendable {
     }
 }
 
+/// A file opened in the iPhone/iPad app ("Open in SwiftSSH", the share sheet). With
+/// `LSSupportsOpeningDocumentsInPlace` off, iOS hands the app its own copy: in `Documents/Inbox`, or
+/// (current iOS versions) in `tmp/<bundle id>-Inbox`. That copy holds a private key, so the app deletes
+/// it as soon as it is read.
+public enum OpenedKeyFile {
+    /// Whether `url` is the app's own copy of an opened file: inside `Documents/Inbox` or anywhere in
+    /// the app's temporary directory. Symlinks are resolved on both sides (iOS hands out
+    /// `/private/var/…` paths for a container that `FileManager` names `/var/…`), and `..` can't
+    /// step out of those folders.
+    public static func isAppOwnedCopy(_ url: URL, documentsDirectory: URL, temporaryDirectory: URL) -> Bool {
+        guard url.isFileURL else { return false }
+        let file = resolved(url)
+        let inboxes = [resolved(documentsDirectory.appendingPathComponent("Inbox", isDirectory: true)),
+                       resolved(temporaryDirectory)]
+        return inboxes.contains { folder in
+            let prefix = folder.hasSuffix("/") ? folder : folder + "/"
+            return file.hasPrefix(prefix) && file.count > prefix.count
+        }
+    }
+
+    /// The path with `..` removed and symlinks resolved. A file that no longer exists still resolves
+    /// through its folder.
+    private static func resolved(_ url: URL) -> String {
+        let standard = url.standardizedFileURL
+        let folder = standard.deletingLastPathComponent().resolvingSymlinksInPath()
+        return folder.appendingPathComponent(standard.lastPathComponent).path
+    }
+}
+
 /// Where the iPhone/iPad app is: the section shown (iPad sidebar selection; on iPhone the screen
 /// pushed over Hosts, `phonePath`), and requests from keyboard shortcuts and other screens (search
 /// the hosts, quick connect, import a key). Sessions are selected through `SessionManager`
