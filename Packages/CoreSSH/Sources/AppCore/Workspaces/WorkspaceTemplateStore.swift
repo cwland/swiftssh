@@ -147,10 +147,22 @@ public final class WorkspaceTemplateStore {
 
     public init(fileURL: URL) {
         self.fileURL = fileURL
-        guard let data = try? Data(contentsOf: fileURL) else { return }
+        reload()
+    }
+
+    /// Reads the file again (the app calls this after the first-launch migration copied it in).
+    /// A missing file is an empty store; an unreadable one too, kept aside at the next write.
+    public func reload() {
+        guard let data = try? Data(contentsOf: fileURL) else {
+            templates = []
+            fileIsCorrupt = false
+            return
+        }
         do {
             templates = try JSONDecoder().decode(FileContents.self, from: data).templates.compactMap(\.template)
+            fileIsCorrupt = false
         } catch {
+            templates = []
             fileIsCorrupt = true
         }
     }

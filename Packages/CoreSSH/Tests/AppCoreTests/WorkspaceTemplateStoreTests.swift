@@ -76,6 +76,27 @@ final class WorkspaceTemplateStoreTests: XCTestCase {
         XCTAssertEqual(WorkspaceTemplateStore(fileURL: fileURL).templates, [])
     }
 
+    func testReloadPicksUpAFileThatAppearedAfterInit() async throws {
+        // The rebrand migration copies workspaces.json after the store was created at launch.
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        XCTAssertEqual(store.templates, [])
+        let (ws, _, _) = try sampleWorkspace()
+        let saved = try WorkspaceTemplateStore(fileURL: fileURL).save(ws, sessions: manager)
+        store.reload()
+        XCTAssertEqual(store.templates, [saved])
+    }
+
+    func testReloadOfACorruptFileKeepsItAside() async throws {
+        let store = WorkspaceTemplateStore(fileURL: fileURL)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("{ not json".utf8).write(to: fileURL)
+        store.reload()
+        XCTAssertEqual(store.templates, [])
+        let (ws, _, _) = try sampleWorkspace()
+        try store.save(ws, sessions: manager)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.appendingPathExtension("corrupt").path))
+    }
+
     func testSaveWritesTheLayoutAndReadsBack() async throws {
         let (ws, a, b) = try sampleWorkspace()
         let store = WorkspaceTemplateStore(fileURL: fileURL)
