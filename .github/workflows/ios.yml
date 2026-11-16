@@ -12,7 +12,7 @@ name: ios
 
 on:
   push:
-    branches: [ios]
+    branches: [main, ios]
   workflow_dispatch:
 
 permissions:
