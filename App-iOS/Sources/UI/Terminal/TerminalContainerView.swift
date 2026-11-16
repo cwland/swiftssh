@@ -194,12 +194,8 @@ final class TerminalBridge: TerminalViewDelegate {
 
     func bell(source: TerminalView) {}
 
-    /// OSC 52: the program put text on the clipboard.
-    func clipboardCopy(source: TerminalView, content: Data) {
-        if let text = String(data: content, encoding: .utf8) {
-            UIPasteboard.general.string = text
-        }
-    }
+    // OSC 52 clipboard writes from the server keep SwiftTerm's default (ignored), as on the Mac: a
+    // remote program never replaces what is on this device's clipboard.
 }
 
 /// SwiftTerm's iOS view plus: the size is reported as soon as the layout gives it one; the theme and
