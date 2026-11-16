@@ -23,13 +23,18 @@ enum KeychainError: Error, Equatable, LocalizedError {
 /// Keeps the local vault's 32-byte key as a generic password in the login keychain
 /// (not synchronizable). Reads first; creates a random key only when the item does not exist.
 /// Any other failure throws, so an existing vault is never orphaned by a fresh key.
+/// Also used by the iPhone/iPad app (App-iOS/project.yml), which keeps the key on that device only.
 struct KeychainVaultKeyProvider: VaultKeyProvider {
     let service: String
     let account: String
+    /// A new item is readable after the first unlock on this device only (never in a device
+    /// backup restored elsewhere). False on the Mac, as before.
+    let thisDeviceOnly: Bool
 
-    init(service: String = "com.cwland.SwiftSSH", account: String = "local-vault-key") {
+    init(service: String = "com.cwland.SwiftSSH", account: String = "local-vault-key", thisDeviceOnly: Bool = false) {
         self.service = service
         self.account = account
+        self.thisDeviceOnly = thisDeviceOnly
     }
 
     func loadOrCreateKey() throws -> VaultKey {
@@ -52,7 +57,8 @@ struct KeychainVaultKeyProvider: VaultKeyProvider {
 
         var attributes = baseQuery()
         attributes[kSecValueData as String] = data
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        attributes[kSecAttrAccessible as String] = thisDeviceOnly
+            ? kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly : kSecAttrAccessibleAfterFirstUnlock
         attributes[kSecAttrLabel as String] = "SwiftSSH vault key"
 
         let addStatus = SecItemAdd(attributes as CFDictionary, nil)

@@ -1,0 +1,85 @@
+name: SwiftSSHMobile
+
+# SwiftSSH for iPhone and iPad (universal, iOS/iPadOS 18). Generate with `xcodegen` in this folder.
+# Package versions: copy ../App/Package.resolved into
+# SwiftSSHMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/ (CI does), so both apps build
+# the same versions.
+
+options:
+  bundleIdPrefix: com.cwland
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+
+packages:
+  CoreSSH:
+    path: ../Packages/CoreSSH
+  SwiftSSHUI:
+    path: ../Packages/SwiftSSHUI
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    minorVersion: 1.99.3
+
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: 7C54KH5NDL
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  SwiftSSHMobile:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: Sources
+      - path: Resources
+      # Shared with the Mac app: the Keychain items for the vault key and the sync secrets.
+      - path: ../App/Sources/Platform/KeychainVaultKeyProvider.swift
+        group: Sources/Platform/Shared
+      - path: ../App/Sources/Platform/KeychainSyncSecretsStore.swift
+        group: Sources/Platform/Shared
+    settings:
+      base:
+        PRODUCT_NAME: SwiftSSH
+        PRODUCT_BUNDLE_IDENTIFIER: com.cwland.SwiftSSH.mobile
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        # Fragment merged with the generated Info.plist (carries NSAppTransportSecurity only).
+        INFOPLIST_FILE: Info.plist
+        INFOPLIST_KEY_CFBundleDisplayName: "SwiftSSH"
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "SwiftSSH uses Face ID to unlock the app and your imported SSH keys."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "SwiftSSH connects to your SSH servers and your sync server on the local network."
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    dependencies:
+      - package: CoreSSH
+        product: AppCore
+      - package: CoreSSH
+        product: CoreModels
+      - package: CoreSSH
+        product: SyncCore
+      - package: CoreSSH
+        product: SSHCore
+      - package: SwiftSSHUI
+        product: SwiftSSHUI
+      - package: SwiftTerm
+        product: SwiftTerm
+
+schemes:
+  SwiftSSHMobile:
+    build:
+      targets:
+        SwiftSSHMobile: all
+    run:
+      config: Debug
+    archive:
+      config: Release
