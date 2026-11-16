@@ -55,7 +55,8 @@ struct SwiftSSHApp: App {
 }
 
 /// Keyboard commands for terminal tabs, acting on the focused window's tabs (`WindowScope`): Cmd+W
-/// closes the selected tab, or a workspace's focused pane (or the window on Vaults), Cmd+1 shows Vaults,
+/// closes the selected tab, or a workspace's focused pane (or the window on Vaults, or Settings when it
+/// is in front), Cmd+1 shows Vaults,
 /// Cmd+2…9 select tab bar items (a workspace counts as one), Cmd+Shift+[ / ] the previous and next item,
 /// Cmd+R reconnects a disconnected tab, Cmd+. shows or hides the selected tab's snippets panel. In a
 /// workspace: Cmd+B broadcast input, Cmd+Shift+M Focus mode / Split view, Cmd+S Save Workspace.
@@ -66,7 +67,8 @@ private struct SessionCommands: Commands {
     @FocusedValue(\.historyPanelToggle) private var historyPanel
 
     var body: some Commands {
-        // Replaces the standard File > Close (Cmd+W).
+        // Replaces the standard File > Close (Cmd+W). With Settings in front it closes Settings
+        // (`closeSelectedTabOrWindow` checks the key window), never a tab behind it.
         CommandGroup(replacing: .saveItem) {
             Button(workspace == nil ? "Close" : "Close Pane") {
                 environment.closeSelectedTabOrWindow(in: scope)
