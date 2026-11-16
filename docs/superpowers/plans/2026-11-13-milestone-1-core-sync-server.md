@@ -90,7 +90,7 @@ Server/
 ```swift
 func testEveryModelRoundTripsThroughJSON()   // encode/decode each struct with non-default values; XCTAssertEqual(decoded, original)
 func testRecordTypesAreUniquePerModel()      // Set of [Host.recordType, HostGroup.recordType, …].count == SyncRecordType.allCases.count
-func testHostDefaults() { let h = Host(label: "Docker", address: "192.168.50.10"); XCTAssertNil(h.port); XCTAssertEqual(h.tags, []); XCTAssertFalse(h.deleted) }
+func testHostDefaults() { let h = Host(label: "Docker", address: "192.168.99.10"); XCTAssertNil(h.port); XCTAssertEqual(h.tags, []); XCTAssertFalse(h.deleted) }
 ```
 
 Use an `ISO8601`-free `JSONEncoder` with `.dateEncodingStrategy = .millisecondsSince1970`; expose it as `CoreJSON.encoder` / `CoreJSON.decoder` in `SyncableModel.swift` so every module encodes the same way.
@@ -127,7 +127,7 @@ func testIdentityAndThemeInheritOneSettingAtATime() // group sets identity only,
 func testGroupCycleDoesNotHang()                    // A.parent = B, B.parent = A → effectivePort returns 22
 func testHostsInGroupIncludesSubgroups()            // host in child group appears in hosts(inGroup: parent.id)
 func testTagFilterRequiresAllTags()                 // tags ["prod","docker"] → only hosts having both
-func testSearchMatchesLabelAddressUsernameAndTag()  // "pihole", "192.168.50", "root", "docker" each find the right hosts, case-insensitive
+func testSearchMatchesLabelAddressUsernameAndTag()  // "pihole", "192.168.99", "root", "docker" each find the right hosts, case-insensitive
 func testDeletedRecordsAreIgnored()
 func testNextUpdateBeatsPreviousEvenWhenClockIsBehind() // previous = now + 300s → result > previous
 func testNextUpdateUsesNowWhenAhead()               // previous = now - 60s → result == now
@@ -168,7 +168,7 @@ func testSameInputsDeriveSameKey()             // deterministic for passphrase+s
 func testSealOpenRoundTrip()
 func testOpenFailsWhenIdOrTypeDiffers()        // sealed for (id1,.host), open with (id2,.host) and (id1,.snippet) → .tamperedRecord
 func testSealingTwiceGivesDifferentCiphertext() // fresh nonce each time
-func testCiphertextDoesNotContainPlaintext()   // seal "192.168.50.200"; ciphertext.range(of: Data("192.168".utf8)) == nil
+func testCiphertextDoesNotContainPlaintext()   // seal "192.168.99.200"; ciphertext.range(of: Data("192.168".utf8)) == nil
 ```
 
 - [ ] **Step 2: Run to verify failure** — `swift test --filter VaultCryptoTests`.
@@ -363,8 +363,8 @@ func testURLJoiningHandlesTrailingSlash()   // "http://nas:8080/" and "http://na
 
 // EndToEndTests — start the app with app.testable(method: .running(port: 0)) on an in-memory DB,
 // two SyncEngines with in-memory stores (reuse the fake store, moved to a small `SyncTestSupport` test-helper target if needed)
-func testTwoMacsSyncThroughRealServer()           // A creates vault, adds Host(address: "192.168.50.200"); B joins, syncs, sees it
-func testServerStoresNoPlaintext()                // after sync, scan every RecordRow.ciphertext and VaultRow for "192.168.50.200", the host label and the password → none found
+func testTwoMacsSyncThroughRealServer()           // A creates vault, adds Host(address: "192.168.99.200"); B joins, syncs, sees it
+func testServerStoresNoPlaintext()                // after sync, scan every RecordRow.ciphertext and VaultRow for "192.168.99.200", the host label and the password → none found
 func testWrongAPIKeyFailsClearly()                // transport with bad key → SyncTransportError.unauthorized
 ```
 

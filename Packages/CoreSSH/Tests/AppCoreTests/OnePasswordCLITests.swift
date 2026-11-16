@@ -67,7 +67,7 @@ private let baseEnvironment = [
 private let itemListJSON = """
 [
   {
-    "id": "u3xkqzq2ozhl4ye6ojxbs5ycyy",
+    "id": "abcdefghijklmnopqrstuvwxyz",
     "title": "web.example root",
     "version": 3,
     "vault": { "id": "kzz3xbmyq5ezlnuojlf4ddmtmu", "name": "Private" },
@@ -612,7 +612,7 @@ final class OnePasswordCLITests: XCTestCase {
         let items = try await cli(op).listItems()
         XCTAssertEqual(op.argv, ["item", "list", "--format", "json"])
         XCTAssertEqual(items, [
-            OnePasswordItemSummary(id: "u3xkqzq2ozhl4ye6ojxbs5ycyy", title: "web.example root", vault: "Private",
+            OnePasswordItemSummary(id: "abcdefghijklmnopqrstuvwxyz", title: "web.example root", vault: "Private",
                                    vaultID: "kzz3xbmyq5ezlnuojlf4ddmtmu", category: "LOGIN"),
             OnePasswordItemSummary(id: "7kb2tbkqrnbx5aq3yzz5yrgkfe", title: "Homelab key", vault: "Homelab",
                                    vaultID: "zr4rnryd5wfhpxjsdlvx2cdh5e", category: "SSH_KEY"),
@@ -639,13 +639,13 @@ final class OnePasswordCLITests: XCTestCase {
 
     func testFieldsAreBuiltWithoutRunningOp() async throws {
         let op = try fake("exit 0")
-        let fields = try await cli(op).fields(itemID: "u3xkqzq2ozhl4ye6ojxbs5ycyy", vault: "Private")
+        let fields = try await cli(op).fields(itemID: "abcdefghijklmnopqrstuvwxyz", vault: "Private")
         XCTAssertNil(op.argv, "no op call: values are never fetched for the picker")
         XCTAssertEqual(fields, [
             OnePasswordField(id: "password", label: "password",
-                             reference: "op://Private/u3xkqzq2ozhl4ye6ojxbs5ycyy/password", isSecret: true),
+                             reference: "op://Private/abcdefghijklmnopqrstuvwxyz/password", isSecret: true),
             OnePasswordField(id: "username", label: "username",
-                             reference: "op://Private/u3xkqzq2ozhl4ye6ojxbs5ycyy/username", isSecret: false),
+                             reference: "op://Private/abcdefghijklmnopqrstuvwxyz/username", isSecret: false),
         ])
     }
 

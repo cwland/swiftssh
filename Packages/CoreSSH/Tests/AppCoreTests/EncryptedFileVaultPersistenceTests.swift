@@ -22,7 +22,7 @@ final class EncryptedFileVaultPersistenceTests: XCTestCase {
 
     private func newKey() -> VaultKey { VaultKey(VaultCrypto.newVaultKey()) }
 
-    private func sampleContents(address: String = "192.168.50.200", password: String = "hunter2") throws -> VaultFileContents {
+    private func sampleContents(address: String = "192.168.99.200", password: String = "hunter2") throws -> VaultFileContents {
         var host = Host(label: "box", address: address, password: password)
         host.updatedAt = Date(timeIntervalSince1970: 1_700_000_000) // whole ms, survives CoreJSON
         let record = try PlainRecord(host, deviceID: "dev-1")
@@ -42,7 +42,7 @@ final class EncryptedFileVaultPersistenceTests: XCTestCase {
         try await p.save(try sampleContents())
         let raw = try Data(contentsOf: fileURL)
         XCTAssertFalse(raw.isEmpty)
-        XCTAssertNil(raw.range(of: Data("192.168.50.200".utf8)))
+        XCTAssertNil(raw.range(of: Data("192.168.99.200".utf8)))
         XCTAssertNil(raw.range(of: Data("hunter2".utf8)))
     }
 

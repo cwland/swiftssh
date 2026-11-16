@@ -419,7 +419,7 @@ final class KeywordHighlighterTests: XCTestCase {
 
     func testIPv4() {
         XCTAssertEqual(run("ping 8.8.8.8\n"), "ping \(wrap("8.8.8.8", .network))\n")
-        XCTAssertEqual(run("192.168.50.197\n"), "\(wrap("192.168.50.197", .network))\n")
+        XCTAssertEqual(run("192.168.99.197\n"), "\(wrap("192.168.99.197", .network))\n")
         XCTAssertEqual(run("net 10.0.0.0/24\n"), "net \(wrap("10.0.0.0", .network))/24\n")
         XCTAssertEqual(run("to 127.0.0.1:8080 ok\n"), "to \(wrap("127.0.0.1", .network)):8080 \(wrap("ok", .ok))\n")
         XCTAssertEqual(run("(255.255.255.0)\n"), "(\(wrap("255.255.255.0", .network)))\n")
@@ -581,7 +581,7 @@ final class KeywordHighlighterTests: XCTestCase {
 
     func testPerformanceOneMegabyteOfLogText() {
         let lines = [
-            "2026-11-15T00:23:01Z INFO  sshd[1234]: Accepted publickey for cory from 192.168.50.10 port 52311 ssh2\n",
+            "2026-11-15T00:23:01Z INFO  sshd[1234]: Accepted publickey for cory from 192.168.99.10 port 52311 ssh2\n",
             "2026-11-15T00:23:02Z ERROR kernel: eth0 aa:bb:cc:dd:ee:ff link failed, retrying (attempt 3)\n",
             "2026-11-15T00:23:03Z \u{1B}[33mWARN\u{1B}[0m  docker: container web is running; deprecated flag --link\n",
             "2026-11-15T00:23:04Z DEBUG resolver: fe80::1ff:fe23:4567:890a -> ok, cache hit ratio 0.93\n",

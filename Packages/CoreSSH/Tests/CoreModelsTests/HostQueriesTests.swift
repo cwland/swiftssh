@@ -68,12 +68,12 @@ final class HostQueriesTests: XCTestCase {
 
     func testSearchMatchesLabelAddressUsernameAndTag() {
         let pihole = Host(label: "PiHole", address: "10.0.0.2")
-        let lan = Host(label: "nas", address: "192.168.50.7")
+        let lan = Host(label: "nas", address: "192.168.99.7")
         let admin = Host(label: "box", address: "10.0.0.3", username: "root")
         let tagged = Host(label: "svc", address: "10.0.0.4", tags: ["Docker"])
         let dir = HostDirectory(hosts: [pihole, lan, admin, tagged], groups: [])
         XCTAssertEqual(dir.filter(tags: [], search: "pihole").map(\.id), [pihole.id])
-        XCTAssertEqual(dir.filter(tags: [], search: "192.168.50").map(\.id), [lan.id])
+        XCTAssertEqual(dir.filter(tags: [], search: "192.168.99").map(\.id), [lan.id])
         XCTAssertEqual(dir.filter(tags: [], search: "ROOT").map(\.id), [admin.id])
         XCTAssertEqual(dir.filter(tags: [], search: "docker").map(\.id), [tagged.id])
     }

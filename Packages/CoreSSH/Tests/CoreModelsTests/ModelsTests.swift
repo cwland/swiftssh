@@ -98,7 +98,7 @@ final class ModelsTests: XCTestCase {
     }
 
     func testHostDefaults() {
-        let h = Host(label: "Docker", address: "192.168.50.10")
+        let h = Host(label: "Docker", address: "192.168.99.10")
         XCTAssertNil(h.port)
         XCTAssertEqual(h.tags, [])
         XCTAssertFalse(h.deleted)

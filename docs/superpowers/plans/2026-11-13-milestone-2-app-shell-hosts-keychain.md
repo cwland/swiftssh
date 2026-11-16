@@ -124,7 +124,7 @@ func testSaveFailureIsReportedAndInMemoryStateKept()     // persistence throws �
 - [ ] **Step 1: Failing tests** (temp directory per test)
 ```swift
 func testSaveThenLoadRoundTrips()
-func testFileContainsNoPlaintext()                 // save a host with address "192.168.50.200" and password "hunter2" → raw file bytes contain neither
+func testFileContainsNoPlaintext()                 // save a host with address "192.168.99.200" and password "hunter2" → raw file bytes contain neither
 func testMissingFileLoadsNil()
 func testWrongKeyMovesFileAsideAndThrows()         // load with another key → throws .unreadable(movedTo:); original path gone; moved file bytes unchanged
 func testCorruptFileMovesFileAsideAndThrows()      // write garbage → same behavior

@@ -4,7 +4,7 @@ import XCTest
 final class TerminalLinkFilterTests: XCTestCase {
     func testOpensWebAndMailLinks() {
         XCTAssertEqual(TerminalLinkFilter.openableURL("https://example.com/a?b=1")?.absoluteString, "https://example.com/a?b=1")
-        XCTAssertEqual(TerminalLinkFilter.openableURL("http://192.168.50.1:8080")?.absoluteString, "http://192.168.50.1:8080")
+        XCTAssertEqual(TerminalLinkFilter.openableURL("http://192.168.99.1:8080")?.absoluteString, "http://192.168.99.1:8080")
         XCTAssertEqual(TerminalLinkFilter.openableURL("https://user@example.com/x")?.absoluteString, "https://user@example.com/x")
         XCTAssertEqual(TerminalLinkFilter.openableURL("mailto:me@example.com")?.absoluteString, "mailto:me@example.com")
         XCTAssertEqual(TerminalLinkFilter.openableURL("mailto:me@example.com?subject=hi")?.absoluteString,

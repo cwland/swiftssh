@@ -22,7 +22,7 @@ final class EndToEndTests: XCTestCase {
             let (a, storeA) = engine(url, device: "mac-a")
             let (b, storeB) = engine(url, device: "mac-b")
 
-            let host = Host(label: "NAS", address: "192.168.50.200", password: "hunter2-secret")
+            let host = Host(label: "NAS", address: "192.168.99.200", password: "hunter2-secret")
             try await storeA.insert(host)
             _ = try await a.createVault(passphrase: "correct horse")
             _ = try await a.sync()
@@ -31,7 +31,7 @@ final class EndToEndTests: XCTestCase {
             _ = try await b.sync()
 
             let received = try await storeB.model(Host.self, id: host.id)
-            XCTAssertEqual(received?.address, "192.168.50.200")
+            XCTAssertEqual(received?.address, "192.168.99.200")
             XCTAssertEqual(received?.label, "NAS")
             XCTAssertEqual(received?.password, "hunter2-secret")
         }
@@ -40,7 +40,7 @@ final class EndToEndTests: XCTestCase {
     func testServerStoresNoPlaintext() async throws {
         try await withRunningServer { app, url in
             let (a, storeA) = engine(url, device: "mac-a")
-            let host = Host(label: "Secret-Label-XYZ", address: "192.168.50.200", password: "hunter2-secret")
+            let host = Host(label: "Secret-Label-XYZ", address: "192.168.99.200", password: "hunter2-secret")
             try await storeA.insert(host)
             _ = try await a.createVault(passphrase: "correct horse")
             _ = try await a.sync()
@@ -57,9 +57,9 @@ final class EndToEndTests: XCTestCase {
             }
             XCTAssertFalse(column(recordRows[0], "ciphertext").isEmpty)
             XCTAssertFalse(column(vaultRows[0], "wrapped_key").isEmpty)
-            XCTAssertTrue(Self.contains(Data("host=192.168.50.200;".utf8), "192.168.50.200"))
+            XCTAssertTrue(Self.contains(Data("host=192.168.99.200;".utf8), "192.168.99.200"))
 
-            let needles = ["192.168.50.200", "Secret-Label-XYZ", "hunter2-secret"]
+            let needles = ["192.168.99.200", "Secret-Label-XYZ", "hunter2-secret"]
             for row in recordRows + vaultRows {
                 for data in row.columns.map(\.data) {
                     for needle in needles {

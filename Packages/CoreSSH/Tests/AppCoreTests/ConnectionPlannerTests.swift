@@ -259,14 +259,14 @@ final class ConnectionPlannerTests: XCTestCase {
 
     func testQuickConnectUsesDefaultUsernameAndCitadel() async {
         let bare = ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: nil, host: "h", port: nil),
-                                          defaultUsername: "corylanders")
-        XCTAssertEqual(bare.username, "corylanders")
+                                          defaultUsername: "exampleuser")
+        XCTAssertEqual(bare.username, "exampleuser")
         XCTAssertEqual(bare.port, 22)
         XCTAssertEqual(bare.engine, .citadel)
         XCTAssertNil(bare.hostID)
         guard case .none = bare.credential else { return XCTFail() }
         let full = ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: "bob", host: "h", port: 2200),
-                                          defaultUsername: "corylanders")
+                                          defaultUsername: "exampleuser")
         XCTAssertEqual(full.username, "bob")
         XCTAssertEqual(full.port, 2200)
     }

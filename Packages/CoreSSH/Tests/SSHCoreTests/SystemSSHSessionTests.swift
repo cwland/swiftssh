@@ -93,7 +93,7 @@ final class SystemSSHSessionTests: XCTestCase {
 
     func testDefaultControlDirectoryKeepsSocketPathsShort() {
         let mac = SSHRuntimeDirectory(root: URL(fileURLWithPath:
-            "/Users/corylanders/Library/Application Support/SwiftSSH/run"))
+            "/Users/exampleuser/Library/Application Support/SwiftSSH/run"))
         XCTAssertEqual(mac.controlDirectory.path, "/tmp/swiftssh-\(getuid())")
         let socket = mac.controlDirectory.appendingPathComponent(String(repeating: "f", count: 40)).path
         XCTAssertLessThan(socket.utf8.count, 104, "macOS sun_path limit")

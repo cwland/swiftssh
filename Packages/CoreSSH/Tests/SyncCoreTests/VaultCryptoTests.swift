@@ -87,7 +87,7 @@ final class VaultCryptoTests: XCTestCase {
 
     func testCiphertextDoesNotContainPlaintext() throws {
         let key = VaultCrypto.newVaultKey()
-        let sealed = try seal(Data("192.168.50.200".utf8), id: UUID(), key: key)
+        let sealed = try seal(Data("192.168.99.200".utf8), id: UUID(), key: key)
         XCTAssertNil(sealed.range(of: Data("192.168".utf8)))
     }
 
