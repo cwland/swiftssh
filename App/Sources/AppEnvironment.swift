@@ -110,16 +110,10 @@ final class AppEnvironment {
             // Keychain calls can block (e.g. an access prompt), so keep them off the main actor.
             // The migration runs first and the key is loaded only once it succeeded: a fresh key
             // must never be created while a Termius Reimagined vault is still waiting to be copied.
-            let (migration, loaded) = try await Task.detached(priority: .userInitiated) {
-                () throws -> (report: RebrandMigrationReport?, value: (key: VaultKey, created: Bool)) in
-                try AppEnvironment.makeRebrandMigration().migrateThenLoadKey { () throws -> (key: VaultKey, created: Bool) in
-                    if let keychain = provider as? KeychainVaultKeyProvider {
-                        return try keychain.loadOrCreateKeyReportingCreation()
-                    }
-                    return (try provider.loadOrCreateKey(), false)
-                }
+            let loaded = try await Task.detached(priority: .userInitiated) {
+                try AppEnvironment.migrateAndLoadKey(provider: provider)
             }.value
-            if migration?.filesCopied == true {
+            if loaded.filesCopied {
                 // Read before the copy (at init): read them again.
                 workspaceTemplates.reload()
                 BadgeLogoStore.shared.reload()
@@ -518,6 +512,21 @@ final class AppEnvironment {
 
     // MARK: Migration from Termius Reimagined
 
+    /// Runs the rebrand migration, then loads (or creates) the vault key. The key is loaded only once
+    /// the migration succeeded: a fresh key must never be created while a Termius Reimagined vault is
+    /// still waiting to be copied. Blocking Keychain calls: call it off the main actor.
+    nonisolated fileprivate static func migrateAndLoadKey(provider: any VaultKeyProvider) throws -> LoadedVaultKey {
+        let migration = makeRebrandMigration()
+        let result = try migration.migrateThenLoadKey { () throws -> (key: VaultKey, created: Bool) in
+            if let keychain = provider as? KeychainVaultKeyProvider {
+                return try keychain.loadOrCreateKeyReportingCreation()
+            }
+            return (try provider.loadOrCreateKey(), false)
+        }
+        return LoadedVaultKey(key: result.value.key, created: result.value.created,
+                              filesCopied: result.report?.filesCopied == true)
+    }
+
     /// The one-time move from the app's former name. Built where it runs (off the main actor for
     /// the vault part); every part is real system access, so unit-test hosts never run it.
     nonisolated private static func makeRebrandMigration() -> RebrandMigration {
@@ -581,4 +590,12 @@ final class AppEnvironment {
     static func vaultFileURL() throws -> URL {
         try supportDirectoryURL().appendingPathComponent("vault.bin", isDirectory: false)
     }
+}
+
+/// The vault key, and whether the rebrand migration copied files in, as loaded off the main actor
+/// (`AppEnvironment.migrateAndLoadKey`).
+private struct LoadedVaultKey: Sendable {
+    let key: VaultKey
+    let created: Bool
+    let filesCopied: Bool
 }
