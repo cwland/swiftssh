@@ -53,6 +53,10 @@ struct ThemeSidePanel: View {
         }
         // Esc with the focus in the panel closes it; Esc in the terminal stays there.
         .onExitCommand(perform: close)
+        .onKeyPress(.escape) {
+            close()
+            return .handled
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Theme panel")
     }

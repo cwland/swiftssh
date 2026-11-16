@@ -517,6 +517,8 @@ final class AppEnvironment {
     /// when it shows them, else the frontmost window that does, else the key window.
     func promptWindow(showingWindowID windowID: UUID?) -> ObjectIdentifier? {
         let showing = NSApp.orderedWindows.compactMap { window -> ObjectIdentifier? in
+            // A hidden or minimized window can't show the prompt: nobody would see it.
+            guard window.isVisible, !window.isMiniaturized else { return nil }
             let id = ObjectIdentifier(window)
             guard let scope = windowScopes[id], scope.windowID == windowID else { return nil }
             return id
@@ -532,7 +534,10 @@ final class AppEnvironment {
     /// v0.6.0: they come back when a main window opens again. A terminal window ("Duplicate in New
     /// Window") ends its own sessions, without asking (as closing a tab does).
     func windowClosed(_ window: NSWindow, scope: WindowScope) {
-        windowScopes[ObjectIdentifier(window)] = nil
+        let closedID = ObjectIdentifier(window)
+        windowScopes[closedID] = nil
+        // A window address can be reused: drop requests aimed at the window that just closed.
+        if namingWorkspaceRequest?.window == closedID { namingWorkspaceRequest = nil }
         guard let windowID = scope.windowID else { return }
         sessions?.closeWindow(windowID)
         releaseClosedTerminalViews()

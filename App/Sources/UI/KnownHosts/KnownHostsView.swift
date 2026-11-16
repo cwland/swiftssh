@@ -23,15 +23,17 @@ struct KnownHostsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             searchBar
-            toolbar
+            // Computed once per render and passed down: `model.sections` decodes every record.
             let sections = model.sections
+            let visibleIDs = sections.flatMap(\.rows).map(\.id)
+            toolbar(selected: selectedIDs(in: visibleIDs))
             if sections.isEmpty {
                 emptyState
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         ForEach(sections) { section in
-                            sectionView(section)
+                            sectionView(section, visibleIDs: visibleIDs)
                         }
                     }
                     .padding(.bottom, 20)
@@ -55,8 +57,8 @@ struct KnownHostsView: View {
     // MARK: Selection
 
     /// Selected keys that still exist (another Mac may have removed one).
-    private var selectedIDs: [UUID] {
-        model.sections.flatMap(\.rows).map(\.id).filter(selection.contains)
+    private func selectedIDs(in visibleIDs: [UUID]) -> [UUID] {
+        visibleIDs.filter(selection.contains)
     }
 
     /// A click selects the key; ⌘-click adds or removes it from the selection.
@@ -74,8 +76,8 @@ struct KnownHostsView: View {
 
     /// What a right-click Remove applies to: the whole selection when the card is part of it,
     /// otherwise just the card.
-    private func actionTargets(for id: UUID) -> [UUID] {
-        let selected = selectedIDs
+    private func actionTargets(for id: UUID, visibleIDs: [UUID]) -> [UUID] {
+        let selected = selectedIDs(in: visibleIDs)
         return selection.contains(id) && selected.count > 1 ? selected : [id]
     }
 
@@ -97,9 +99,8 @@ struct KnownHostsView: View {
         }
     }
 
-    private var toolbar: some View {
-        let selected = selectedIDs
-        return HStack(spacing: 12) {
+    private func toolbar(selected: [UUID]) -> some View {
+        HStack(spacing: 12) {
             Text(summary)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
@@ -129,12 +130,12 @@ struct KnownHostsView: View {
         return "\(keys) \(keys == 1 ? "key" : "keys") for \(hosts) \(hosts == 1 ? "host" : "hosts")"
     }
 
-    private func sectionView(_ section: KnownHostsViewModel.Section) -> some View {
+    private func sectionView(_ section: KnownHostsViewModel.Section, visibleIDs: [UUID]) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(section)
             VStack(spacing: 8) {
                 ForEach(section.rows) { row in
-                    card(for: row)
+                    card(for: row, visibleIDs: visibleIDs)
                 }
             }
         }
@@ -170,7 +171,7 @@ struct KnownHostsView: View {
         }
     }
 
-    private func card(for row: KnownHostsViewModel.Row) -> some View {
+    private func card(for row: KnownHostsViewModel.Row, visibleIDs: [UUID]) -> some View {
         KnownHostCard(row: row, isSelected: selection.contains(row.id)) {
             confirm(.keys([row.id]))
         }
@@ -178,7 +179,7 @@ struct KnownHostsView: View {
         .contextMenu {
             Button("Copy Fingerprint") { copy(row.fingerprint) }
             Divider()
-            let targets = actionTargets(for: row.id)
+            let targets = actionTargets(for: row.id, visibleIDs: visibleIDs)
             Button(targets.count == 1 ? "Remove" : "Remove \(targets.count) Keys", role: .destructive) {
                 confirm(.keys(targets))
             }
@@ -239,6 +240,10 @@ struct KnownHostsView: View {
             if ids.count == 1, let id = ids.first, let row = model.row(id) {
                 return "The \(row.keyType) key for \(row.address) is removed from this vault. The next connection to \(row.address) will ask you to trust its key again."
             }
+            if ids.count == 1 {
+                // The key's row is gone (another Mac removed it while the dialog was open).
+                return "This key is removed from this vault. The next connection to its server will ask you to trust its key again."
+            }
             return "They are removed from this vault. The next connection to each of these servers will ask you to trust its key again."
         case .host(_, let address, let count):
             let keys = count == 1 ? "Its key is" : "Its \(count) keys are"
@@ -261,7 +266,8 @@ struct KnownHostsView: View {
             // Removed keys drop out of `selectedIDs` on their own.
             model.removeAll(hostPort: hostPort)
         }
-        pendingRemoval = nil
+        // `pendingRemoval` stays set: clearing it would empty the dialog's text while it animates out.
+        // The next `confirm` overwrites it.
     }
 
     // MARK: Helpers

@@ -140,6 +140,11 @@ struct HistorySidePanel: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($searchFocused)
+                // Esc in the field closes the panel; the field editor can swallow `onExitCommand`.
+                .onKeyPress(.escape) {
+                    close()
+                    return .handled
+                }
         }
         .padding(.horizontal, 10)
         .frame(height: 30)
