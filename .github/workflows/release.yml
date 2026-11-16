@@ -108,13 +108,9 @@ jobs:
           else
             echo "::warning::No App/Package.resolved: resolving the newest allowed package versions"
           fi
-          if [ "$HAS_SIGNING" = true ]; then
-            signing=(CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM="$TEAM_ID"
-                     ENABLE_HARDENED_RUNTIME=YES CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
-                     OTHER_CODE_SIGN_FLAGS="--timestamp")
-          else
-            signing=(CODE_SIGN_IDENTITY="-")
-          fi
+          # Built unsigned, then signed below: a signing identity on the command line would also apply
+          # to the Swift package targets, which Xcode refuses ("conflicting provisioning settings").
+          signing=(CODE_SIGNING_ALLOWED=NO)
           log="$RUNNER_TEMP/xcodebuild.log"
           xcodebuild -project SwiftSSH.xcodeproj -scheme SwiftSSH -configuration Release \
             -destination 'generic/platform=macOS' -skipPackagePluginValidation "${package_flags[@]}" \
@@ -126,6 +122,18 @@ jobs:
           grep -E "BUILD SUCCEEDED" "$log"
           if [ -f "$resolved_dir/Package.resolved" ]; then cp "$resolved_dir/Package.resolved" "$RUNNER_TEMP/Package.resolved"; fi
           app="$RUNNER_TEMP/dd/Build/Products/Release/SwiftSSH.app"
+          # Sign inside-out: nested code first, then the app. Hardened runtime and a secure timestamp
+          # for Developer ID (notarization needs both); ad hoc otherwise. No entitlements.
+          if [ "$HAS_SIGNING" = true ]; then
+            sign=(codesign --force --options runtime --timestamp --sign "Developer ID Application")
+          else
+            sign=(codesign --force --sign -)
+          fi
+          find "$app/Contents" -depth \( -name "*.framework" -o -name "*.dylib" -o -name "*.bundle" \
+               -o -name "*.xpc" -o -name "*.appex" \) -print0 | while IFS= read -r -d '' nested; do
+            "${sign[@]}" "$nested"
+          done
+          "${sign[@]}" "$app"
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv --verbose=2 "$app" 2>&1 | grep -E "Authority|Identifier|TeamIdentifier|flags" || true
           echo "commit stamped: $(defaults read "$app/Contents/Info.plist" SwiftSSHGitCommit)"
