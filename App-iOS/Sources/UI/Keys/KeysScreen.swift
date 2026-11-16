@@ -13,7 +13,9 @@ struct KeysScreen: View {
     let vault: LocalVault
     @Environment(IOSEnvironment.self) private var environment
     @State private var form: KeyImportForm?
-    @State private var showsImport = false
+    /// The form shown in the Import Key sheet; set to present it. The sheet is driven by this item
+    /// (not a Bool plus an optional), so it never opens before the form exists, which showed a blank sheet.
+    @State private var importing: KeyImportForm?
     @State private var showsFilePicker = false
     @State private var keyToDelete: ImportedKeyInfo?
     @State private var problem: String?
@@ -69,10 +71,8 @@ struct KeysScreen: View {
                 importMenu
             }
         }
-        .sheet(isPresented: $showsImport, onDismiss: { form?.text = "" }) {
-            if let form {
-                ImportKeySheet(form: form)
-            }
+        .sheet(item: $importing, onDismiss: { form?.text = "" }) { importing in
+            ImportKeySheet(form: importing)
         }
         .fileImporter(isPresented: $showsFilePicker, allowedContentTypes: [.item]) { result in
             switch result {
@@ -98,7 +98,6 @@ struct KeysScreen: View {
             Text(problem ?? "")
         }
         .onAppear {
-            if form == nil { form = KeyImportForm(library: environment.importedKeys) }
             takePendingFile()
         }
         .onChange(of: environment.navigation.pendingKeyFile) { takePendingFile() }
@@ -107,8 +106,9 @@ struct KeysScreen: View {
     private var importMenu: some View {
         Menu {
             Button {
-                form?.text = ""
-                showsImport = true
+                let form = currentForm()
+                form.text = ""
+                importing = form
             } label: {
                 Label("Paste Key\u{2026}", systemImage: "doc.on.clipboard")
             }
@@ -158,12 +158,19 @@ struct KeysScreen: View {
         }
     }
 
+    /// The import form, made on first use.
+    private func currentForm() -> KeyImportForm {
+        if let form { return form }
+        let made = KeyImportForm(library: environment.importedKeys)
+        form = made
+        return made
+    }
+
     private func load(_ data: Data, name: String) {
-        if form == nil { form = KeyImportForm(library: environment.importedKeys) }
-        guard let form else { return }
+        let form = currentForm()
         form.text = ""
         if form.load(fileData: data, fileName: name) {
-            showsImport = true
+            importing = form
         } else {
             problem = form.errorMessage
         }

@@ -6,7 +6,7 @@ import Observation
 /// encrypted. The passphrase never outlives an attempt that used it: it is cleared after a wrong one
 /// and after a successful import (with the key text).
 @MainActor @Observable
-public final class KeyImportForm {
+public final class KeyImportForm: Identifiable {
     /// The key as pasted or read. Changing it starts over: no passphrase asked, no error.
     public var text = "" {
         didSet {
