@@ -1362,7 +1362,7 @@ extension SessionManagerTests {
             asked.withLock { $0.append(socket) }
             return []
         }
-        let message = "1Password\u{2019}s SSH agent offers no keys, so it had none to try for root@agent.example. If your keys are in a vault other than Private, choose the vaults the agent uses."
+        let message = "1Password\u{2019}s SSH agent offers no keys, so it had none to try for root@agent.example. Choose the vaults that hold your SSH keys."
         XCTAssertEqual(tab.state, .disconnected(message))
         XCTAssertEqual(tab.suggestedAction, .chooseOnePasswordVaults)
         XCTAssertEqual(tab.connectionFailure, message, "the log's failure line says the same")

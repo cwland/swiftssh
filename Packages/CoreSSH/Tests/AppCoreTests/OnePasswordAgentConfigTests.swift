@@ -76,8 +76,70 @@ final class OnePasswordAgentConfigTests: XCTestCase {
             .init(),
         ])
         XCTAssertEqual(OnePasswordAgentConfig.vaultNames(in: text), ["SSH Key Vault", "Private"])
-        XCTAssertTrue(OnePasswordAgentConfig.hasOtherEntries(in: text))
-        XCTAssertFalse(OnePasswordAgentConfig.hasOtherEntries(in: OnePasswordAgentConfig.toml(vaults: ["Private"])))
+        // Entries that aren't a plain vault are kept as written; the other table can't be.
+        XCTAssertEqual(OnePasswordAgentConfig.keptEntries(in: text), [
+            "[[ssh-keys]]\nitem = \"GitHub key\"\nvault = \"Work\"",
+            "[[ssh-keys]]\naccount = \"my.1password.com\"",
+            "[[ssh-keys]]\nvault = not-a-string",
+        ])
+        XCTAssertEqual(OnePasswordAgentConfig.unreadLines(in: text), ["[something-else]", "vault = \"Ignored\""])
+        XCTAssertEqual(OnePasswordAgentConfig.keptEntries(in: OnePasswordAgentConfig.toml(vaults: ["Private"])), [])
+        XCTAssertEqual(OnePasswordAgentConfig.unreadLines(in: OnePasswordAgentConfig.toml(vaults: ["Private"])), [])
+    }
+
+    /// Review I5: an item-scoped entry survives "Use these vaults", word for word, and only once.
+    func testWritesKeptEntriesAfterTheVaults() {
+        let old = """
+        [[ssh-keys]]
+        vault = "Private"
+
+        [[ssh-keys]]
+        # CI only
+        item = "Deploy key"
+        vault = "Team Infra"
+
+        """
+        let kept = OnePasswordAgentConfig.keptEntries(in: old)
+        XCTAssertEqual(kept, ["[[ssh-keys]]\n# CI only\nitem = \"Deploy key\"\nvault = \"Team Infra\""])
+        XCTAssertEqual(OnePasswordAgentConfig.vaultNames(in: old), ["Private"], "the item's vault isn't a vault entry")
+        let written = OnePasswordAgentConfig.toml(vaults: ["Private", "SSH Key Vault"], keeping: kept)
+        XCTAssertEqual(written, """
+        [[ssh-keys]]
+        vault = "Private"
+
+        [[ssh-keys]]
+        vault = "SSH Key Vault"
+
+        # Kept from your previous agent.toml
+        [[ssh-keys]]
+        # CI only
+        item = "Deploy key"
+        vault = "Team Infra"
+
+        """)
+        XCTAssertEqual(OnePasswordAgentConfig.keptEntries(in: written), kept)
+        XCTAssertEqual(OnePasswordAgentConfig.toml(vaults: ["Private", "SSH Key Vault"],
+                                                   keeping: OnePasswordAgentConfig.keptEntries(in: written)), written)
+        XCTAssertEqual(OnePasswordAgentConfig.toml(vaults: [], keeping: kept), "", "no vault: nothing to write")
+    }
+
+    /// Review M4: quoted keys and the other TOML escapes are read; forms it can't follow are reported.
+    func testQuotedKeysEscapesAndUnreadForms() {
+        let text = """
+        [[ssh-keys]]
+        "vault" = "Quoted"
+
+        [[ssh-keys]]
+        'vault' = "Tab\\b\\f\\e"
+        """
+        XCTAssertEqual(OnePasswordAgentConfig.vaultNames(in: text), ["Quoted", "Tab\u{8}\u{C}\u{1B}"])
+        XCTAssertEqual(OnePasswordAgentConfig.keptEntries(in: text), [])
+        let inline = "ssh-keys = [{ vault = \"Inline\" }]\nvault = \"Top\"\n"
+        XCTAssertEqual(OnePasswordAgentConfig.unreadLines(in: inline), ["ssh-keys = [{ vault = \"Inline\" }]", "vault = \"Top\""])
+        // A vault entry with a line it can't follow is kept as written, not turned into a plain vault.
+        let odd = "[[ssh-keys]]\nvault = \"Work\"\nfuture-option = true\n"
+        XCTAssertEqual(OnePasswordAgentConfig.vaultNames(in: odd), [])
+        XCTAssertEqual(OnePasswordAgentConfig.keptEntries(in: odd), ["[[ssh-keys]]\nvault = \"Work\"\nfuture-option = true"])
     }
 
     func testParsesCRLFAndEscapes() {
@@ -144,6 +206,57 @@ final class OnePasswordAgentConfigTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: XCTUnwrap(first.backupURL), encoding: .utf8), old)
         XCTAssertEqual(try String(contentsOf: XCTUnwrap(second.backupURL), encoding: .utf8),
                        OnePasswordAgentConfig.toml(vaults: ["Private"]))
+    }
+
+    func testWritesKeptEntries() throws {
+        let file = OnePasswordAgentConfigFile(home: folder.path)
+        let kept = ["[[ssh-keys]]\nitem = \"Deploy key\""]
+        _ = try file.write(vaults: ["Private"], keeping: kept)
+        XCTAssertEqual(try file.read(), OnePasswordAgentConfig.toml(vaults: ["Private"], keeping: kept))
+    }
+
+    /// Review I6: a dotfile manager's link stays a link; the new text goes to its target, and the backup
+    /// is a real copy of the old bytes, not another link.
+    func testWritesThroughALinkAndBacksUpTheBytes() throws {
+        let file = OnePasswordAgentConfigFile(home: folder.path)
+        let fileManager = FileManager.default
+        let dotfiles = folder.appendingPathComponent("dotfiles", isDirectory: true)
+        try fileManager.createDirectory(at: dotfiles, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let target = dotfiles.appendingPathComponent("agent.toml")
+        let old = "[[ssh-keys]]\nvault = \"Private\"\n"
+        try Data(old.utf8).write(to: target)
+        try fileManager.createSymbolicLink(atPath: file.url.path, withDestinationPath: "../../../dotfiles/agent.toml")
+
+        let result = try file.write(vaults: ["SSH Key Vault"])
+        XCTAssertEqual(try fileManager.destinationOfSymbolicLink(atPath: file.url.path), "../../../dotfiles/agent.toml",
+                       "the link is left alone")
+        XCTAssertEqual(try String(contentsOf: target, encoding: .utf8), OnePasswordAgentConfig.toml(vaults: ["SSH Key Vault"]))
+        let backup = try XCTUnwrap(result.backupURL)
+        XCTAssertEqual(backup.deletingLastPathComponent().standardizedFileURL, file.url.deletingLastPathComponent().standardizedFileURL)
+        XCTAssertEqual(try fileManager.attributesOfItem(atPath: backup.path)[.type] as? FileAttributeType, .typeRegular)
+        XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8), old)
+    }
+
+    func testRefusesALinkToNothing() throws {
+        let file = OnePasswordAgentConfigFile(home: folder.path)
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let missing = folder.appendingPathComponent("gone/agent.toml").path
+        try FileManager.default.createSymbolicLink(atPath: file.url.path, withDestinationPath: missing)
+        XCTAssertThrowsError(try file.write(vaults: ["Private"])) { error in
+            XCTAssertEqual(error as? OnePasswordAgentConfigError, .linkTargetMissing(missing))
+            XCTAssertEqual((error as? LocalizedError)?.errorDescription,
+                           "agent.toml is a link to \(missing), which doesn\u{2019}t exist. Fix the link, or edit the file there.")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missing))
+    }
+
+    /// Review I4: a file that exists but can't be read is an error, never "no file".
+    func testReadReportsAFileItCantRead() throws {
+        let file = OnePasswordAgentConfigFile(home: folder.path)
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data([0x5B, 0xFF, 0xFE, 0x00, 0x5D]).write(to: file.url)
+        XCTAssertThrowsError(try file.read())
     }
 
     func testRefusesToWriteNoVaults() throws {

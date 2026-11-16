@@ -136,38 +136,56 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
         }
         guard result.status == 0 else {
             let explanation = stderrDetails.isEmpty && !outputIsSecret ? result.stdout : result.stderr
-            throw Self.refine(Self.error(stderr: explanation, status: result.status), containerAccess: containerAccess)
+            let error = Self.error(stderr: explanation, status: result.status)
+            guard Self.needsContainerCheck(error) else { throw error }
+            // The probe can wait behind a macOS privacy prompt: keep it off the cooperative pool.
+            let access = await OnePasswordPaths.inBackground(containerAccess)
+            throw Self.refine(error, containerAccess: { access })
         }
         return result.stdout
     }
 
-    /// Classifies a failed call by `op`'s stderr (its exit status is always 1; see research.md §2–3).
+    /// Classifies a failed call by `op`'s stderr (its exit status is always 1; see research.md §2–3). The
+    /// whole text is matched; only the details kept in the error are cut to `detailsLimit`.
     static func error(stderr: Data, status: Int32) -> OnePasswordError {
-        let detail = details(stderr)
-        let text = detail.lowercased()
+        let full = sanitized(stderr)
+        let detail = limited(full)
+        let text = full.lowercased()
         func has(_ needles: String...) -> Bool { needles.contains { text.contains($0) } }
         if has("authorization timeout") { return .timedOut(details: detail) }
         if has("authorization prompt dismissed") { return .cancelled(details: detail) }
         // macOS refused `op` (as this app's child) a look into 1Password's group container, e.g.
-        // "open …/Group Containers/2BUA8C4S2C.com.1password/…/settings.json: operation not permitted".
-        if has("operation not permitted"), has("group containers", "2bua8c4s2c.com.1password") {
+        // "open …/Group Containers/2BUA8C4S2C.com.1password/…/settings.json: operation not permitted"
+        // (or "permission denied", EACCES).
+        if has("operation not permitted", "permission denied"), has("group containers", "2bua8c4s2c.com.1password") {
             return .containerBlocked(details: detail)
         }
-        // Nothing listens on the desktop app's socket: 1Password isn't running.
-        if has("connecting to desktop app"), has("connection refused", "is 1password running", "not running") {
+        // Nothing listens on the desktop app's socket, or the socket is gone: 1Password isn't running.
+        if has("cannot connect to 1password app")
+            || (has("connecting to desktop app")
+                && has("connection refused", "no such file or directory", "make sure it is running",
+                       "is 1password running", "not running")) {
             return .appNotRunning(details: detail)
+        }
+        // A wrapper or shim (cliPathOverride) that couldn't start the real `op` with the minimal PATH.
+        if has("command not found", "exec format error", "bad interpreter", "op: no such file or directory")
+            || (text.hasPrefix("env:") && has("no such file or directory")) {
+            return .failed("op couldn\u{2019}t start: \(detail)")
+        }
+        // Signed out of 1Password: the fix is to unlock it and sign in.
+        if has("not currently signed in", "account is not signed in", "is locked") {
+            return .appLocked(details: detail) // "is locked": [UNVERIFIED] wording; see research.md §3
         }
         // "No accounts configured for use with 1Password CLI." comes with a list of options and an
         // interactive prompt (stdin is /dev/null, so it ends); seen on macOS 27 with the integration off or
         // 1Password's data not shared with the app.
-        if has("connecting to desktop app", "lostconnectiontoapp", "connection reset", "not currently signed in",
-               "no accounts configured") {
+        if has("connecting to desktop app", "lostconnectiontoapp", "connection reset", "no accounts configured") {
             return .integrationOff(details: detail)
         }
-        if has("isn't a vault", "isn't an item", "isn't a field", "could not find", "not found", "does not exist") {
+        if has("isn't a vault", "isn't an item", "isn't a field", "could not find item", "could not find vault",
+               "could not find field", "could not read secret", "does not exist") {
             return .notFound(detail)
         }
-        if has("is locked") { return .appLocked(details: detail) } // [UNVERIFIED] wording; see research.md §3
         if detail.isEmpty { return .failed("op exited with status \(status)") }
         return .failed(detail)
     }
@@ -176,10 +194,14 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
     /// blocks 1Password's group container: when this app's own look into the container is refused
     /// too, it is the container (`op` runs as this app's child, so macOS treats both alike).
     static func refine(_ error: OnePasswordError, containerAccess: () -> OnePasswordPaths.Probe) -> OnePasswordError {
-        guard case .integrationOff(let details) = error,
-              details?.lowercased().contains("no accounts configured") == true,
-              containerAccess() == .denied else { return error }
-        return .containerBlocked(details: details)
+        guard needsContainerCheck(error), containerAccess() == .denied else { return error }
+        return .containerBlocked(details: error.details)
+    }
+
+    /// Whether `refine` would look into the container for this error.
+    static func needsContainerCheck(_ error: OnePasswordError) -> Bool {
+        guard case .integrationOff(let details) = error else { return false }
+        return details?.lowercased().contains("no accounts configured") == true
     }
 
     /// The longest `details` text, in characters.
@@ -189,6 +211,11 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
     /// overrides) removed, tabs as spaces, `[ERROR] yyyy/mm/dd hh:mm:ss ` prefixes dropped, lines trimmed and
     /// joined with spaces, at most `detailsLimit` characters (the last one "…" when cut).
     static func details(_ output: Data) -> String {
+        limited(sanitized(output))
+    }
+
+    /// `details(_:)` without the length limit.
+    static func sanitized(_ output: Data) -> String {
         let escape = try! Regex(#"\x{1B}(\[[0-?]*[ -/]*[@-~]|\][^\x{07}\x{1B}]*(\x{07}|\x{1B}\\)?|[@-_])"#)
         let prefix = try! Regex(#"^\[ERROR\] (\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} )?"#)
         let lines = String(decoding: output, as: UTF8.self)
@@ -199,8 +226,11 @@ public struct ProcessOnePasswordCLI: OnePasswordCLI {
                 return cleaned.replacing(prefix, with: "").trimmingCharacters(in: .whitespaces)
             }
             .filter { !$0.isEmpty }
-        let joined = lines.joined(separator: " ")
-        return joined.count > detailsLimit ? String(joined.prefix(detailsLimit - 1)) + "\u{2026}" : joined
+        return lines.joined(separator: " ")
+    }
+
+    private static func limited(_ text: String) -> String {
+        text.count > detailsLimit ? String(text.prefix(detailsLimit - 1)) + "\u{2026}" : text
     }
 
     /// A tab becomes a space; control characters and bidi controls are dropped.

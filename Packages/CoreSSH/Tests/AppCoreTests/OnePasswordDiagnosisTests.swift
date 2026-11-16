@@ -102,8 +102,23 @@ final class OnePasswordDiagnosisTests: XCTestCase {
         var facts = healthy
         facts.agent = .keys([])
         let problems = OnePasswordDiagnosis.problems(facts)
-        XCTAssertEqual(problems.map(\.id), ["agentOffersNoKeys"])
+        XCTAssertEqual(problems, [.agentOffersNoKeys(agentConfigExists: false)])
         XCTAssertEqual(problems[0].fixes, [.chooseVaults])
+        XCTAssertTrue(problems[0].message.contains("Private, Personal or Employee"), problems[0].message)
+        facts.agentConfigExists = true
+        let withFile = OnePasswordDiagnosis.problems(facts)
+        XCTAssertEqual(withFile, [.agentOffersNoKeys(agentConfigExists: true)])
+        XCTAssertTrue(withFile[0].message.hasPrefix("Your agent.toml lists vaults with no SSH keys"), withFile[0].message)
+    }
+
+    /// Review M8: the cards that say "click Recheck" have a Recheck button; no Terminal aside.
+    func testRecheckAndPlainCopy() {
+        XCTAssertEqual(OnePasswordProblem.locked.fixes, [.openOnePassword, .recheck])
+        XCTAssertEqual(OnePasswordProblem.agentNotAnswering("x").fixes, [.openOnePassword, .recheck])
+        XCTAssertEqual(OnePasswordFix.recheck.title, "Recheck")
+        XCTAssertFalse(OnePasswordProblem.containerBlocked.message.contains("Terminal"))
+        XCTAssertTrue(OnePasswordProblem.locked.message.contains("sign in"), OnePasswordProblem.locked.message)
+        XCTAssertTrue(OnePasswordError.appLocked(details: nil).message.contains("sign in"))
     }
 
     func testPinnedKeyNotOffered() {
@@ -116,7 +131,8 @@ final class OnePasswordDiagnosisTests: XCTestCase {
         ]
         let problems = OnePasswordDiagnosis.problems(facts)
         XCTAssertEqual(problems, [.pinnedKeysNotOffered(["web", "db"])])
-        XCTAssertTrue(problems[0].message.contains("web and db use"), problems[0].message)
+        XCTAssertEqual(problems[0].message,
+                       "The agent doesn\u{2019}t offer the keys used by web and db. Their vaults may not be ones the agent uses.")
         XCTAssertEqual(OnePasswordProblem.pinnedKeysNotOffered(["web"]).message,
                        "The agent doesn\u{2019}t offer the key web uses. Its vault may not be one the agent uses.")
     }
@@ -139,7 +155,7 @@ final class OnePasswordDiagnosisTests: XCTestCase {
 
     func testEveryProblemHasWordsAndEveryFixATitle() {
         let all: [OnePasswordProblem] = [.appNotInstalled, .appNotRunning, .locked, .containerBlocked, .cliNotInstalled,
-                                         .cliIntegrationOff, .agentOff, .agentNotAnswering("x"), .agentOffersNoKeys,
+                                         .cliIntegrationOff, .agentOff, .agentNotAnswering("x"), .agentOffersNoKeys(agentConfigExists: false),
                                          .pinnedKeysNotOffered(["a"]), .cliFailed(.failed("y"))]
         XCTAssertEqual(Set(all.map(\.id)).count, all.count)
         for problem in all {
@@ -147,7 +163,7 @@ final class OnePasswordDiagnosisTests: XCTestCase {
             XCTAssertFalse(problem.message.isEmpty)
         }
         let fixes: [OnePasswordFix] = [.downloadApp, .openOnePassword, .openDeveloperSettings, .openPrivacySettings,
-                                       .copyCLIInstallCommand, .openCLIDownloadPage, .chooseVaults]
+                                       .copyCLIInstallCommand, .openCLIDownloadPage, .chooseVaults, .recheck]
         for fix in fixes {
             XCTAssertFalse(fix.title.isEmpty)
             XCTAssertFalse(fix.accessibilityHint.isEmpty)
@@ -188,6 +204,20 @@ final class OnePasswordDiagnosisTests: XCTestCase {
                                                       PinnedAgentKey(publicKey: "ssh-ed25519 BBBB root", usedBy: "root")])
     }
 
+    /// Review M5: an unpinned host and many keys: sshd may stop before the right one.
+    func testManyKeysOfferedToAnUnpinnedHost() {
+        let keys = (0..<6).map { AgentKey(publicKeyLine: "ssh-ed25519 AAAA\($0) k\($0)", type: "ssh-ed25519",
+                                          comment: "k\($0)", fingerprint: "SHA256:\($0)") }
+        let failure = AgentAuthFailure.diagnose(pinnedPublicKey: nil, listing: .success(keys))
+        XCTAssertEqual(failure, .tooManyKeysOffered(count: 6))
+        XCTAssertEqual(failure.message(who: "root@web"),
+                       "1Password\u{2019}s SSH agent offered 6 keys, and the server for root@web may stop after a few tries, before the right one. Pin the key this host uses in Host Details, so only that one is offered.")
+        XCTAssertNil(failure.suggestedAction)
+        XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: nil, listing: .success(Array(keys.prefix(5)))), .serverRejected)
+        XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: keys[3].publicKeyLine, listing: .success(keys)), .serverRejected)
+        XCTAssertEqual(AgentAuthFailure.offersNoKeys.suggestedAction, .chooseOnePasswordVaults)
+    }
+
     func testAgentAuthFailureDiagnosis() {
         let key = self.key
         XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: nil, listing: .success([])), .offersNoKeys)
@@ -196,7 +226,8 @@ final class OnePasswordDiagnosisTests: XCTestCase {
         XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: key.publicKeyLine, listing: .success([key])), .serverRejected)
         XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: nil, listing: .failure(SSHAgentError.permissionDenied)), .blocked)
         XCTAssertEqual(AgentAuthFailure.diagnose(pinnedPublicKey: nil, listing: .failure(SSHAgentError.timedOut)), .notAnswering)
-        for failure in [AgentAuthFailure.offersNoKeys, .pinnedKeyNotOffered(name: "k"), .blocked, .notAnswering, .serverRejected] {
+        for failure in [AgentAuthFailure.offersNoKeys, .pinnedKeyNotOffered(name: "k"), .blocked, .notAnswering, .serverRejected,
+                        .tooManyKeysOffered(count: 8)] {
             let message = failure.message(who: "root@web")
             XCTAssertFalse(message.contains("AAAA"), "never the key itself")
             XCTAssertFalse(message.isEmpty)

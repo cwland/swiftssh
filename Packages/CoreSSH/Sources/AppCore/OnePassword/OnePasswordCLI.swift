@@ -6,6 +6,7 @@ import Foundation
 public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
     /// `op` isn't installed where the app looks, or can't be run.
     case cliNotFound
+    /// 1Password is locked, or no account is signed in.
     case appLocked(details: String?)
     /// The user dismissed the 1Password prompt, or the request was cancelled.
     case cancelled(details: String?)
@@ -43,7 +44,7 @@ public enum OnePasswordError: Error, Equatable, Sendable, LocalizedError {
         case .cliNotFound:
             "The 1Password CLI (op) wasn't found. Install it from Settings \u{2192} 1Password."
         case .appLocked:
-            "1Password is locked. Unlock it and try again."
+            "1Password is locked or signed out. Unlock it (sign in if it asks) and try again."
         case .cancelled:
             "The 1Password request was cancelled."
         case .integrationOff:

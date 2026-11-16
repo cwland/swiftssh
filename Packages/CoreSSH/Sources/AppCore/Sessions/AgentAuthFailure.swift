@@ -14,9 +14,16 @@ public enum AgentAuthFailure: Equatable, Sendable {
     case notAnswering
     /// The agent offers the key; the server turned it down (authorized_keys).
     case serverRejected
+    /// The host isn't pinned and the agent offers more keys than sshd usually tries (MaxAuthTries is 6
+    /// by default), so the right key may never have been tried.
+    case tooManyKeysOffered(count: Int)
+
+    /// More keys than this, with no pinned key, is `.tooManyKeysOffered`.
+    public static let manyKeys = 5
 
     /// Decides from the agent's answer: an error is `.blocked` (permission) or `.notAnswering`; no keys
-    /// is `.offersNoKeys`; a pinned key that isn't listed is `.pinnedKeyNotOffered`; else the server.
+    /// is `.offersNoKeys`; a pinned key that isn't listed is `.pinnedKeyNotOffered`; no pinned key and more
+    /// than `manyKeys` keys is `.tooManyKeysOffered`; else the server.
     public static func diagnose(pinnedPublicKey: String?, listing: Result<[AgentKey], any Error>) -> AgentAuthFailure {
         switch listing {
         case .failure(let error):
@@ -27,6 +34,7 @@ public enum AgentAuthFailure: Equatable, Sendable {
             if let pinned = pinnedPublicKey, !AgentKeyMatch.offers(keys, pinned) {
                 return .pinnedKeyNotOffered(name: AgentKeyMatch.displayName(pinned))
             }
+            if pinnedPublicKey == nil, keys.count > manyKeys { return .tooManyKeysOffered(count: keys.count) }
             return .serverRejected
         }
     }
@@ -35,7 +43,7 @@ public enum AgentAuthFailure: Equatable, Sendable {
     public func message(who: String) -> String {
         switch self {
         case .offersNoKeys:
-            "1Password\u{2019}s SSH agent offers no keys, so it had none to try for \(who). If your keys are in a vault other than Private, choose the vaults the agent uses."
+            "1Password\u{2019}s SSH agent offers no keys, so it had none to try for \(who). Choose the vaults that hold your SSH keys."
         case .pinnedKeyNotOffered(let name):
             "1Password\u{2019}s SSH agent doesn\u{2019}t offer the key this host uses (\(name)), so it couldn\u{2019}t sign in to \(who). Its vault may not be one the agent uses: choose the vaults, or pick another key in Host Details."
         case .blocked:
@@ -44,13 +52,17 @@ public enum AgentAuthFailure: Equatable, Sendable {
             "1Password is locked or not running, so its SSH agent couldn\u{2019}t sign in to \(who). Open 1Password, unlock it, and try again."
         case .serverRejected:
             "The server didn\u{2019}t accept the key from 1Password\u{2019}s SSH agent for \(who). Add the key\u{2019}s public half to ~/.ssh/authorized_keys on the server (Host Details \u{2192} \u{201C}Copy key-install command\u{201D})."
+        case .tooManyKeysOffered(let count):
+            "1Password\u{2019}s SSH agent offered \(count) keys, and the server for \(who) may stop after a few tries, before the right one. Pin the key this host uses in Host Details, so only that one is offered."
         }
     }
 
-    public var suggestedAction: SuggestedAction {
+    /// nil for `.tooManyKeysOffered`: the fix is in Host Details ("Edit host" is shown already).
+    public var suggestedAction: SuggestedAction? {
         switch self {
         case .offersNoKeys, .pinnedKeyNotOffered: .chooseOnePasswordVaults
         case .blocked, .notAnswering, .serverRejected: .openOnePasswordSetup
+        case .tooManyKeysOffered: nil
         }
     }
 }

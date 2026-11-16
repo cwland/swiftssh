@@ -95,7 +95,81 @@ final class AgentVaultChooserTests: XCTestCase {
         // With a file, Private is no longer implied; the SSH key counts are unknown.
         XCTAssertEqual(model.rows.map(\.isSelected), [false, false, true, true])
         XCTAssertEqual(model.rows.map(\.sshKeyCount), [nil, nil, nil, nil])
-        XCTAssertFalse(model.existingHasOtherEntries)
+        XCTAssertEqual(model.keptEntries, [])
+        XCTAssertEqual(model.removals, [])
+        XCTAssertFalse(model.needsConfirmation)
+    }
+
+    /// Review I5: with a file, only what it names is chosen; vaults holding SSH keys are a hint only, and
+    /// an item-scoped entry is written back as it was.
+    @MainActor
+    func testWithAFileOnlyItsVaultsAreChosenAndItemEntriesAreKept() async throws {
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let old = "[[ssh-keys]]\nvault = \"Private\"\n[[ssh-keys]]\nitem = \"Deploy key\"\nvault = \"Team Infra\"\n"
+        try Data(old.utf8).write(to: file.url)
+        let vaults = [OnePasswordVault(id: "v-private", name: "Private"), OnePasswordVault(id: "v-team", name: "Team Infra")]
+        let items = (0..<14).map { _ in sshItem("v-team") }
+        let model = chooser(VaultListingOP(vaults: .success(vaults), keyItems: .success(items)))
+        await model.load()
+        XCTAssertEqual(model.rows.map(\.isSelected), [true, false])
+        XCTAssertEqual(model.rows.map(\.sshKeyCount), [0, 14])
+        XCTAssertEqual(model.keptEntries, ["[[ssh-keys]]\nitem = \"Deploy key\"\nvault = \"Team Infra\""])
+        XCTAssertFalse(model.needsConfirmation)
+        await model.apply()
+        let expected = OnePasswordAgentConfig.toml(vaults: ["Private"], keeping: model.keptEntries)
+        XCTAssertEqual(try file.read(), expected)
+        XCTAssertTrue(expected.contains("item = \"Deploy key\""))
+        XCTAssertEqual(model.existingText, expected)
+    }
+
+    /// Taking a vault (or a line it can't read) out of the file needs a yes first.
+    @MainActor
+    func testRemovingEntriesAsksFirst() async throws {
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let old = "[[ssh-keys]]\nvault = \"Private\"\n[[ssh-keys]]\nvault = \"v-shared\"\n[other]\nx = 1\n"
+        try Data(old.utf8).write(to: file.url)
+        let model = chooser(VaultListingOP(vaults: .success(vaults)))
+        await model.load()
+        XCTAssertEqual(model.selectedNames, ["Private", "Shared"], "a vault named by its ID is found")
+        XCTAssertEqual(model.removals, ["The line \u{201C}[other]\u{201D}", "The line \u{201C}x = 1\u{201D}"])
+        model.toggle("v-private")
+        XCTAssertEqual(model.removals, ["The vault \u{201C}Private\u{201D}", "The line \u{201C}[other]\u{201D}",
+                                        "The line \u{201C}x = 1\u{201D}"])
+        XCTAssertTrue(model.needsConfirmation)
+        XCTAssertTrue(model.confirmationMessage.contains("The vault \u{201C}Private\u{201D}"), model.confirmationMessage)
+        await model.apply()
+        XCTAssertTrue(model.isAskingToConfirm)
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(try file.read(), old, "nothing written before the yes")
+        await model.apply(confirmed: true)
+        XCTAssertFalse(model.isAskingToConfirm)
+        XCTAssertEqual(try file.read(), OnePasswordAgentConfig.toml(vaults: ["Shared"]))
+        XCTAssertNotNil(model.backupURL)
+    }
+
+    /// Review I4: a file that can't be read is shown as such: no defaults, and a yes before replacing it.
+    @MainActor
+    func testUnreadableFileIsNotTreatedAsNoFile() async throws {
+        try FileManager.default.createDirectory(at: file.url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let bytes = Data([0x5B, 0x5B, 0xFF, 0xFE, 0x5D, 0x5D, 0x0A])
+        try bytes.write(to: file.url)
+        let model = chooser(VaultListingOP(vaults: .success(vaults)))
+        await model.load()
+        XCTAssertNil(model.existingText)
+        let reason = try XCTUnwrap(model.existingReadError)
+        XCTAssertFalse(reason.isEmpty)
+        XCTAssertEqual(model.rows.map(\.isSelected), [false, false, false], "no defaults: the file exists")
+        model.toggle("v-ssh")
+        XCTAssertTrue(model.needsConfirmation)
+        XCTAssertTrue(model.confirmationMessage.hasPrefix("~/.config/1Password/ssh/agent.toml exists but couldn\u{2019}t be read"),
+                      model.confirmationMessage)
+        await model.apply()
+        XCTAssertTrue(model.isAskingToConfirm)
+        XCTAssertEqual(try Data(contentsOf: file.url), bytes)
+        await model.apply(confirmed: true)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(model.backupURL)), bytes, "the backup holds the old bytes")
+        XCTAssertEqual(try file.read(), OnePasswordAgentConfig.toml(vaults: ["SSH Key Vault"]))
+        XCTAssertNil(model.existingReadError)
     }
 
     @MainActor
@@ -147,13 +221,14 @@ final class AgentVaultChooserTests: XCTestCase {
         try Data(old.utf8).write(to: file.url)
         let model = chooser(VaultListingOP(vaults: .success(vaults)))
         await model.load()
-        XCTAssertTrue(model.existingHasOtherEntries)
+        XCTAssertEqual(model.keptEntries, ["[[ssh-keys]]\nitem = \"GitHub key\""])
         model.toggle("v-ssh")
         await model.apply()
         let backup = try XCTUnwrap(model.backupURL)
         XCTAssertTrue(backup.lastPathComponent.hasPrefix("agent.toml.swiftssh-backup-2026-11-15-"), backup.lastPathComponent)
         XCTAssertEqual(try String(contentsOf: backup, encoding: .utf8), old)
-        XCTAssertEqual(model.existingText, OnePasswordAgentConfig.toml(vaults: ["SSH Key Vault"]))
+        XCTAssertEqual(model.existingText, OnePasswordAgentConfig.toml(vaults: ["SSH Key Vault"],
+                                                                        keeping: ["[[ssh-keys]]\nitem = \"GitHub key\""]))
         XCTAssertEqual(model.phase, .done(.offersNone))
         XCTAssertTrue(AgentVaultChooser.AgentRecheck.offersNone.message.contains("Lock 1Password and unlock it again"))
     }

@@ -59,8 +59,14 @@ public final class AgentVaultChooser {
 
     public private(set) var phase: Phase = .idle
     public private(set) var rows: [Row] = []
-    /// agent.toml as it was when loaded (or after "Use these vaults"); nil = no file.
+    /// agent.toml as it was when loaded (or after "Use these vaults"); nil = no file, or a file that
+    /// couldn't be read (`existingReadError`).
     public private(set) var existingText: String?
+    /// Why the agent.toml that is there couldn't be read (not UTF-8, no permission…); nil when it was
+    /// read or there is none.
+    public private(set) var existingReadError: String?
+    /// Set by `apply()` when `needsConfirmation`: the view asks, then calls `apply(confirmed: true)`.
+    public var isAskingToConfirm = false
     /// Where the previous file was copied by the last "Use these vaults".
     public private(set) var backupURL: URL?
 
@@ -87,11 +93,38 @@ public final class AgentVaultChooser {
     public var selectedNames: [String] { rows.filter(\.isSelected).map(\.name) }
 
     /// The file "Use these vaults" would write.
-    public var preview: String { OnePasswordAgentConfig.toml(vaults: selectedNames) }
+    public var preview: String { OnePasswordAgentConfig.toml(vaults: selectedNames, keeping: keptEntries) }
 
-    /// Whether agent.toml has entries (an item or an account) that "Use these vaults" won't keep.
-    public var existingHasOtherEntries: Bool {
-        existingText.map(OnePasswordAgentConfig.hasOtherEntries(in:)) ?? false
+    /// Entries of agent.toml that aren't a plain vault (an item, an account): written back unchanged.
+    public var keptEntries: [String] {
+        existingText.map(OnePasswordAgentConfig.keptEntries(in:)) ?? []
+    }
+
+    /// What "Use these vaults" would take out of agent.toml: vaults it names that aren't chosen any
+    /// more, and lines it can't keep. The backup still has them.
+    public var removals: [String] {
+        guard let existingText else { return [] }
+        let chosen = rows.filter(\.isSelected)
+        let vaults = OnePasswordAgentConfig.vaultNames(in: existingText)
+            .filter { name in !chosen.contains { $0.name == name || $0.id == name } }
+            .map { "The vault \u{201C}\($0)\u{201D}" }
+        let lines = OnePasswordAgentConfig.unreadLines(in: existingText).map { "The line \u{201C}\($0)\u{201D}" }
+        return vaults + lines
+    }
+
+    /// Whether "Use these vaults" asks first: it would take something out of agent.toml, or replace a
+    /// file that couldn't be read.
+    public var needsConfirmation: Bool { existingReadError != nil || !removals.isEmpty }
+
+    /// The question to ask when `needsConfirmation`.
+    public var confirmationMessage: String {
+        let path = OnePasswordAgentConfigFile.displayPath
+        if var reason = existingReadError {
+            while reason.hasSuffix(".") { reason.removeLast() }
+            return "\(path) exists but couldn\u{2019}t be read: \(reason). Saving replaces it; the old file is kept as a backup next to it."
+        }
+        return "Saving takes these out of \(path):\n" + removals.map { "\u{2022} \($0)" }.joined(separator: "\n")
+            + "\nThe old file is kept as a backup next to it."
     }
 
     public var isBusy: Bool {
@@ -103,11 +136,13 @@ public final class AgentVaultChooser {
 
     public var canApply: Bool { !isBusy && !selectedNames.isEmpty }
 
-    /// Reads agent.toml and lists the vaults. Preselects vaults that hold SSH Key items, plus the
-    /// vaults agent.toml already names, or (without agent.toml) the vaults the agent offers by itself.
+    /// Reads agent.toml and lists the vaults. With agent.toml, preselects only the vaults it names (the
+    /// SSH key counts are a hint); without it, the vaults that hold SSH Key items and the vaults the agent
+    /// offers by itself. A file that can't be read preselects nothing.
     public func load() async {
         phase = .loading
-        existingText = try? file.read()
+        readExisting()
+        let fileExists = existingText != nil || existingReadError != nil
         let fromFile = existingText.map(OnePasswordAgentConfig.vaultNames(in:)) ?? []
         guard let client = cli() else {
             rows = fromFile.map { Row(id: "name:\($0)", name: $0, sshKeyCount: nil, isSelected: true) }
@@ -130,9 +165,9 @@ public final class AgentVaultChooser {
         }
         var result = vaults.map { vault -> Row in
             let count = keyItems == nil ? nil : counts[vault.id] ?? 0
-            let preselected = (count ?? 0) > 0
-                || fromFile.contains(vault.name) || fromFile.contains(vault.id)
-                || (existingText == nil && Self.defaultVaultNames.contains(vault.name))
+            let preselected = fileExists
+                ? fromFile.contains(vault.name) || fromFile.contains(vault.id)
+                : (count ?? 0) > 0 || Self.defaultVaultNames.contains(vault.name)
             return Row(id: vault.id, name: vault.name, sshKeyCount: count, isSelected: preselected)
         }
         // Vaults agent.toml names that `op` didn't list (another account, a typo) stay visible, chosen.
@@ -161,15 +196,21 @@ public final class AgentVaultChooser {
         return true
     }
 
-    /// "Use these vaults": backs up an existing agent.toml, writes the new one, waits a few seconds and
-    /// asks the agent for its keys.
-    public func apply() async {
+    /// "Use these vaults": backs up an existing agent.toml, writes the new one (the kept entries after the
+    /// chosen vaults), waits a few seconds and asks the agent for its keys. When `needsConfirmation` and
+    /// not `confirmed`, only sets `isAskingToConfirm`.
+    public func apply(confirmed: Bool = false) async {
         guard canApply else { return }
+        if needsConfirmation && !confirmed {
+            isAskingToConfirm = true
+            return
+        }
+        isAskingToConfirm = false
         phase = .saving
         do {
-            let result = try file.write(vaults: selectedNames, date: now())
+            let result = try file.write(vaults: selectedNames, keeping: keptEntries, date: now())
             backupURL = result.backupURL
-            existingText = try? file.read()
+            readExisting()
         } catch {
             phase = .saveFailed("Couldn\u{2019}t save \(OnePasswordAgentConfigFile.displayPath): \(Self.describe(error))")
             return
@@ -192,6 +233,17 @@ public final class AgentVaultChooser {
             phase = .done(keys.isEmpty ? .offersNone : .offers(keys))
         } catch {
             phase = .done(.failed(Self.describe(error)))
+        }
+    }
+
+    /// Sets `existingText` and `existingReadError` from the file; never treats a read error as "no file".
+    private func readExisting() {
+        do {
+            existingText = try file.read()
+            existingReadError = nil
+        } catch {
+            existingText = nil
+            existingReadError = Self.describe(error)
         }
     }
 

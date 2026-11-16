@@ -29,57 +29,115 @@ public enum OnePasswordAgentConfig {
     ///     [[ssh-keys]]
     ///     vault = "Private"
     ///
-    /// Names are TOML basic strings (`"` and `\` escaped, control characters as `\uXXXX`).
-    public static func toml(vaults: [String]) -> String {
+    /// then the `kept` entries (`keptEntries(in:)` of the previous file) word for word, under
+    /// `keptHeader`. Empty when no vault is left. Names are TOML basic strings (`"` and `\` escaped,
+    /// control characters as `\uXXXX`).
+    public static func toml(vaults: [String], keeping kept: [String] = []) -> String {
         var seen: Set<String> = []
         let names = vaults.filter { name in
             !name.trimmingCharacters(in: .whitespaces).isEmpty && seen.insert(name).inserted
         }
-        return names.map { "[[ssh-keys]]\nvault = \(quoted($0))\n" }.joined(separator: "\n")
+        guard !names.isEmpty else { return "" }
+        let text = names.map { "[[ssh-keys]]\nvault = \(quoted($0))\n" }.joined(separator: "\n")
+        guard !kept.isEmpty else { return text }
+        return text + "\n" + keptHeader + "\n" + kept.map { $0 + "\n" }.joined(separator: "\n")
     }
+
+    /// The comment over the entries kept from the previous file.
+    public static let keptHeader = "# Kept from your previous agent.toml"
 
     /// The `[[ssh-keys]]` entries of an existing file. Comments, blank lines, other tables and keys
     /// other than vault / item / account are skipped; a value in "…" or '…' is read, anything else is
     /// ignored. Never throws: a file it can't follow gives what it could read.
     public static func entries(in text: String) -> [Entry] {
-        var result: [Entry] = []
-        var inSSHKeys = false
-        for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty || line.hasPrefix("#") { continue }
-            if line.hasPrefix("[") {
-                let header = stripComment(line).replacingOccurrences(of: " ", with: "")
-                inSSHKeys = header == "[[ssh-keys]]"
-                if inSSHKeys { result.append(Entry()) }
-                continue
-            }
-            guard inSSHKeys, !result.isEmpty, let equals = line.firstIndex(of: "=") else { continue }
-            let key = line[..<equals].trimmingCharacters(in: .whitespaces)
-            guard let value = parseString(line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)) else { continue }
-            switch key {
-            case "vault": result[result.count - 1].vault = value
-            case "item": result[result.count - 1].item = value
-            case "account": result[result.count - 1].account = value
-            default: break
-            }
-        }
-        return result
+        parse(text).blocks.map(\.entry)
     }
 
-    /// The vaults named by entries that name only a vault (the kind SwiftSSH writes), in order.
+    /// The vaults named by entries that name only a vault (the kind SwiftSSH writes), in order. An entry
+    /// with a line this parser can't follow doesn't count (it is kept as written instead).
     public static func vaultNames(in text: String) -> [String] {
         var names: [String] = []
-        for entry in entries(in: text) {
-            guard let vault = entry.vault, entry.item == nil, entry.account == nil, !names.contains(vault) else { continue }
+        for block in parse(text).blocks where block.isVaultOnly {
+            guard let vault = block.entry.vault, !names.contains(vault) else { continue }
             names.append(vault)
         }
         return names
     }
 
-    /// Whether the file has entries "Use these vaults" can't keep (an item or an account); they stay
-    /// in the backup.
-    public static func hasOtherEntries(in text: String) -> Bool {
-        entries(in: text).contains { $0.item != nil || $0.account != nil || $0.vault == nil }
+    /// The `[[ssh-keys]]` entries "Use these vaults" can't write itself (an item, an account, or a line
+    /// this parser can't follow), each as its own text: written back unchanged after the vaults.
+    public static func keptEntries(in text: String) -> [String] {
+        parse(text).blocks.filter { !$0.isVaultOnly }.map { $0.lines.joined(separator: "\n") }
+    }
+
+    /// Lines outside the `[[ssh-keys]]` entries that aren't blank or a comment (other tables, inline
+    /// tables, top-level keys): "Use these vaults" can't keep them (they stay in the backup).
+    public static func unreadLines(in text: String) -> [String] {
+        parse(text).unread
+    }
+
+    private struct Block {
+        var entry = Entry()
+        /// The entry's lines as written, from its header; trailing blank and comment lines dropped.
+        var lines: [String]
+        var allUnderstood = true
+
+        var isVaultOnly: Bool {
+            allUnderstood && entry.vault != nil && entry.item == nil && entry.account == nil
+        }
+    }
+
+    private static func parse(_ text: String) -> (blocks: [Block], unread: [String]) {
+        var blocks: [Block] = []
+        var unread: [String] = []
+        var inSSHKeys = false
+        for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let raw = String(rawLine)
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") {
+                let header = stripComment(line).replacingOccurrences(of: " ", with: "")
+                inSSHKeys = header == "[[ssh-keys]]"
+                if inSSHKeys { blocks.append(Block(lines: [raw])) } else { unread.append(line) }
+                continue
+            }
+            guard inSSHKeys, !blocks.isEmpty else {
+                if !line.isEmpty && !line.hasPrefix("#") { unread.append(line) }
+                continue
+            }
+            let index = blocks.count - 1
+            blocks[index].lines.append(raw)
+            if line.isEmpty || line.hasPrefix("#") { continue }
+            guard let (key, value) = keyValue(line) else {
+                blocks[index].allUnderstood = false
+                continue
+            }
+            switch key {
+            case "vault": blocks[index].entry.vault = value
+            case "item": blocks[index].entry.item = value
+            case "account": blocks[index].entry.account = value
+            default: blocks[index].allUnderstood = false
+            }
+        }
+        for index in blocks.indices {
+            while let last = blocks[index].lines.last?.trimmingCharacters(in: .whitespaces),
+                  last.isEmpty || last.hasPrefix("#") {
+                blocks[index].lines.removeLast()
+            }
+        }
+        return (blocks, unread)
+    }
+
+    /// `key = "value"`: a bare or quoted key and a string value; nil when the line is anything else.
+    private static func keyValue(_ line: String) -> (String, String)? {
+        guard let equals = line.firstIndex(of: "=") else { return nil }
+        var key = line[..<equals].trimmingCharacters(in: .whitespaces)
+        if key.count >= 2, let first = key.first, first == "\"" || first == "'", key.last == first {
+            key = String(key.dropFirst().dropLast())
+        }
+        guard let value = parseString(line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)) else {
+            return nil
+        }
+        return (key, value)
     }
 
     /// `agent.toml.swiftssh-backup-2026-11-15-203000`, from the local time of `date`.
@@ -141,6 +199,9 @@ public enum OnePasswordAgentConfig {
                 switch text[index] {
                 case "\"": result.append("\"")
                 case "\\": result.append("\\")
+                case "b": result.append("\u{8}")
+                case "f": result.append("\u{C}")
+                case "e": result.append("\u{1B}")
                 case "t": result.append("\t")
                 case "n": result.append("\n")
                 case "r": result.append("\r")
@@ -172,10 +233,14 @@ public enum OnePasswordAgentConfig {
 public enum OnePasswordAgentConfigError: Error, Equatable, LocalizedError {
     /// No vault chosen: an empty file would make the agent offer no keys at all.
     case noVaults
+    /// agent.toml is a symbolic link to this path, where nothing is.
+    case linkTargetMissing(String)
 
     public var errorDescription: String? {
         switch self {
         case .noVaults: "Choose at least one vault."
+        case .linkTargetMissing(let target):
+            "agent.toml is a link to \(target), which doesn\u{2019}t exist. Fix the link, or edit the file there."
         }
     }
 }
@@ -214,25 +279,48 @@ public struct OnePasswordAgentConfigFile: Sendable {
         public let backupURL: URL?
     }
 
-    /// Writes the file for `vaults` (`OnePasswordAgentConfig.toml`). An existing file is first copied to
-    /// `agent.toml.swiftssh-backup-<date>` next to it (the copy must succeed, or nothing is written);
-    /// then the new text replaces it in one step. Creates `~/.config/1Password/ssh` when missing.
-    public func write(vaults: [String], date: Date = Date(), timeZone: TimeZone = .current) throws -> WriteResult {
-        let text = OnePasswordAgentConfig.toml(vaults: vaults)
+    /// Writes the file for `vaults` and the `kept` entries (`OnePasswordAgentConfig.toml`). An existing file
+    /// is first copied, byte for byte, to `agent.toml.swiftssh-backup-<date>` next to it (the copy must
+    /// succeed, or nothing is written); then the new text replaces it in one step. When agent.toml is a
+    /// symbolic link (a dotfile manager's), the link stays and its target gets the new text; a link to
+    /// nothing is refused. Creates `~/.config/1Password/ssh` when missing.
+    public func write(vaults: [String], keeping kept: [String] = [], date: Date = Date(),
+                      timeZone: TimeZone = .current) throws -> WriteResult {
+        let text = OnePasswordAgentConfig.toml(vaults: vaults, keeping: kept)
         guard !text.isEmpty else { throw OnePasswordAgentConfigError.noVaults }
         let fileManager = FileManager.default
         let folder = url.deletingLastPathComponent()
         try fileManager.createDirectory(at: folder, withIntermediateDirectories: true)
+        let destination = try resolvedDestination()
         var backup: URL?
-        if fileManager.fileExists(atPath: url.path) {
+        if fileManager.fileExists(atPath: destination.path) {
             let name = OnePasswordAgentConfig.backupName(date: date, timeZone: timeZone) { name in
                 fileManager.fileExists(atPath: folder.appendingPathComponent(name).path)
             }
             let target = folder.appendingPathComponent(name, isDirectory: false)
-            try fileManager.copyItem(at: url, to: target)
+            try Data(contentsOf: destination).write(to: target, options: .withoutOverwriting)
             backup = target
         }
-        try Data(text.utf8).write(to: url, options: .atomic)
+        try Data(text.utf8).write(to: destination, options: .atomic)
         return WriteResult(backupURL: backup)
+    }
+
+    /// Where the text goes: `url`, or the file its symbolic link (chain) ends at.
+    private func resolvedDestination() throws -> URL {
+        let fileManager = FileManager.default
+        var current = url
+        for _ in 0..<16 {
+            guard let type = try? fileManager.attributesOfItem(atPath: current.path)[.type] as? FileAttributeType,
+                  type == .typeSymbolicLink else { return current }
+            let link = try fileManager.destinationOfSymbolicLink(atPath: current.path)
+            let next = link.hasPrefix("/")
+                ? URL(fileURLWithPath: link, isDirectory: false)
+                : current.deletingLastPathComponent().appendingPathComponent(link, isDirectory: false)
+            guard fileManager.fileExists(atPath: next.path) else {
+                throw OnePasswordAgentConfigError.linkTargetMissing(link.hasPrefix("/") ? link : next.standardizedFileURL.path)
+            }
+            current = next.standardizedFileURL
+        }
+        return current
     }
 }

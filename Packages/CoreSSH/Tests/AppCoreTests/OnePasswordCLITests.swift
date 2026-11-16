@@ -287,7 +287,7 @@ final class OnePasswordCLITests: XCTestCase {
              .integrationOff(details: "error initializing client: connecting to desktop app: read: connection reset, make sure the CLI is correctly installed and CLI Biometric Unlock is enabled in the 1Password app")),
             ("[ERROR] 2025/07/11 10:16:41 LostConnectionToApp", .integrationOff(details: "LostConnectionToApp")),
             ("[ERROR] 2025/07/11 10:16:41 You are not currently signed in. Please run `op signin --help` for instructions",
-             .integrationOff(details: "You are not currently signed in. Please run `op signin --help` for instructions")),
+             .appLocked(details: "You are not currently signed in. Please run `op signin --help` for instructions")),
             ("[ERROR] 2025/07/11 10:16:41 No accounts configured for use with 1Password CLI.",
              .integrationOff(details: "No accounts configured for use with 1Password CLI.")),
             ("[ERROR] 2025/07/11 10:16:41 1Password app is locked", .appLocked(details: "1Password app is locked")),
@@ -472,6 +472,57 @@ final class OnePasswordCLITests: XCTestCase {
         for (stderr, expected) in cases {
             XCTAssertEqual(ProcessOnePasswordCLI.error(stderr: Data(stderr.utf8), status: 1), expected, stderr)
         }
+    }
+
+    /// Review samples: 1Password quit (its socket gone), `op` that couldn't start behind a wrapper,
+    /// signed-out wordings and EACCES on the container.
+    func testClassifierReviewSamples() {
+        let path = "/Users/cory/Library/Group Containers/2BUA8C4S2C.com.1password/t/s.sock"
+        let cases: [(String, OnePasswordError)] = [
+            ("[ERROR] 2026/11/15 09:00:00 error initializing client: connecting to desktop app: dial unix \(path): connect: no such file or directory",
+             .appNotRunning(details: "error initializing client: connecting to desktop app: dial unix \(path): connect: no such file or directory")),
+            ("[ERROR] 2026/11/15 09:00:00 error initializing client: connecting to desktop app: cannot connect to 1Password app, make sure it is running",
+             .appNotRunning(details: "error initializing client: connecting to desktop app: cannot connect to 1Password app, make sure it is running")),
+            ("[ERROR] 2026/11/15 09:00:00 cannot connect to 1Password app, make sure it is running",
+             .appNotRunning(details: "cannot connect to 1Password app, make sure it is running")),
+            ("/opt/tools/op-wrapper: line 2: op: command not found",
+             .failed("op couldn\u{2019}t start: /opt/tools/op-wrapper: line 2: op: command not found")),
+            ("env: op: No such file or directory", .failed("op couldn\u{2019}t start: env: op: No such file or directory")),
+            ("/opt/tools/op: exec format error", .failed("op couldn\u{2019}t start: /opt/tools/op: exec format error")),
+            ("[ERROR] 2026/11/15 09:00:00 account is not signed in", .appLocked(details: "account is not signed in")),
+            ("[ERROR] 2026/11/15 09:00:00 You are not currently signed in. Please run `op signin --help` for instructions",
+             .appLocked(details: "You are not currently signed in. Please run `op signin --help` for instructions")),
+            ("open /Users/cory/Library/Group Containers/2BUA8C4S2C.com.1password/Library/Application Support/1Password/Data/settings/settings.json: permission denied",
+             .containerBlocked(details: "open /Users/cory/Library/Group Containers/2BUA8C4S2C.com.1password/Library/Application Support/1Password/Data/settings/settings.json: permission denied")),
+            // A missing item is still a missing item; a stray "not found" is not.
+            ("[ERROR] 2026/11/15 09:00:00 could not read secret op://Private/web/password: no item matched",
+             .notFound("could not read secret op://Private/web/password: no item matched")),
+            ("[ERROR] 2026/11/15 09:00:00 vault \"Old\" does not exist", .notFound("vault \"Old\" does not exist")),
+            ("[ERROR] 2026/11/15 09:00:00 plugin not found in config", .failed("plugin not found in config")),
+            ("[ERROR] 2026/11/15 09:00:00 connecting to desktop app: read: connection reset",
+             .integrationOff(details: "connecting to desktop app: read: connection reset")),
+        ]
+        for (stderr, expected) in cases {
+            XCTAssertEqual(ProcessOnePasswordCLI.error(stderr: Data(stderr.utf8), status: 1), expected, stderr)
+        }
+    }
+
+    /// The telling words may come after the first 500 characters; only the stored details are cut.
+    func testClassifierReadsPastTheDetailsLimit() {
+        let stderr = String(repeating: "padding ", count: 80) + "No accounts configured for use with 1Password CLI."
+        let error = ProcessOnePasswordCLI.error(stderr: Data(stderr.utf8), status: 1)
+        guard case .integrationOff(let details?) = error else { return XCTFail("\(error)") }
+        XCTAssertEqual(details.count, ProcessOnePasswordCLI.detailsLimit)
+    }
+
+    /// The container probe can sit behind a macOS privacy prompt: it never runs on the caller's thread.
+    @MainActor
+    func testContainerProbeRunsOffTheMainThread() async {
+        let ranOnMain = await OnePasswordPaths.inBackground { Thread.isMainThread }
+        XCTAssertFalse(ranOnMain)
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("probe-\(UUID().uuidString)").path
+        let access = await OnePasswordPaths.groupContainerAccessInBackground(home: home)
+        XCTAssertEqual(access, .missing)
     }
 
     func testNoAccountsConfiguredIsTheContainerWhenMacOSBlocksThisAppToo() async throws {

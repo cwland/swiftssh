@@ -40,10 +40,13 @@ public struct OnePasswordFacts: Equatable, Sendable {
     public var containerAccess: OnePasswordPaths.Probe?
     /// Keys hosts and identities are pinned to.
     public var pinnedKeys: [PinnedAgentKey]
+    /// Whether `~/.config/1Password/ssh/agent.toml` exists (then the agent offers only what it lists).
+    public var agentConfigExists: Bool
 
     public init(appInstalled: Bool, appRunning: Bool, socket: AgentSocketStatus, agent: AgentListing,
                 cliInstalled: Bool, cliError: OnePasswordError? = nil,
-                containerAccess: OnePasswordPaths.Probe? = nil, pinnedKeys: [PinnedAgentKey] = []) {
+                containerAccess: OnePasswordPaths.Probe? = nil, pinnedKeys: [PinnedAgentKey] = [],
+                agentConfigExists: Bool = false) {
         self.appInstalled = appInstalled
         self.appRunning = appRunning
         self.socket = socket
@@ -52,6 +55,7 @@ public struct OnePasswordFacts: Equatable, Sendable {
         self.cliError = cliError
         self.containerAccess = containerAccess
         self.pinnedKeys = pinnedKeys
+        self.agentConfigExists = agentConfigExists
     }
 }
 
@@ -69,6 +73,8 @@ public enum OnePasswordFix: Equatable, Hashable, Sendable {
     case openCLIDownloadPage
     /// Choose the vaults 1Password's SSH agent offers keys from (writes agent.toml).
     case chooseVaults
+    /// Check everything again (the checklist's `refresh()`).
+    case recheck
 
     public var title: String {
         switch self {
@@ -79,6 +85,7 @@ public enum OnePasswordFix: Equatable, Hashable, Sendable {
         case .copyCLIInstallCommand: "Copy install command"
         case .openCLIDownloadPage: "Download the CLI"
         case .chooseVaults: "Choose vaults\u{2026}"
+        case .recheck: "Recheck"
         }
     }
 
@@ -92,6 +99,7 @@ public enum OnePasswordFix: Equatable, Hashable, Sendable {
         case .copyCLIInstallCommand: "Copies \(OnePasswordDiagnosis.cliInstallCommand) to the clipboard"
         case .openCLIDownloadPage: "Opens the 1Password CLI download page in your browser"
         case .chooseVaults: "Choose which 1Password vaults the SSH agent offers keys from"
+        case .recheck: "Checks 1Password again"
         }
     }
 }
@@ -109,7 +117,8 @@ public enum OnePasswordProblem: Equatable, Sendable, Identifiable {
     /// No agent socket: "Use the SSH agent" is off.
     case agentOff
     case agentNotAnswering(String)
-    case agentOffersNoKeys
+    /// The agent lists no keys; whether agent.toml exists decides the words.
+    case agentOffersNoKeys(agentConfigExists: Bool)
     /// The agent lists keys, but not the ones these hosts are pinned to (their labels).
     case pinnedKeysNotOffered([String])
     /// Any other CLI failure (a timeout, a dismissed prompt…).
@@ -154,9 +163,9 @@ public enum OnePasswordProblem: Equatable, Sendable, Identifiable {
         case .appNotRunning:
             "Open 1Password and unlock it. Keep it in the menu bar so SwiftSSH can reach it."
         case .locked:
-            "Unlock 1Password, then click Recheck."
+            "Unlock 1Password (sign in if it asks), then click Recheck."
         case .containerBlocked:
-            "In System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, turn on \u{201C}Data shared by 1Password\u{201D} under SwiftSSH (and under Terminal, for the key-install command). Then quit and reopen SwiftSSH."
+            "In System Settings \u{2192} Privacy & Security \u{2192} Files & Folders, turn on \u{201C}Data shared by 1Password\u{201D} under SwiftSSH. Then quit and reopen SwiftSSH."
         case .cliNotInstalled:
             "Needed only to fill passwords from 1Password. Install it with Homebrew: \(OnePasswordDiagnosis.cliInstallCommand)"
         case .cliIntegrationOff:
@@ -165,10 +174,14 @@ public enum OnePasswordProblem: Equatable, Sendable, Identifiable {
             "In 1Password, open Settings \u{2192} Developer and turn on \u{201C}Use the SSH agent\u{201D}."
         case .agentNotAnswering(let reason):
             "Make sure 1Password is open and unlocked, then click Recheck. (\(reason))"
-        case .agentOffersNoKeys:
-            "The agent offers keys only from the Private vault unless you choose other vaults. Choose the vaults that hold your SSH keys."
+        case .agentOffersNoKeys(let agentConfigExists):
+            agentConfigExists
+                ? "Your agent.toml lists vaults with no SSH keys. Choose the vaults that hold your SSH keys."
+                : "Without agent.toml, the agent offers keys only from the Private, Personal or Employee vault. Choose the vaults that hold your SSH keys."
         case .pinnedKeysNotOffered(let labels):
-            "The agent doesn\u{2019}t offer the key \(OnePasswordDiagnosis.list(labels)) \(labels.count == 1 ? "uses" : "use"). Its vault may not be one the agent uses."
+            labels.count == 1
+                ? "The agent doesn\u{2019}t offer the key \(labels[0]) uses. Its vault may not be one the agent uses."
+                : "The agent doesn\u{2019}t offer the keys used by \(OnePasswordDiagnosis.list(labels)). Their vaults may not be ones the agent uses."
         case .cliFailed(let error):
             error.message
         }
@@ -177,7 +190,8 @@ public enum OnePasswordProblem: Equatable, Sendable, Identifiable {
     public var fixes: [OnePasswordFix] {
         switch self {
         case .appNotInstalled: [.downloadApp]
-        case .appNotRunning, .locked, .agentNotAnswering: [.openOnePassword]
+        case .appNotRunning: [.openOnePassword]
+        case .locked, .agentNotAnswering: [.openOnePassword, .recheck]
         case .containerBlocked: [.openPrivacySettings]
         case .cliNotInstalled: [.copyCLIInstallCommand, .openCLIDownloadPage]
         case .cliIntegrationOff, .agentOff: [.openDeveloperSettings]
@@ -236,7 +250,7 @@ public enum OnePasswordDiagnosis {
             case .available:
                 switch facts.agent {
                 case .failed(let reason): add(.agentNotAnswering(reason))
-                case .keys(let keys) where keys.isEmpty: add(.agentOffersNoKeys)
+                case .keys(let keys) where keys.isEmpty: add(.agentOffersNoKeys(agentConfigExists: facts.agentConfigExists))
                 case .keys(let keys):
                     let missing = facts.pinnedKeys.filter { pinned in
                         !keys.contains { AgentKeyMatch.same($0.publicKeyLine, pinned.publicKey) }
@@ -306,7 +320,7 @@ extension PinnedAgentKey {
     /// checklist's "a host's key isn't offered".
     @MainActor
     public static func all(in vault: LocalVault) -> [PinnedAgentKey] {
-        let hosts = vault.all(Host.self).compactMap { host in
+        let hosts = vault.all(CoreModels.Host.self).compactMap { host in
             host.agentKey?.publicKey.map { PinnedAgentKey(publicKey: $0, usedBy: host.label) }
         }
         let identities = vault.all(Identity.self).compactMap { identity in

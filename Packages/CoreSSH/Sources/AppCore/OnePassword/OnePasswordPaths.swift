@@ -74,6 +74,20 @@ public enum OnePasswordPaths {
         probe(expandTilde(groupContainerProbeFile, home: home))
     }
 
+    /// `groupContainerAccess(home:)` on a global queue: the open can wait behind macOS's "would like
+    /// to access data from other apps" prompt, which must not stall the main thread or a Swift
+    /// concurrency thread.
+    public static func groupContainerAccessInBackground(home: String) async -> Probe {
+        await inBackground { groupContainerAccess(home: home) }
+    }
+
+    /// Runs `work` on a global dispatch queue (never the caller's thread) and returns its result.
+    public static func inBackground<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async { continuation.resume(returning: work()) }
+        }
+    }
+
     /// The agent socket: a non-blank `override` (tilde-expanded against `home`) is the only path looked
     /// at; otherwise the first candidate that exists. nil when nothing is found.
     public static func agentSocket(home: String, override: String?, fileExists: (String) -> Bool) -> String? {
