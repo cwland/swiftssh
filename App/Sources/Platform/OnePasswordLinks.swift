@@ -21,7 +21,7 @@ enum OnePasswordLinks {
     /// The anchor `Privacy_FilesAndFolders` is the Files & Folders pane's (found in System Settings'
     /// own strings); newer macOS also knows the form
     /// `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders`.
-    static let privacySettingsURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders")!
+    static let privacySettingsURL = URL(string: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_FilesAndFolders")!
     /// Homebrew on Apple silicon, then on Intel. "Install with Homebrew" shows only if one exists.
     static let homebrewPaths = ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]
     /// "Copy install command", and what the Homebrew install runs in Terminal (Homebrew finds the
