@@ -2,8 +2,10 @@ name: ios
 
 # Compile check for SwiftSSH on iPhone and iPad (branch "ios"): builds the CoreSSH and SwiftSSHUI
 # packages for the iOS Simulator and, once App-iOS/project.yml exists, the iOS app itself
-# (unsigned). The "mac" job compiles the Mac app (unsigned, Debug), so every push proves both apps
-# still build. Nothing is uploaded or released; TestFlight uploads are a separate workflow.
+# (unsigned). The "archive" job makes the TestFlight archive as ios-release.yml does (Release, for
+# devices, ad hoc signed) but doesn't sign or upload it. The "mac" job compiles the Mac app
+# (unsigned, Debug), so every push proves both apps still build. Nothing is uploaded or released;
+# TestFlight uploads are ios-release.yml, on "ios-v*" tags.
 #
 # Package versions: Packages/CoreSSH/Package.resolved pins the package build; the iOS app uses a
 # copy of App/Package.resolved, so both apps build the same package versions.
@@ -78,13 +80,13 @@ jobs:
           project=$(ls -d *.xcodeproj | head -1)
           scheme="${project%.xcodeproj}"
           resolved_dir="$project/project.xcworkspace/xcshareddata/swiftpm"
-          if [ -f ../App/Package.resolved ]; then
-            mkdir -p "$resolved_dir"
-            cp ../App/Package.resolved "$resolved_dir/"
-          fi
+          # Pinned exactly as ios-release.yml pins the TestFlight build, so a push proves it resolves.
+          mkdir -p "$resolved_dir"
+          cp ../App/Package.resolved "$resolved_dir/"
           log="$RUNNER_TEMP/app-ios.log"
           xcodebuild -project "$project" -scheme "$scheme" -configuration Debug \
             -destination 'generic/platform=iOS Simulator' -skipPackagePluginValidation \
+            -onlyUsePackageVersionsFromResolvedFile \
             -derivedDataPath "$RUNNER_TEMP/dd-app" CODE_SIGNING_ALLOWED=NO build > "$log" 2>&1 || {
               grep -E "error:|BUILD FAILED|The following build commands failed" "$log" | sort -u | head -80
               echo "::error::iOS app build failed (full log in the ios-build-logs artifact)"
@@ -98,6 +100,61 @@ jobs:
         with:
           name: ios-build-logs
           path: ${{ runner.temp }}/*.log
+          if-no-files-found: ignore
+
+  archive:
+    # The TestFlight archive exactly as ios-release.yml makes it (Release, for devices, ad hoc
+    # signed, packages pinned), without the signing and upload that need the App Store Connect key.
+    # Catches device-only and optimizer-only compile problems before a tag is pushed.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+
+      - name: Archive the iOS app
+        run: |
+          cd App-iOS
+          xcodegen generate
+          project=SwiftSSHMobile.xcodeproj
+          resolved_dir="$project/project.xcworkspace/xcshareddata/swiftpm"
+          mkdir -p "$resolved_dir"
+          cp ../App/Package.resolved "$resolved_dir/"
+          archive="$RUNNER_TEMP/SwiftSSHMobile.xcarchive"
+          log="$RUNNER_TEMP/archive.log"
+          xcodebuild -project "$project" -scheme SwiftSSHMobile -configuration Release \
+            -destination 'generic/platform=iOS' -skipPackagePluginValidation \
+            -onlyUsePackageVersionsFromResolvedFile -derivedDataPath "$RUNNER_TEMP/dd-archive" \
+            -archivePath "$archive" \
+            CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM=7C54KH5NDL \
+            CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            archive > "$log" 2>&1 || {
+              grep -E "error:|ARCHIVE FAILED|The following build commands failed" "$log" | sort -u | head -80 || true
+              echo "::error::iOS archive failed (full log in the ios-archive-log artifact)"
+              exit 1
+            }
+          grep -E "ARCHIVE SUCCEEDED" "$log"
+          plist="$archive/Products/Applications/SwiftSSH.app/Info.plist"
+          for key in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion ITSAppUsesNonExemptEncryption; do
+            echo "$key: $(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")"
+          done
+          [ "$(/usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" "$plist")" = false ]
+
+      - name: Upload the archive log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-archive-log
+          path: ${{ runner.temp }}/archive.log
           if-no-files-found: ignore
 
   mac:

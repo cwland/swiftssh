@@ -66,6 +66,10 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<false/>
+	<!-- Export compliance: SSH uses only standard encryption (no proprietary algorithms), so App
+	     Store Connect doesn't ask about it for every TestFlight build. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

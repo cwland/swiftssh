@@ -5,6 +5,7 @@
 SwiftSSH keeps your servers, logins and SSH keys in one encrypted vault, opens them in fast terminal tabs and split-screen workspaces, and keeps every Mac in step through a small sync server you run yourself. It works with 1Password for SSH keys and passwords, so secrets can stay in 1Password instead of the app.
 
 - **Platform:** macOS 15 or later (Apple silicon and Intel), Swift 6, SwiftUI with AppKit
+- **iPhone and iPad:** a companion app (iOS/iPadOS 18) through TestFlight, see [below](#swiftssh-for-iphone-and-ipad)
 - **Download:** signed and notarized `.dmg` on the [Releases](https://github.com/cwland/swiftssh/releases) page
 - **Formerly** "Termius Reimagined", renamed to SwiftSSH in v0.11.0. On first launch SwiftSSH moves an existing Termius Reimagined vault over by itself (see [App/README.md](App/README.md#moving-over-from-termius-reimagined-first-launch)).
 
@@ -75,6 +76,38 @@ SwiftSSH is SSH only, on purpose: no SFTP browser, port forwarding, jump hosts, 
 
 ---
 
+## SwiftSSH for iPhone and iPad
+
+A **companion app** for reaching your servers from an iPhone or iPad (iOS/iPadOS 18 or later), with the same look as the Mac app. Everything is set up on the Mac; the phone joins the same sync server and connects. It is installed through **TestFlight** (see [docs/ios-testflight.md](docs/ios-testflight.md)), not the App Store.
+
+**What it does**
+- Joins your sync server (address, an API key for the device, the vault passphrase) and shows the synced hosts, groups and snippets. Nothing works before joining.
+- **iPad:** a sidebar (Hosts, Snippets, Known Hosts, Keys, Settings), group and host cards with OS badges, and a tab bar of open sessions. With a keyboard: ⌘K quick connect, ⌘F search, ⌘W close, ⌘1…9 and ⌘[ / ⌘] to switch sessions.
+- **iPhone:** the host list, a session screen, and a floating pill to switch sessions.
+- Several sessions at once with the built-in SSH engine, each in its host's terminal theme; pinch to change the text size.
+- A **key bar** above the keyboard: Esc, Tab, sticky Ctrl and Alt (tap for one key, double-tap to lock), arrows, Home/End, Page Up/Down and common symbols. It hides when a hardware keyboard is attached.
+- The connection screen, host key prompts, a Known Hosts list, and a snippets drawer (Paste or Run, `{{placeholders}}` asked first).
+- Sessions survive a short trip to another app; on return, or when the network changes, they are checked at once and dropped ones reconnect in the same tab.
+- Optional Face ID app lock.
+
+**What it doesn't do**
+- No adding or editing hosts, groups, identities, keys or snippets: do that on a Mac and it arrives through sync. The phone only adds the server keys you trust and connection logs.
+- No split screen, workspaces, broadcast input, shell history panel, highlighting editor or Recently Deleted.
+- **RSA keys don't work on iOS yet:** on the Mac they go through the Mac's own `ssh`, which iOS doesn't have.
+
+**1Password on iOS**
+
+iOS has no 1Password SSH agent and no `op` command, so it works differently from the Mac:
+- **Passwords:** when a host needs a password, SwiftSSH shows a password field with the host's username, and **iOS Password AutoFill** offers your 1Password login above the keyboard. For hosts whose Mac password is a 1Password reference, the prompt names the 1Password item. Nothing is saved.
+- **SSH keys: import each key once.** In 1Password, export or share the SSH key item's private key to SwiftSSH (Share → SwiftSSH, Files, or copy and Paste in Keys → Import Key). SwiftSSH keeps it in this device's Keychain only (never synced or in iCloud Keychain), and asks for Face ID before using it. A 1Password host then tries your imported keys in turn (the key the Mac pinned first, at most five).
+  - **Ed25519 keys only.** RSA and ECDSA keys aren't supported on iOS yet.
+  - A passphrase-protected export works if it uses OpenSSH's standard AES-CTR encryption (asked once at import). For any other encryption, export the key without a passphrase.
+- Keys kept in SwiftSSH's own vault on the Mac (not in 1Password) arrive through sync and need no import.
+
+To build it yourself: `cd App-iOS && xcodegen generate`, copy `../App/Package.resolved` into `SwiftSSHMobile.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/`, open `SwiftSSHMobile.xcodeproj` and run on an iPhone or iPad.
+
+---
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |
@@ -113,12 +146,16 @@ Local builds use a self-signed certificate so macOS permissions survive rebuilds
 
 Pushing a tag `vX.Y.Z` (matching `MARKETING_VERSION` in `App/project.yml`) builds, signs, notarizes and publishes a GitHub Release with the `.dmg` (`.github/workflows/release.yml`). A `build-*` tag builds the `.dmg` as a downloadable artifact without a release. Package versions are pinned in `App/Package.resolved`.
 
+Pushing a tag `ios-vX.Y.Z` (matching `MARKETING_VERSION` in `App-iOS/project.yml`) builds the iPhone and iPad app and uploads it to TestFlight (`.github/workflows/ios-release.yml`); the one-time App Store Connect setup is in [docs/ios-testflight.md](docs/ios-testflight.md).
+
 ## Repository layout
 
 | Path | What's there |
 |---|---|
 | `App/` | The macOS app (SwiftUI/AppKit), its tests and XcodeGen project |
-| `Packages/CoreSSH/` | Shared Swift package: models (`CoreModels`), SSH engines (`SSHCore`), encrypted sync (`SyncCore`) and app logic (`AppCore`), ready for a future iOS app |
+| `App-iOS/` | The iPhone and iPad companion app (SwiftUI/UIKit) and its XcodeGen project |
+| `Packages/CoreSSH/` | Shared Swift package: models (`CoreModels`), SSH engines (`SSHCore`), encrypted sync (`SyncCore`) and app logic (`AppCore`), used by both apps |
+| `Packages/SwiftSSHUI/` | The shared look (colours, cards, OS badges) of both apps |
 | `Packages/Citadel/` | Bundled SSH library with a small patch (`PATCHES.md`) |
 | `Server/` | The sync server (Swift, Vapor, SQLite) and its Docker setup |
 | `docs/` | The original specification and design notes |

@@ -1,0 +1,206 @@
+name: ios-release
+
+# Builds SwiftSSH for iPhone and iPad and uploads it to TestFlight.
+#   Push a tag:   git tag ios-v1.0.0 origin/ios && git push origin ios-v1.0.0
+# The version in the tag must match MARKETING_VERSION in App-iOS/project.yml. To upload another
+# build of the same version, add a suffix after a dash: ios-v1.0.0-2, ios-v1.0.0-fix, ...
+# The build number is this workflow's run number, so every upload is new to App Store Connect.
+# One-time setup in App Store Connect: docs/ios-testflight.md.
+#
+# Package versions: the iOS app uses a copy of App/Package.resolved (as the ios workflow does), so
+# it builds exactly the package versions the Mac app was released with.
+#
+# Signing is managed by Apple ("cloud signing"): the app is archived without a certificate (as Xcode
+# Cloud does), then the export signs it with the team's cloud-managed distribution certificate and
+# an App Store profile that Xcode creates, and uploads it. No certificate or profile is stored here.
+# Repository secrets, an App Store Connect API key with the Admin role:
+#   ASC_KEY_P8, ASC_KEY_ID, ASC_ISSUER_ID     a key for TestFlight uploads (used when set), or
+#   NOTARY_KEY_P8, NOTARY_KEY_ID, NOTARY_ISSUER_ID   the Mac notarization key (used otherwise)
+# *_KEY_P8 holds the .p8 file in base64 (the raw file text works too).
+
+on:
+  push:
+    tags: ["ios-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # -e and pipefail: a failing command in a pipeline fails the step.
+    shell: bash
+
+env:
+  TEAM_ID: 7C54KH5NDL
+  BUNDLE_ID: com.cwland.SwiftSSH.mobile
+
+jobs:
+  testflight:
+    # Xcode 27 image (arm64), as in release.yml and ios.yml.
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Tools
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          swift --version
+
+      - name: Version
+        id: version
+        run: |
+          version=$(grep -m1 'MARKETING_VERSION:' App-iOS/project.yml | sed 's/.*"\(.*\)".*/\1/')
+          tag_version="${GITHUB_REF_NAME#ios-v}"
+          tag_version="${tag_version%%-*}"
+          if [ "$tag_version" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match MARKETING_VERSION $version in App-iOS/project.yml"
+            exit 1
+          fi
+          build="${{ github.run_number }}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "SwiftSSH for iOS $version, build $build"
+
+      - name: App Store Connect key
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          NOTARY_KEY_P8: ${{ secrets.NOTARY_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          if [ -n "$ASC_KEY_P8" ]; then
+            key_p8="$ASC_KEY_P8"; key_id="$ASC_KEY_ID"; issuer_id="$ASC_ISSUER_ID"; source=ASC_KEY
+          else
+            key_p8="$NOTARY_KEY_P8"; key_id="$NOTARY_KEY_ID"; issuer_id="$NOTARY_ISSUER_ID"; source=NOTARY_KEY
+          fi
+          if [ -z "$key_p8" ] || [ -z "$key_id" ] || [ -z "$issuer_id" ]; then
+            echo "::error::No App Store Connect API key: set ASC_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID (see docs/ios-testflight.md)"
+            exit 1
+          fi
+          # The key file is readable by this user only, outside the checkout, and deleted by the
+          # last step whatever happens. Its contents are never printed.
+          umask 077
+          dir="$RUNNER_TEMP/asc-key"
+          mkdir -p "$dir"
+          key="$dir/AuthKey.p8"
+          if printf '%s' "$key_p8" | grep -q -- '-----BEGIN PRIVATE KEY-----'; then
+            printf '%s\n' "$key_p8" > "$key"
+          else
+            printf '%s' "$key_p8" | base64 --decode > "$key"
+          fi
+          grep -q -- '-----BEGIN PRIVATE KEY-----' "$key" || {
+            echo "::error::$source""_P8 is not a .p8 key (or its base64)"
+            exit 1
+          }
+          echo "Using the $source secrets"
+          {
+            echo "ASC_KEY_PATH=$key"
+            echo "ASC_KEY_ID=$key_id"
+            echo "ASC_ISSUER_ID=$issuer_id"
+          } >> "$GITHUB_ENV"
+
+      - name: Archive
+        env:
+          BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          cd App-iOS
+          xcodegen generate
+          project=SwiftSSHMobile.xcodeproj
+          resolved_dir="$project/project.xcworkspace/xcshareddata/swiftpm"
+          mkdir -p "$resolved_dir"
+          cp ../App/Package.resolved "$resolved_dir/"
+          archive="$RUNNER_TEMP/SwiftSSHMobile.xcarchive"
+          log="$RUNNER_TEMP/archive.log"
+          # Ad hoc signed, as Xcode Cloud archives: no certificate is needed on this Mac. The export
+          # below re-signs everything for the App Store. (An Apple Development certificate created
+          # here would be lost with the runner, and the next run would have to revoke it.)
+          xcodebuild -project "$project" -scheme SwiftSSHMobile -configuration Release \
+            -destination 'generic/platform=iOS' -skipPackagePluginValidation \
+            -onlyUsePackageVersionsFromResolvedFile -derivedDataPath "$RUNNER_TEMP/dd" \
+            -archivePath "$archive" \
+            CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$TEAM_ID" \
+            CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CURRENT_PROJECT_VERSION="$BUILD" \
+            archive > "$log" 2>&1 || {
+              grep -E "error:|ARCHIVE FAILED|The following build commands failed" "$log" | sort -u | head -80 || true
+              echo "::error::xcodebuild archive failed (full log in the ios-release-logs artifact)"
+              exit 1
+            }
+          grep -E "ARCHIVE SUCCEEDED" "$log"
+          plist="$archive/Products/Applications/SwiftSSH.app/Info.plist"
+          bundle=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist")
+          short=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$plist")
+          number=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$plist")
+          encryption=$(/usr/libexec/PlistBuddy -c "Print :ITSAppUsesNonExemptEncryption" "$plist" 2>/dev/null || echo missing)
+          echo "archived $bundle $short ($number), ITSAppUsesNonExemptEncryption: $encryption"
+          [ "$bundle" = "$BUNDLE_ID" ] || { echo "::error::Bundle ID is $bundle, expected $BUNDLE_ID"; exit 1; }
+          [ "$number" = "$BUILD" ] || { echo "::error::Build number is $number, expected $BUILD"; exit 1; }
+          [ "$encryption" = false ] || echo "::warning::ITSAppUsesNonExemptEncryption isn't false: App Store Connect will ask about encryption before testers get the build"
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Sign and upload to TestFlight
+        run: |
+          options="$RUNNER_TEMP/ExportOptions.plist"
+          cat > "$options" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>app-store-connect</string>
+            <key>destination</key><string>upload</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>$TEAM_ID</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$options"
+          log="$RUNNER_TEMP/export.log"
+          xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportOptionsPlist "$options" \
+            -exportPath "$RUNNER_TEMP/export" -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_PATH" -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" > "$log" 2>&1 || {
+              grep -iE "error|failed|FORBIDDEN|not found|No profiles|No signing" "$log" | sort -u | head -60 || true
+              # The distribution logs say why signing or the upload failed. Lines that could hold
+              # a token are left out.
+              dist=$(grep -oE "'/[^']+\.xcdistributionlogs'" "$log" | head -1 | tr -d "'" || true)
+              if [ -n "$dist" ] && [ -d "$dist" ]; then
+                grep -rhiE "error|forbidden|denied|role|not allowed" "$dist" 2>/dev/null \
+                  | grep -viE "authorization|bearer|token|eyJ" | sort -u | head -60 || true
+              fi
+              echo "::error::Export or upload failed. A FORBIDDEN error usually means the API key's role is too low (docs/ios-testflight.md)"
+              exit 1
+            }
+          grep -E "EXPORT SUCCEEDED|Upload succeeded|Uploaded" "$log" || tail -5 "$log"
+          {
+            echo "### SwiftSSH for iOS ${{ steps.version.outputs.version }} (${{ steps.version.outputs.build }}) uploaded"
+            echo ""
+            echo "App Store Connect processes the build (usually 5 to 30 minutes), then it appears in TestFlight."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-logs
+          path: |
+            ${{ runner.temp }}/archive.log
+            ${{ runner.temp }}/export.log
+          if-no-files-found: ignore
+
+      - name: Delete the App Store Connect key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc-key"
