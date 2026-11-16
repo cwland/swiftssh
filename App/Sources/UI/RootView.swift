@@ -234,7 +234,7 @@ private struct WindowLifecycleObserver: NSViewRepresentable {
     }
 }
 
-/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts, Keychain, Logs and Snippets
+/// The open vault: the selected terminal tab, or the Vaults screens. Holds the Hosts, Keychain, Logs, Snippets and Known Hosts
 /// view models so search, filters and the open group survive switching sidebar items and tabs.
 /// They are built once, on appear, rather than in `init` (which runs on every parent body
 /// evaluation).
@@ -250,6 +250,7 @@ private struct ReadyArea: View {
     @State private var keychainModel: KeychainViewModel?
     @State private var logsModel: LogsViewModel?
     @State private var snippetsModel: SnippetsViewModel?
+    @State private var knownHostsModel: KnownHostsViewModel?
     @State private var dropError: String?
 
     var body: some View {
@@ -298,7 +299,8 @@ private struct ReadyArea: View {
                     hostsModel: hostsModel,
                     keychainModel: keychainModel,
                     logsModel: logsModel,
-                    snippetsModel: snippetsModel
+                    snippetsModel: snippetsModel,
+                    knownHostsModel: knownHostsModel
                 )
             }
         }
@@ -314,6 +316,9 @@ private struct ReadyArea: View {
             }
             if snippetsModel == nil {
                 snippetsModel = SnippetsViewModel(vault: vault)
+            }
+            if knownHostsModel == nil {
+                knownHostsModel = KnownHostsViewModel(vault: vault)
             }
         }
         .onChange(of: sessions.tabs.map(\.id)) { _, openIDs in
@@ -430,6 +435,7 @@ private struct MainArea: View {
     let keychainModel: KeychainViewModel?
     let logsModel: LogsViewModel?
     let snippetsModel: SnippetsViewModel?
+    let knownHostsModel: KnownHostsViewModel?
 
     @Environment(\.openWindow) private var openWindow
 
@@ -489,7 +495,11 @@ private struct MainArea: View {
                 Theme.contentBackground
             }
         case .knownHosts:
-            PlaceholderView("Coming in a later milestone")
+            if let knownHostsModel {
+                KnownHostsView(model: knownHostsModel)
+            } else {
+                Theme.contentBackground
+            }
         }
     }
 }

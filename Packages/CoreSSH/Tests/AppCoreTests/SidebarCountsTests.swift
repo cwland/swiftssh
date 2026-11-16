@@ -22,7 +22,7 @@ final class SidebarCountsTests: XCTestCase {
         XCTAssertEqual(counts.count(for: .hosts), 1, "deleted hosts don't count")
         XCTAssertEqual(counts.count(for: .keychain), 2, "identities and keys")
         XCTAssertEqual(counts.count(for: .snippets), 2)
-        XCTAssertNil(counts.count(for: .knownHosts), "no number beside the placeholder screen")
+        XCTAssertEqual(counts.count(for: .knownHosts), 1, "one per live key")
         XCTAssertEqual(counts.count(for: .logs), 0)
 
         XCTAssertEqual(counts.count(for: .logs), LogsViewModel(vault: vault).rows.count, "matches the Logs screen")
