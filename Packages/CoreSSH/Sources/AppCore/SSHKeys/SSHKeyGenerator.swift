@@ -27,7 +27,11 @@ extension GeneratedKey: CustomStringConvertible, CustomDebugStringConvertible {
 
 public enum SSHKeyGenerator {
     public static func ed25519(comment: String) -> GeneratedKey {
-        let key = Curve25519.Signing.PrivateKey()
+        openSSH(Curve25519.Signing.PrivateKey(), comment: comment)
+    }
+
+    /// An existing Ed25519 key as an unencrypted OpenSSH private key and its authorized_keys line.
+    public static func openSSH(_ key: Curve25519.Signing.PrivateKey, comment: String) -> GeneratedKey {
         let seed = Array(key.rawRepresentation)
         let publicBytes = Array(key.publicKey.rawRepresentation)
         let algorithm = "ssh-ed25519"

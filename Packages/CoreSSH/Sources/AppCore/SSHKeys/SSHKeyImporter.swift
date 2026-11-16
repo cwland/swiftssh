@@ -147,7 +147,7 @@ public enum SSHKeyImporter {
     // MARK: - PKCS#1 / PKCS#8
 
     private static let rsaEncryptionOID: [UInt8] = [0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x01]
-    private static let ed25519OID: [UInt8] = [0x2B, 0x65, 0x70]
+    fileprivate static let ed25519OID: [UInt8] = [0x2B, 0x65, 0x70]
     private static let unsupportedOIDs: [[UInt8]: String] = [
         [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01]: "ecdsa", // id-ecPublicKey
         [0x2A, 0x86, 0x48, 0xCE, 0x38, 0x04, 0x01]: "dsa",
@@ -252,13 +252,53 @@ public enum SSHKeyImporter {
     }
 
     /// Maps low-level parse failures to `.unrecognizedFormat`, keeping import errors as they are.
-    private static func parsing<T>(_ body: () throws -> T) throws -> T {
+    fileprivate static func parsing<T>(_ body: () throws -> T) throws -> T {
         do {
             return try body()
         } catch let error as SSHKeyImportError {
             throw error
         } catch {
             throw SSHKeyImportError.unrecognizedFormat
+        }
+    }
+}
+
+// MARK: - Reading the private key itself (imported keys on iPhone/iPad)
+
+extension SSHKeyImporter {
+    /// The label of the text's first PEM block ("OPENSSH PRIVATE KEY", "PRIVATE KEY", …), nil when none.
+    static func armorLabel(_ text: String) -> String? {
+        try? PEMArmor(text).label
+    }
+
+    /// The cipher name of an OpenSSH private key ("none", "aes256-ctr", …), nil when the text isn't one.
+    static func openSSHCipher(_ text: String) -> String? {
+        guard let armor = try? PEMArmor(text), armor.label == "OPENSSH PRIVATE KEY" else { return nil }
+        let magic = Array("openssh-key-v1\0".utf8)
+        guard armor.body.starts(with: magic) else { return nil }
+        var reader = SSHWireReader(Array(armor.body.dropFirst(magic.count)))
+        guard let cipher = try? reader.string() else { return nil }
+        return String(decoding: cipher, as: UTF8.self)
+    }
+
+    /// The Ed25519 key of an unencrypted PKCS#8 `PRIVATE KEY` block (RFC 8410).
+    static func pkcs8Ed25519(_ text: String) throws -> Curve25519.Signing.PrivateKey {
+        try parsing {
+            let armor = try PEMArmor(text)
+            guard armor.label == "PRIVATE KEY", armor.headers.isEmpty else { throw SSHKeyImportError.unrecognizedFormat }
+            var outer = DERReader(armor.body)
+            var sequence = DERReader(try outer.read(tag: DERReader.sequence))
+            try outer.expectEnd()
+            _ = try sequence.read(tag: DERReader.integer) // version
+            var algorithm = DERReader(try sequence.read(tag: DERReader.sequence))
+            guard try algorithm.read(tag: DERReader.objectIdentifier) == ed25519OID else {
+                throw SSHKeyImportError.unrecognizedFormat
+            }
+            var inner = DERReader(try sequence.read(tag: DERReader.octetString))
+            let seed = try inner.read(tag: DERReader.octetString)
+            try inner.expectEnd()
+            guard seed.count == 32 else { throw SSHKeyImportError.unrecognizedFormat }
+            return try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
         }
     }
 }
