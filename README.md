@@ -7,7 +7,6 @@ SwiftSSH keeps your servers, logins and SSH keys in one encrypted vault, opens t
 - **Platform:** macOS 15 or later (Apple silicon and Intel), Swift 6, SwiftUI with AppKit
 - **iPhone and iPad:** a companion app (iOS/iPadOS 18) through TestFlight, see [below](#swiftssh-for-iphone-and-ipad)
 - **Download:** signed and notarized `.dmg` on the [Releases](https://github.com/cwland/swiftssh/releases) page
-- **Formerly** "Termius Reimagined", renamed to SwiftSSH in v0.11.0. On first launch SwiftSSH moves an existing Termius Reimagined vault over by itself (see [App/README.md](App/README.md#moving-over-from-termius-reimagined-first-launch)).
 
 SwiftSSH is SSH only, on purpose: no SFTP browser, port forwarding, jump hosts, Telnet, serial or AI features.
 
