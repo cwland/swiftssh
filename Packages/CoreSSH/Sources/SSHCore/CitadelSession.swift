@@ -14,7 +14,10 @@ import Synchronization
 ///   session ends or the attempt is abandoned, so no half-open connection outlives the session.
 /// - `connectTimeout` covers TCP connect, handshake and authentication (time spent in the host key
 ///   evaluator, which may be waiting for the user, is not counted), and separately the opening of the
-///   PTY channel.
+///   PTY channel. The plan's `reachTimeout` (when set) also bounds the name lookup and TCP connect: a
+///   server not reached by then fails with `.timedOut` before any `.connected(address:)` step.
+/// - A server that can't be reached at all (name not found, connection refused, no route) fails with
+///   `.unreachable`; the session manager may then try the host's backup address.
 public final class CitadelSession: TerminalSession {
     public let events: AsyncStream<SessionEvent>
 
@@ -27,6 +30,10 @@ public final class CitadelSession: TerminalSession {
     private let hostKeys: any HostKeyEvaluator
     private let connectTimeout: Duration
     private let commandTimeout: Duration
+    /// Looks up host names (host, port, isAbandoned); tests replace it.
+    private let resolver: Resolver
+
+    typealias Resolver = @Sendable (String, Int, @escaping @Sendable () -> Bool) async throws -> [SocketAddress]
     private let eventContinuation: AsyncStream<SessionEvent>.Continuation
     private let input: AsyncStream<PTYInput>
     private let inputContinuation: AsyncStream<PTYInput>.Continuation
@@ -73,7 +80,9 @@ public final class CitadelSession: TerminalSession {
     /// `commandTimeout` bounds `runCommand`; only tests change it (and `quickCheckTimeout`, `echoWait`).
     /// Liveness probes follow `plan.keepAlive`.
     init(plan: ConnectionPlan, hostKeys: any HostKeyEvaluator, connectTimeout: Duration, commandTimeout: Duration,
-         quickCheckTimeout: Duration = .milliseconds(2500), echoWait: Duration = .seconds(2)) {
+         quickCheckTimeout: Duration = .milliseconds(2500), echoWait: Duration = .seconds(2),
+         resolver: @escaping Resolver = { try await NameResolver.resolve(host: $0, port: $1, isAbandoned: $2) }) {
+        self.resolver = resolver
         self.plan = plan
         self.hostKeys = hostKeys
         self.connectTimeout = connectTimeout
@@ -330,6 +339,9 @@ public final class CitadelSession: TerminalSession {
         let host = plan.host
         let port = plan.port
         let timeout = connectTimeout
+        let reachLimit = Self.reachBudget(connectTimeout: timeout, reachTimeout: plan.reachTimeout)
+        let reached = OneShot<Void>()
+        let resolver = resolver
         let secrets = secretStrings
         let method = Self.authenticationMethodName(for: plan.credential)
         // Steps are reported only while this attempt is still undecided.
@@ -339,8 +351,10 @@ public final class CitadelSession: TerminalSession {
         // This task owns the group: it is the only place that shuts it down for a failed or lost attempt.
         Task {
             do {
-                let channel = try await Self.openTCPConnection(host: host, port: port, group: group, timeout: timeout,
+                let channel = try await Self.openTCPConnection(host: host, port: port, group: group, timeout: reachLimit,
+                                                               resolver: resolver,
                                                                isAbandoned: { outcome.isResolved }, progress: progress)
+                reached.resolve(())
                 progress(.handshake)
                 // A server that hangs up before signing in ends the attempt now, not at the timeout. A socket
                 // error usually explains it first; this is the fallback when it doesn't.
@@ -381,9 +395,15 @@ public final class CitadelSession: TerminalSession {
             }
         }
         let watchdog = Task { await Self.watch(outcome, tracker: tracker, timeout: timeout) }
+        // The reach limit: the server must be reached (name looked up, TCP up) within it.
+        let reachWatchdog: Task<Void, Never>? = reachLimit < timeout ? Task {
+            try? await Task.sleep(for: reachLimit)
+            if !Task.isCancelled && !reached.isResolved { outcome.resolve(.failed(.timedOut)) }
+        } : nil
 
         let result = await outcome.wait()
         watchdog.cancel()
+        reachWatchdog?.cancel()
         state.withLock { $0.cancelPending = nil }
 
         switch result {
@@ -411,6 +431,13 @@ public final class CitadelSession: TerminalSession {
             if tracker.wasRejected { return .failed(.hostKeyRejected) }
             return result
         }
+    }
+
+    /// How long reaching the server (name lookup and TCP connect) may take: `reachTimeout` when it is
+    /// shorter than `connectTimeout`, else `connectTimeout`.
+    static func reachBudget(connectTimeout: Duration, reachTimeout: Duration?) -> Duration {
+        guard let reachTimeout else { return connectTimeout }
+        return min(reachTimeout, connectTimeout)
     }
 
     /// Resolves `outcome` with `.timedOut` once `timeout` has passed, not counting host key evaluation time.
@@ -774,11 +801,12 @@ public final class CitadelSession: TerminalSession {
         case let error as ChannelError:
             if case .connectTimeout = error { return .timedOut }
         case let error as TCPConnectFailure:
+            // No address took the connection: the server can't be reached (refused, no route, …).
             if error.timedOut { return .timedOut }
             let detail = error.reason.map { " (\($0))" } ?? ""
-            return .connectionFailed(redact("Could not connect to \(error.host):\(error.port)\(detail)", secrets: secrets))
+            return .unreachable(redact("Could not connect to \(error.host):\(error.port)\(detail)", secrets: secrets))
         case let error as NameResolutionFailure:
-            return .connectionFailed("Could not resolve \(error.host) (\(error.reason))")
+            return .unreachable("Could not resolve \(error.host) (\(error.reason))")
         default:
             break
         }
@@ -841,6 +869,7 @@ public final class CitadelSession: TerminalSession {
     /// handler is installed and speaks first, so the server's version line can't be read (and dropped)
     /// before anyone handles it.
     static func openTCPConnection(host: String, port: Int, group: EventLoopGroup, timeout: Duration,
+                                  resolver: Resolver = { try await NameResolver.resolve(host: $0, port: $1, isAbandoned: $2) },
                                   isAbandoned: @escaping @Sendable () -> Bool,
                                   progress: @escaping @Sendable (ConnectionStep) -> Void) async throws -> Channel {
         let clock = ContinuousClock()
@@ -850,7 +879,7 @@ public final class CitadelSession: TerminalSession {
             addresses = [literal]
         } else {
             progress(.resolving(host: host))
-            addresses = try await NameResolver.resolve(host: host, port: port, isAbandoned: isAbandoned)
+            addresses = try await resolver(host, port, isAbandoned)
         }
         // The rest of the one connect budget (not per address).
         let remaining = max(timeout - (clock.now - begin), .milliseconds(1))

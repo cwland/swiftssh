@@ -568,6 +568,67 @@ final class CitadelSessionTests: XCTestCase {
         withExtendedLifetime(silent) {}
     }
 
+    // MARK: Reach limit (backup address)
+
+    /// A name lookup that takes longer than `reachTimeout` ends the attempt then, well before
+    /// `connectTimeout`, as `.timedOut` with nothing reached.
+    func testReachTimeoutBoundsTheNameLookup() async throws {
+        var plan = plan(.password(server.password))
+        plan.host = "slow-name.test"
+        plan.reachTimeout = .milliseconds(300)
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted), connectTimeout: .seconds(10),
+                                     commandTimeout: .seconds(15),
+                                     resolver: { _, _, _ in try await Task.sleep(for: .seconds(5)); return [] })
+        let recorder = EventRecorder(session.events)
+        let clock = ContinuousClock()
+        let begin = clock.now
+        await session.start(cols: 80, rows: 24)
+        XCTAssertLessThan(clock.now - begin, .seconds(3))
+        try await recorder.waitForFinish()
+        XCTAssertEqual(recorder.steps, [.resolving(host: "slow-name.test")])
+        XCTAssertEqual(recorder.nonOutputEvents.last, .closed(.failed(.timedOut)))
+    }
+
+    /// Once the TCP connection is up the reach limit no longer applies: a server that never speaks
+    /// times out at `connectTimeout`, after `.connected(address:)`.
+    func testReachTimeoutDoesNotCutTheHandshake() async throws {
+        let silent = try ListeningSocket()
+        var plan = plan(.password(server.password))
+        plan.port = silent.port
+        plan.reachTimeout = .milliseconds(200)
+        let session = CitadelSession(plan: plan, hostKeys: TestEvaluator(decision: .trusted), connectTimeout: .milliseconds(1500))
+        let recorder = EventRecorder(session.events)
+        let clock = ContinuousClock()
+        let begin = clock.now
+        await session.start(cols: 80, rows: 24)
+        XCTAssertGreaterThanOrEqual(clock.now - begin, .milliseconds(1400), "not the reach limit")
+        try await recorder.waitForFinish()
+        XCTAssertTrue(recorder.steps.contains(.connected(address: "127.0.0.1")), "\(recorder.steps)")
+        XCTAssertEqual(recorder.nonOutputEvents.last, .closed(.failed(.timedOut)))
+        withExtendedLifetime(silent) {}
+    }
+
+    func testTCPBudgetIsTheReachLimitWhenShorter() {
+        XCTAssertEqual(CitadelSession.reachBudget(connectTimeout: .seconds(15), reachTimeout: .seconds(5)), .seconds(5))
+        XCTAssertEqual(CitadelSession.reachBudget(connectTimeout: .seconds(5), reachTimeout: .seconds(5)), .seconds(5))
+        XCTAssertEqual(CitadelSession.reachBudget(connectTimeout: .seconds(3), reachTimeout: .seconds(5)), .seconds(3))
+        XCTAssertEqual(CitadelSession.reachBudget(connectTimeout: .seconds(15), reachTimeout: nil), .seconds(15))
+    }
+
+    func testCantReachErrorsAreUnreachableAndOthersAreNot() {
+        let tracker = HostKeyTracker(preapproved: nil)
+        XCTAssertEqual(CitadelSession.connectError(TCPConnectFailure(host: "h", port: 22, reason: "no route to host", timedOut: false),
+                                                   tracker: tracker, secrets: []),
+                       .unreachable("Could not connect to h:22 (no route to host)"))
+        XCTAssertEqual(CitadelSession.connectError(TCPConnectFailure(host: "h", port: 22, reason: nil, timedOut: true),
+                                                   tracker: tracker, secrets: []), .timedOut)
+        XCTAssertEqual(CitadelSession.connectError(NameResolutionFailure(host: "h", reason: "host name not found"),
+                                                   tracker: tracker, secrets: []),
+                       .unreachable("Could not resolve h (host name not found)"))
+        XCTAssertEqual(CitadelSession.connectError(IOError(errnoCode: ECONNRESET, reason: "read"), tracker: tracker, secrets: []),
+                       .connectionFailed("connection reset by peer"), "after the connection was up")
+    }
+
     /// The time the user spends answering the host key prompt does not count against the timeout,
     /// and a prompt longer than Citadel's fixed 10 s login timer still ends in a working session
     /// without asking twice.
@@ -664,7 +725,7 @@ final class CitadelSessionTests: XCTestCase {
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForFinish()
         XCTAssertEqual(recorder.steps, [.connecting(address: "127.0.0.1", port: closedPort)])
-        guard case .closed(.failed(.connectionFailed(let reason))) = recorder.nonOutputEvents.last else {
+        guard case .closed(.failed(.unreachable(let reason))) = recorder.nonOutputEvents.last else {
             return XCTFail("\(recorder.nonOutputEvents)")
         }
         XCTAssertTrue(reason.contains("connection refused"), reason)
@@ -683,7 +744,7 @@ final class CitadelSessionTests: XCTestCase {
             return XCTFail("\(recorder.nonOutputEvents)")
         }
         // Without DNS in the sandbox the lookup may also time out; either way nothing connected.
-        if case .connectionFailed(let reason) = error {
+        if case .unreachable(let reason) = error {
             XCTAssertTrue(reason.hasPrefix("Could not resolve no-such-host.invalid"), reason)
         } else {
             XCTAssertEqual(error, .timedOut)
