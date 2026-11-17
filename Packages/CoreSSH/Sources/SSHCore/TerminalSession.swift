@@ -113,18 +113,26 @@ public struct ConnectionPlan: Sendable {
     /// How long reaching and signing in to the server may take. Shorter for automatic reconnect tries,
     /// so a server that is still booting fails fast and the next try comes sooner.
     public var connectTimeout: Duration = .seconds(15)
+    /// The saved host's backup address (same port, username and credentials), tried by the session
+    /// manager when `host` can't be reached; nil = none (always nil for quick connect). Engines ignore it.
+    public var fallbackHost: String?
+    /// How long reaching the server (looking up the name and opening the TCP connection) may take, within
+    /// `connectTimeout`; nil = only `connectTimeout` applies. Set by the session manager when a backup
+    /// address exists, so an unreachable main address gives way to it quickly.
+    public var reachTimeout: Duration?
 
     /// An `.agent` credential always gets `.systemSSH`, whatever `engine` says.
     public init(hostID: UUID?, label: String, host: String, port: Int, username: String,
                 credential: SSHCredential, engine: SSHEngine, startupScript: String?,
                 keepAlive: KeepAlivePolicy = .standard, agentKey: AgentKeyChoice? = nil,
-                terminalType: TerminalType = .default) {
+                terminalType: TerminalType = .default, fallbackHost: String? = nil) {
         self.hostID = hostID; self.label = label; self.host = host; self.port = port
         self.username = username; self.credential = credential; self.engine = engine
         self.startupScript = startupScript
         self.keepAlive = keepAlive
         self.agentKey = agentKey
         self.terminalType = terminalType
+        self.fallbackHost = fallbackHost
         if case .agent = credential { self.engine = .systemSSH }
     }
 }
@@ -202,6 +210,10 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
     /// decided before connecting.
     case keyUnreadable
     case connectionFailed(String)
+    /// The server couldn't be reached at all: the name wasn't found, the connection was refused, or there
+    /// is no route to it. The payload is the message (shown like `connectionFailed`'s). A timeout while
+    /// reaching the server stays `.timedOut`.
+    case unreachable(String)
     case unsupportedKey(String)
     case timedOut
     /// The SSH agent (1Password) couldn't be reached or refused to sign; the payload is the message shown.
@@ -217,7 +229,7 @@ public enum SessionError: Error, Sendable, Equatable, LocalizedError {
             "Authentication failed. Check the username and credentials."
         case .keyUnreadable:
             "The private key couldn't be opened. Check the passphrase."
-        case .connectionFailed(let reason):
+        case .connectionFailed(let reason), .unreachable(let reason):
             "The connection failed: \(reason)"
         case .unsupportedKey(let type):
             "The built-in SSH engine does not support \(type) keys."

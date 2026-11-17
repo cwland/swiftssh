@@ -22,6 +22,15 @@ final class ConnectionPlannerIOSTests: XCTestCase {
         return keys.map(\.pem)
     }
 
+    func testBackupAddressGoesIntoTheIOSPlan() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "H", address: "nas.lan", fallbackAddress: "nas.tail1234.ts.net",
+                                                  username: "root", password: "pw"))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault, platform: .ios, importedKeys: [])
+        XCTAssertEqual(plan.host, "nas.lan")
+        XCTAssertEqual(plan.fallbackHost, "nas.tail1234.ts.net")
+    }
+
     func testPinnedAgentKeyIsOfferedFirst() async throws {
         let vault = try await makeVault()
         let host = try await vault.save(SavedHost(label: "H", address: "h", username: "root",

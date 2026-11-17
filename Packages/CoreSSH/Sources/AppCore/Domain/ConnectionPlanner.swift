@@ -62,7 +62,8 @@ public enum ConnectionPlatform: Sendable, Equatable {
 }
 
 public enum ConnectionPlanner {
-    /// Builds the plan for a saved host. Credentials come from `CredentialResolution` (explicit
+    /// Builds the plan for a saved host. The host's backup address, if any, goes into `fallbackHost`
+    /// (see `ConnectionFallback.backupAddress`) on both platforms. Credentials come from `CredentialResolution` (explicit
     /// identity > host's direct credentials > group default identity); whatever is still missing is
     /// left to the connection prompt. With a 1Password agent key the plan's `agentKey` is set, its
     /// credential is `.none` and its engine `.systemSSH`.
@@ -126,7 +127,8 @@ public enum ConnectionPlanner {
                               port: directory.effectivePort(for: host), username: username,
                               credential: credential, engine: engine,
                               startupScript: startupScript(for: host, directory: directory, vault: vault),
-                              agentKey: resolved.agentKey)
+                              agentKey: resolved.agentKey,
+                              fallbackHost: ConnectionFallback.backupAddress(main: address, backup: host.fallbackAddress))
     }
 
     @MainActor
@@ -152,7 +154,8 @@ public enum ConnectionPlanner {
         return ConnectionPlan(hostID: host.id, label: host.label, host: address,
                               port: directory.effectivePort(for: host), username: username,
                               credential: credential, engine: .citadel,
-                              startupScript: startupScript(for: host, directory: directory, vault: vault))
+                              startupScript: startupScript(for: host, directory: directory, vault: vault),
+                              fallbackHost: ConnectionFallback.backupAddress(main: address, backup: host.fallbackAddress))
     }
 
     /// The key matching `pinned` (by type and key, ignoring comments) first, then the rest in order.

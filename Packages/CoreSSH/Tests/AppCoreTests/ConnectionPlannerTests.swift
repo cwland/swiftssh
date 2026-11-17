@@ -30,6 +30,33 @@ final class ConnectionPlannerTests: XCTestCase {
         XCTAssertNil(plan.startupScript)
     }
 
+    func testBackupAddressGoesIntoThePlanTrimmed() async throws {
+        let vault = try await makeVault()
+        let host = try await vault.save(SavedHost(label: "H", address: "192.168.50.10", fallbackAddress: "  100.64.0.10 \n",
+                                                  port: 2222, username: "root", password: "pw"))
+        let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+        XCTAssertEqual(plan.host, "192.168.50.10")
+        XCTAssertEqual(plan.fallbackHost, "100.64.0.10")
+        XCTAssertEqual(plan.port, 2222, "same port for both addresses")
+        XCTAssertNil(plan.reachTimeout, "the session manager sets the reach limit when it connects")
+    }
+
+    func testBlankOrSameBackupAddressIsNone() async throws {
+        let vault = try await makeVault()
+        for backup in [nil, "", "   ", "H.Example", " h.example "] as [String?] {
+            let host = try await vault.save(SavedHost(label: "H", address: "h.example", fallbackAddress: backup,
+                                                      username: "root", password: "pw"))
+            let plan = try ConnectionPlanner.plan(hostID: host.id, vault: vault)
+            XCTAssertNil(plan.fallbackHost, "\(String(describing: backup))")
+        }
+    }
+
+    func testQuickConnectHasNoBackupAddress() async {
+        let plan = ConnectionPlanner.plan(quickConnect: QuickConnectTarget(username: "me", host: "h", port: nil),
+                                          defaultUsername: "me")
+        XCTAssertNil(plan.fallbackHost)
+    }
+
     func testIdentityProvidesUsernamePasswordAndKey() async throws {
         let vault = try await makeVault()
         let pwID = try await vault.save(Identity(label: "i", username: "alice", password: "secret"))
