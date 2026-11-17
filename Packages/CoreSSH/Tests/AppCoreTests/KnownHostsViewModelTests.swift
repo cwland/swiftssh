@@ -140,6 +140,17 @@ final class KnownHostsViewModelTests: XCTestCase {
                        "each row carries its address's saved hosts")
     }
 
+    func testSavedHostIsAlsoListedUnderItsBackupAddress() async throws {
+        let vault = try await makeVault()
+        key(vault, "nas.local")
+        key(vault, "100.64.0.10")
+        let nas = vault.saveNow(Host(label: "NAS", address: "nas.local", fallbackAddress: " 100.64.0.10 "))
+        let vm = KnownHostsViewModel(vault: vault, timeZone: utc)
+        let byAddress = Dictionary(uniqueKeysWithValues: vm.sections.map { ($0.address, $0) })
+        XCTAssertEqual(byAddress["nas.local"]?.usedBy.map(\.id), [nas.id])
+        XCTAssertEqual(byAddress["100.64.0.10"]?.usedBy.map(\.id), [nas.id], "the backup address's key belongs to it too")
+    }
+
     // MARK: Removal
 
     func testRemoveOneKeyTombstonesItAndTheStoreAsksAgain() async throws {

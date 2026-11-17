@@ -154,7 +154,7 @@ public final class KnownHostsViewModel {
 
     /// Saved hosts keyed by the host:port the connection checks keys for: the trimmed address
     /// and the effective port (the host's, else its groups', else 22), in `HostKeyFormat.hostPort`
-    /// form, as `ConnectionPlanner` and the SSH engines build it.
+    /// form, as `ConnectionPlanner` and the SSH engines build it; a host's backup address counts too.
     private func savedHostsByHostPort() -> [String: [SavedHostRef]] {
         let hosts = vault.all(SavedHost.self)
         let directory = HostDirectory(hosts: hosts, groups: vault.all(HostGroup.self))
@@ -162,9 +162,14 @@ public final class KnownHostsViewModel {
         for host in hosts {
             let address = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !address.isEmpty else { continue }
-            let key = HostKeyFormat.hostPort(host: address, port: directory.effectivePort(for: host))
+            let port = directory.effectivePort(for: host)
             let label = host.label.trimmingCharacters(in: .whitespacesAndNewlines)
-            result[key, default: []].append(SavedHostRef(id: host.id, label: label.isEmpty ? "Untitled host" : label))
+            let ref = SavedHostRef(id: host.id, label: label.isEmpty ? "Untitled host" : label)
+            result[HostKeyFormat.hostPort(host: address, port: port), default: []].append(ref)
+            // Keys recorded for the backup address belong to the host too (same port).
+            if let backup = ConnectionFallback.backupAddress(main: address, backup: host.fallbackAddress) {
+                result[HostKeyFormat.hostPort(host: backup, port: port), default: []].append(ref)
+            }
         }
         for (key, refs) in result {
             result[key] = refs.sorted { a, b in

@@ -34,6 +34,68 @@ final class KnownHostsStoreTests: XCTestCase {
         }
     }
 
+    // MARK: Backup address
+
+    private func backupEvaluator(_ store: KnownHostsStore, _ rec: Recorder, main: String = "nas.lan", port: Int = 22,
+                                 answer: HostKeyDecision = .rejected) -> PromptingHostKeyEvaluator {
+        PromptingHostKeyEvaluator(store: store, alsoTrusting: HostKeyFormat.hostPort(host: main, port: port)) { c, check in
+            rec.asked.append((c, check))
+            return answer
+        }
+    }
+
+    func testBackupAddressAcceptsTheKeyTrustedForTheMainAddressWithoutAsking() async throws {
+        let (store, vault) = try await makeStore()
+        XCTAssertTrue(store.trust(candidate(host: "nas.lan", port: 2222, blob: [7, 7])))
+        let rec = Recorder()
+        let backup = candidate(host: "100.64.0.10", port: 2222, blob: [7, 7])
+        let decision = await backupEvaluator(store, rec, port: 2222).evaluate(backup)
+        XCTAssertEqual(decision, .trusted)
+        XCTAssertTrue(rec.asked.isEmpty, "no prompt for a key already trusted for the main address")
+        XCTAssertEqual(store.check(backup), .known, "recorded for the backup address too")
+        XCTAssertEqual(vault.all(KnownHost.self).map(\.hostPort).sorted(), ["[100.64.0.10]:2222", "[nas.lan]:2222"])
+    }
+
+    func testBackupAddressAlsoAcceptsTheMainKeyBesideOtherKeyTypes() async throws {
+        let (store, _) = try await makeStore()
+        store.trust(candidate(host: "nas.lan", blob: [7]))
+        store.trust(candidate(host: "100.64.0.10", type: "ecdsa-sha2-nistp256", blob: [1]))
+        let rec = Recorder()
+        let decision = await backupEvaluator(store, rec).evaluate(candidate(host: "100.64.0.10", blob: [7]))
+        XCTAssertEqual(decision, .trusted)
+        XCTAssertTrue(rec.asked.isEmpty)
+    }
+
+    func testBackupAddressAsksForAKeyTheMainAddressDoesNotHave() async throws {
+        let (store, _) = try await makeStore()
+        store.trust(candidate(host: "nas.lan", blob: [7]))
+        let rec = Recorder()
+        let other = candidate(host: "100.64.0.10", blob: [8])
+        let decision = await backupEvaluator(store, rec, answer: .rejected).evaluate(other)
+        XCTAssertEqual(decision, .rejected)
+        XCTAssertEqual(rec.asked.map(\.1), [.unknown], "an unknown key gets the normal prompt")
+        XCTAssertEqual(store.check(other), .unknown)
+    }
+
+    func testMainKeyOnADifferentPortIsNotAccepted() async throws {
+        let (store, _) = try await makeStore()
+        store.trust(candidate(host: "nas.lan", port: 22, blob: [7]))
+        let rec = Recorder()
+        _ = await backupEvaluator(store, rec, port: 2222).evaluate(candidate(host: "100.64.0.10", port: 2222, blob: [7]))
+        XCTAssertEqual(rec.asked.count, 1, "same host, same port only")
+    }
+
+    func testBackupAddressMismatchIsStillTheNormalChangedPrompt() async throws {
+        let (store, _) = try await makeStore()
+        store.trust(candidate(host: "nas.lan", blob: [7]))
+        let old = candidate(host: "100.64.0.10", blob: [9])
+        store.trust(old)
+        let rec = Recorder()
+        let decision = await backupEvaluator(store, rec, answer: .rejected).evaluate(candidate(host: "100.64.0.10", blob: [7]))
+        XCTAssertEqual(decision, .rejected)
+        XCTAssertEqual(rec.asked.map(\.1), [.changed(previousFingerprint: old.fingerprint)])
+    }
+
     func testUnknownKeyAsksAndTrustStoresRecord() async throws {
         let (store, vault) = try await makeStore()
         let rec = Recorder()

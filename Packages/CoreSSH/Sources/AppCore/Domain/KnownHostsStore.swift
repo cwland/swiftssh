@@ -76,6 +76,11 @@ public final class KnownHostsStore {
         }
     }
 
+    /// Whether a live record trusts exactly this key (type and fingerprint) for `hostPort`.
+    public func isTrusted(_ candidate: HostKeyCandidate, at hostPort: String) -> Bool {
+        records(for: hostPort).contains { $0.keyType == candidate.keyType && $0.fingerprintSHA256 == candidate.fingerprint }
+    }
+
     private func records(for hostPort: String) -> [KnownHost] {
         vault.all(KnownHost.self).filter { $0.hostPort == hostPort }
     }
@@ -111,13 +116,21 @@ public final class KnownHostsStore {
 }
 
 /// Asks the user (through `ask`) only for unknown or changed keys and records accepted ones.
+///
+/// Backup address: with `alsoTrusting` (the main address's host:port, for an attempt on a host's backup
+/// address), a key the backup address doesn't know yet (`.unknown` or `.newKeyType`) that is already
+/// trusted for the main address is the same machine: it is recorded for the backup address too and
+/// trusted without a prompt. Any other key, and a key that differs from one recorded for the backup
+/// address (`.changed`), gets the normal prompt.
 public struct PromptingHostKeyEvaluator: HostKeyEvaluator {
     private let store: KnownHostsStore
+    private let alsoTrusting: String?
     private let ask: @Sendable @MainActor (HostKeyCandidate, HostKeyCheck) async -> HostKeyDecision
 
-    public init(store: KnownHostsStore,
+    public init(store: KnownHostsStore, alsoTrusting mainHostPort: String? = nil,
                 ask: @escaping @Sendable @MainActor (HostKeyCandidate, HostKeyCheck) async -> HostKeyDecision) {
         self.store = store
+        self.alsoTrusting = mainHostPort
         self.ask = ask
     }
 
@@ -133,6 +146,14 @@ public struct PromptingHostKeyEvaluator: HostKeyEvaluator {
         while true {
             let check = store.check(candidate)
             if check == .known { return .trusted }
+            if let main = alsoTrusting, main != candidate.hostPort, store.isTrusted(candidate, at: main) {
+                switch check {
+                case .unknown, .newKeyType:
+                    if store.trust(candidate) { return .trusted }
+                case .changed, .known:
+                    break
+                }
+            }
             guard await ask(candidate, check) == .trusted else { return .rejected }
             let current = store.check(candidate)
             if current == .known { return .trusted }
