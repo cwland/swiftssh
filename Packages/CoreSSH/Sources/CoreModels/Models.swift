@@ -121,6 +121,10 @@ public struct Host: SyncableModel {
     public var id: UUID
     public var label: String
     public var address: String
+    /// A second address (typically a Tailscale IP or MagicDNS name), tried when `address` can't be
+    /// reached; same port, username and credentials. nil = none. Absent on records written before
+    /// v1.2.0 (decodes as nil); older versions keep it when they rewrite the host (unknown fields are kept).
+    public var fallbackAddress: String?
     /// nil = inherit from group; effective default is 22.
     public var port: Int?
     public var groupID: UUID?
@@ -152,7 +156,8 @@ public struct Host: SyncableModel {
     public var updatedAt: Date
     public var deleted: Bool
 
-    public init(id: UUID = UUID(), label: String, address: String, port: Int? = nil, groupID: UUID? = nil,
+    public init(id: UUID = UUID(), label: String, address: String, fallbackAddress: String? = nil,
+                port: Int? = nil, groupID: UUID? = nil,
                 tags: [String] = [], username: String? = nil, identityID: UUID? = nil, password: String? = nil,
                 sshKeyID: UUID? = nil, agentKey: AgentKeyChoice? = nil, prefersIdentity: Bool? = nil,
                 osBadge: OSBadge? = nil, osBadgeIsManual: Bool = false,
@@ -160,7 +165,8 @@ public struct Host: SyncableModel {
                 lastConnectedAt: Date? = nil,
                 useSystemSSH: Bool? = nil, tmuxSession: TmuxChoice? = nil,
                 updatedAt: Date = Date(), deleted: Bool = false) {
-        self.id = id; self.label = label; self.address = address; self.port = port
+        self.id = id; self.label = label; self.address = address; self.fallbackAddress = fallbackAddress
+        self.port = port
         self.groupID = groupID; self.tags = tags; self.username = username
         self.identityID = identityID; self.password = password; self.sshKeyID = sshKeyID
         self.agentKey = agentKey; self.prefersIdentity = prefersIdentity

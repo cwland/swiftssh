@@ -118,6 +118,21 @@ final class ModelsTests: XCTestCase {
         try roundTrip(h)
     }
 
+    func testBackupAddressRoundTripsAndIsMissingOnOlderRecords() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000.123)
+        let h = Host(label: "NAS", address: "192.168.50.10", fallbackAddress: "100.64.0.10", updatedAt: date)
+        XCTAssertEqual(h.fallbackAddress, "100.64.0.10")
+        try roundTrip(h)
+        let data = try CoreJSON.encoder.encode(h)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(object["fallbackAddress"] as? String, "100.64.0.10", "a top-level field, synced like the others")
+        object.removeValue(forKey: "fallbackAddress")
+        let old = try CoreJSON.decoder.decode(Host.self, from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertNil(old.fallbackAddress, "an older record has no backup address")
+        XCTAssertEqual(old.address, "192.168.50.10")
+        XCTAssertNil(Host(label: "x", address: "y").fallbackAddress)
+    }
+
     func testOldKnownHostWithoutPublicKeyDecodes() throws {
         let date = Date(timeIntervalSince1970: 1_700_000_000.123)
         let k = KnownHost(hostPort: "h", keyType: "ssh-ed25519", fingerprintSHA256: "SHA256:x",
