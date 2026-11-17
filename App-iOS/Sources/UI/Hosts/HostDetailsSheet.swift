@@ -19,6 +19,9 @@ struct HostDetailsSheet: View {
                     Form {
                         Section {
                             row("Address", details.address, copyable: true)
+                            if let backup = details.fallbackAddress {
+                                row("Backup address", backup, copyable: true)
+                            }
                             row("Port", "\(details.port)")
                             row("Username", details.username ?? "None")
                             if let group = details.groupPath {

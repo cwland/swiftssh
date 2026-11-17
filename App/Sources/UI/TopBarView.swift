@@ -814,8 +814,17 @@ private struct SessionTabPill: View {
         // handles its own clicks first.
         .onTapGesture(perform: select)
         .onHover { isHovering = $0 }
+        // Which address the session ended up on, when it is the host's backup address.
+        .help(backupAddressHelp)
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Close tab", close)
+    }
+
+    /// "Using the backup address …" while the tab uses its host's backup address; else empty
+    /// (no tooltip).
+    private var backupAddressHelp: String {
+        guard tab.isUsingBackupAddress, let address = tab.currentAddress else { return "" }
+        return "Using the backup address \(address) (the main address couldn\u{2019}t be reached)"
     }
 
     @ViewBuilder

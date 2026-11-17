@@ -8,6 +8,9 @@ import SSHCore
 public struct CompanionHostDetails: Equatable, Sendable {
     public let label: String
     public let address: String
+    /// The backup address tried when `address` can't be reached; nil = none (or one that would never be
+    /// used: blank, or the same as `address`).
+    public let fallbackAddress: String?
     public let port: Int
     /// nil = no username (connecting will say so).
     public let username: String?
@@ -24,6 +27,7 @@ public struct CompanionHostDetails: Equatable, Sendable {
         let trimmedLabel = host.label.trimmingCharacters(in: .whitespacesAndNewlines)
         label = trimmedLabel.isEmpty ? "Untitled host" : host.label
         address = host.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        fallbackAddress = ConnectionFallback.backupAddress(main: address, backup: host.fallbackAddress)
         port = directory.effectivePort(for: host)
         username = resolved.username
         groupPath = Self.groupPath(of: host, groups: vault.all(HostGroup.self))

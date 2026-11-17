@@ -111,6 +111,16 @@ public final class HostDetailsViewModel {
         set { update { $0.address = newValue } }
     }
 
+    /// The backup address, tried when `address` can't be reached (`Host.fallbackAddress`). Saved as
+    /// typed, like `address`; blank (only whitespace) removes it. "" = none.
+    public var fallbackAddress: String {
+        get { host?.fallbackAddress ?? "" }
+        set {
+            let blank = newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            update { $0.fallbackAddress = blank ? nil : newValue }
+        }
+    }
+
     public var groupID: UUID? {
         get { host?.groupID }
         set { update { $0.groupID = newValue } }

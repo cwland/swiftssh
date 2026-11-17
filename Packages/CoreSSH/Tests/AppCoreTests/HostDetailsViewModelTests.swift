@@ -32,6 +32,26 @@ final class HostDetailsViewModelTests: XCTestCase {
         XCTAssertEqual(stored.address, "b.example")
     }
 
+    func testBackupAddressSavesImmediatelyAndBlankClearsIt() async throws {
+        let p = InMemoryVaultPersistence()
+        let vault = try await makeVault(p)
+        let host = try await vault.save(SavedHost(label: "NAS", address: "192.168.50.10"))
+        let vm = HostDetailsViewModel(vault: vault, hostID: host.id)
+        XCTAssertEqual(vm.fallbackAddress, "")
+        vm.fallbackAddress = "100.64.0.10"
+        XCTAssertEqual(vault.get(SavedHost.self, id: host.id)?.fallbackAddress, "100.64.0.10")
+        XCTAssertEqual(vm.fallbackAddress, "100.64.0.10")
+        await vault.flush()
+        let stored = try await persistedHost(p, id: host.id)
+        XCTAssertEqual(stored.fallbackAddress, "100.64.0.10")
+
+        vm.fallbackAddress = "100.64.0.1 " // as typed, like Address
+        XCTAssertEqual(vm.fallbackAddress, "100.64.0.1 ")
+        vm.fallbackAddress = "   "
+        XCTAssertNil(vault.get(SavedHost.self, id: host.id)?.fallbackAddress, "blank = no backup address")
+        XCTAssertEqual(vm.fallbackAddress, "")
+    }
+
     func testRapidEditsKeepLastValueAndIncreasingTimestamps() async throws {
         let p = InMemoryVaultPersistence()
         let vault = try await makeVault(p)

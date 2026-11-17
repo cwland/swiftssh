@@ -136,14 +136,14 @@ public struct HostDirectory: Sendable {
         return hosts.filter { host in host.groupID.map(included.contains) ?? false }
     }
 
-    /// All `tags` are required; `search` is case-insensitive over label, address,
+    /// All `tags` are required; `search` is case-insensitive over label, address, backup address,
     /// username and tags. Empty search matches everything.
     public func filter(tags: Set<String>, search: String) -> [Host] {
         let needle = search.lowercased()
         return hosts.filter { host in
             guard tags.isSubset(of: Set(host.tags)) else { return false }
             if needle.isEmpty { return true }
-            let fields = [host.label, host.address, host.username ?? ""] + host.tags
+            let fields = [host.label, host.address, host.fallbackAddress ?? "", host.username ?? ""] + host.tags
             return fields.contains { $0.lowercased().contains(needle) }
         }
     }

@@ -45,7 +45,10 @@ struct ConnectionScreen: View {
     private var endpointText: String {
         guard let host else { return "SSH \(tab.title)" }
         let directory = HostDirectory(hosts: vault.all(SavedHost.self), groups: vault.all(HostGroup.self))
-        return "SSH \(host.address):\(directory.effectivePort(for: host))"
+        // The address this attempt uses: the backup address once the main one couldn't be reached.
+        let address = tab.currentAddress ?? host.address
+        let backup = tab.isUsingBackupAddress ? " (backup address)" : ""
+        return "SSH \(address):\(directory.effectivePort(for: host))\(backup)"
     }
 
     /// Shown as the log's last line when the attempt ended without the log saying why.

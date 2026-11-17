@@ -195,6 +195,14 @@ private struct HostDetailsContent: View {
                         .textFieldStyle(.roundedBorder)
                 }
             }
+            FieldColumn(title: "Backup address") {
+                TextField("Backup address", text: $details.fallbackAddress, prompt: Text("Optional"))
+                    .textFieldStyle(.roundedBorder)
+                Text("Tried if the address above can\u{2019}t be reached, e.g. a Tailscale IP")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 

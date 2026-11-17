@@ -89,6 +89,17 @@ final class CompanionHostsTests: XCTestCase {
         XCTAssertFalse(details.signIn.contains("secret"))
     }
 
+    func testDetailsShowTheBackupAddressWhenSet() async throws {
+        let vault = try await makeVault()
+        let with = try await vault.save(SavedHost(label: "nas", address: "192.168.50.10", fallbackAddress: " 100.64.0.10 ",
+                                                  username: "cory"))
+        XCTAssertEqual(CompanionHostDetails(hostID: with.id, vault: vault)?.fallbackAddress, "100.64.0.10")
+        let without = try await vault.save(SavedHost(label: "pi", address: "pi", fallbackAddress: "  ", username: "pi"))
+        XCTAssertNil(CompanionHostDetails(hostID: without.id, vault: vault)?.fallbackAddress, "blank = not shown")
+        let same = try await vault.save(SavedHost(label: "x", address: "x.lan", fallbackAddress: "X.lan", username: "pi"))
+        XCTAssertNil(CompanionHostDetails(hostID: same.id, vault: vault)?.fallbackAddress, "never used, so not shown")
+    }
+
     func testDetailsOfAOnePasswordPasswordNameTheAutoFill() async throws {
         let vault = try await makeVault()
         let host = try await vault.save(SavedHost(label: "web", address: "web", username: "root",

@@ -78,6 +78,13 @@ final class HostQueriesTests: XCTestCase {
         XCTAssertEqual(dir.filter(tags: [], search: "docker").map(\.id), [tagged.id])
     }
 
+    func testSearchMatchesTheBackupAddress() {
+        let nas = Host(label: "NAS", address: "192.168.50.10", fallbackAddress: "nas.tail1234.ts.net")
+        let other = Host(label: "Pi", address: "10.0.0.2")
+        let dir = HostDirectory(hosts: [nas, other], groups: [])
+        XCTAssertEqual(dir.filter(tags: [], search: "TAIL1234").map(\.id), [nas.id])
+    }
+
     func testDeletedRecordsAreIgnored() {
         let deadGroup = HostGroup(name: "dead", defaultPort: 2222, deleted: true)
         let live = Host(label: "live", address: "l", groupID: deadGroup.id)
