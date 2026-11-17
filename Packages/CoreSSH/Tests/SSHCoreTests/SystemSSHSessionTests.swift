@@ -306,9 +306,44 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(classify("Load key \"/r/x.key\": invalid format\r\nu@h: Permission denied (publickey).\r\n"),
                        .keyUnreadable)
         XCTAssertEqual(classify("\u{1B}[1mssh: connect to host h port 22: Connection refused\u{1B}[0m\r\n\r\n"),
-                       .connectionFailed("ssh: connect to host h port 22: Connection refused"))
+                       .unreachable("ssh: connect to host h port 22: Connection refused"))
         XCTAssertEqual(classify("weird hunter2 thing\r\n"), .connectionFailed("weird <redacted> thing"))
         XCTAssertEqual(classify(""), .connectionFailed("ssh exited before the session started"))
+    }
+
+    /// ssh's own "can't reach" messages (before anything was reached) are `.unreachable`, so the session
+    /// manager may try the backup address; a server that was reached and then went quiet is not.
+    func testCantReachMessagesAreUnreachable() {
+        func classify(_ s: String) -> SessionError { SystemSSHSession.classifyFailure(Array(s.utf8), secrets: []) }
+        for line in ["ssh: connect to host 192.168.50.10 port 22: Connection refused",
+                     "ssh: connect to host 192.168.50.10 port 22: Operation timed out",
+                     "ssh: connect to host 192.168.50.10 port 22: Connection timed out",
+                     "ssh: connect to host 192.168.50.10 port 22: No route to host",
+                     "ssh: connect to host 192.168.50.10 port 22: Network is unreachable",
+                     "ssh: connect to host 192.168.50.10 port 22: Host is down",
+                     "ssh: Could not resolve hostname nas.lan: nodename nor servname provided, or not known",
+                     "ssh: Could not resolve hostname nas.lan: Name or service not known"] {
+            XCTAssertEqual(classify(line + "\r\n"), .unreachable(line))
+        }
+        XCTAssertEqual(classify("Connection timed out during banner exchange\r\nConnection to 1.2.3.4 port 22 timed out\r\n"),
+                       .connectionFailed("Connection to 1.2.3.4 port 22 timed out"), "reached, then no banner")
+        XCTAssertEqual(classify("kex_exchange_identification: read: Connection reset by peer\r\n"),
+                       .connectionFailed("kex_exchange_identification: read: Connection reset by peer"))
+    }
+
+    func testReachLimitShortensKeyscanAndConnectTimeout() {
+        var p = plan(.password("x"))
+        XCTAssertEqual(SystemSSHSession.sshConnectTimeout(for: p), .seconds(15))
+        XCTAssertEqual(SystemSSHSession.keyscanArguments(host: "h", port: 2222, plan: p),
+                       ["-T", "10", "-p", "2222", "-t", "ed25519,ecdsa,rsa", "h"])
+        p.reachTimeout = .seconds(5)
+        XCTAssertEqual(SystemSSHSession.sshConnectTimeout(for: p), .seconds(5), "ConnectTimeout=5 with a backup")
+        XCTAssertEqual(SystemSSHSession.keyscanArguments(host: "h", port: 2222, plan: p),
+                       ["-T", "5", "-p", "2222", "-t", "ed25519,ecdsa,rsa", "h"])
+        p.connectTimeout = .seconds(3)
+        XCTAssertEqual(SystemSSHSession.sshConnectTimeout(for: p), .seconds(3), "never longer than the connect timeout")
+        p.reachTimeout = .milliseconds(200)
+        XCTAssertEqual(SystemSSHSession.keyscanArguments(host: "h", port: 22, plan: p)[1], "1", "whole seconds, at least 1")
     }
 
     /// ssh's messages (OpenSSH 9.6) when the agent can't be reached or won't sign, for an `.agent` attempt.
@@ -336,7 +371,7 @@ final class SystemSSHSessionTests: XCTestCase {
         XCTAssertEqual(classify("Load key \"/r/run/8F2C.pub\": invalid format\r\n" + denied), .authenticationFailed)
         // Other failures are classified as before.
         XCTAssertEqual(classify("ssh: connect to host h port 22: Connection refused\r\n"),
-                       .connectionFailed("ssh: connect to host h port 22: Connection refused"))
+                       .unreachable("ssh: connect to host h port 22: Connection refused"))
         // Only an agent attempt has an agent to blame.
         XCTAssertEqual(classify("sign_and_send_pubkey: signing failed for ED25519 \"k\" from agent: agent refused operation\r\n"
                                 + denied, agent: false), .authenticationFailed)
@@ -418,7 +453,7 @@ final class SystemSSHSessionTests: XCTestCase {
         result = await classify(255, started: false, "Host key verification failed.\r\n")
         XCTAssertEqual(result, .failed(.hostKeyRejected))
         result = await classify(255, started: false, "ssh: connect to host h port 22: Connection refused\r\n")
-        XCTAssertEqual(result, .failed(.connectionFailed("ssh: connect to host h port 22: Connection refused")))
+        XCTAssertEqual(result, .failed(.unreachable("ssh: connect to host h port 22: Connection refused")))
         result = await classify(0, started: false, "")
         XCTAssertEqual(result, .remoteClosed)
         XCTAssertEqual(checks.value, 0)
@@ -586,7 +621,7 @@ final class SystemSSHSessionTests: XCTestCase {
         let recorder = EventRecorder(session.events)
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForFinish()
-        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.connectionFailed("Could not reach 127.0.0.1:\(port)")))])
+        XCTAssertEqual(recorder.nonOutputEvents, [.closed(.failed(.unreachable("Could not reach 127.0.0.1:\(port)")))])
         XCTAssertTrue(evaluator.candidates.isEmpty)
     }
 
@@ -890,7 +925,7 @@ final class SystemSSHSessionTests: XCTestCase {
         await session.start(cols: 80, rows: 24)
         try await recorder.waitForFinish(timeout: 40)
         XCTAssertEqual(recorder.steps, [.resolving(host: "no-such-host.invalid")])
-        guard case .closed(.failed(.connectionFailed(let reason))) = recorder.nonOutputEvents.last else {
+        guard case .closed(.failed(.unreachable(let reason))) = recorder.nonOutputEvents.last else {
             return XCTFail("\(recorder.nonOutputEvents)")
         }
         XCTAssertTrue(reason.hasPrefix("Could not reach no-such-host.invalid:"), reason)

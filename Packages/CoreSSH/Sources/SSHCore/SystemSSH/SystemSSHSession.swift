@@ -378,7 +378,7 @@ public final class SystemSSHSession: TerminalSession {
         }
         let arguments = Self.sshArguments(host: host, port: plan.port, username: plan.username, runtime: runtime,
                                           knownHosts: knownHostsFile, auth: auth, hostKeyAlgorithms: algorithms,
-                                          keepAlive: plan.keepAlive, connectTimeout: plan.connectTimeout,
+                                          keepAlive: plan.keepAlive, connectTimeout: Self.sshConnectTimeout(for: plan),
                                           debugLog: debugLog?.url)
         var environment: [String: String] = [:]
         if let secretFile {
@@ -433,7 +433,7 @@ public final class SystemSSHSession: TerminalSession {
         let scan: PTYProcess
         do {
             scan = try PTYProcess(executable: keyscanPath,
-                                  arguments: ["-T", "10", "-p", String(plan.port), "-t", "ed25519,ecdsa,rsa", host],
+                                  arguments: Self.keyscanArguments(host: host, port: plan.port, plan: plan),
                                   environment: [:], cols: 200, rows: 24, rawMode: true)
         } catch {
             finish(.failed(.connectionFailed("Could not run ssh-keyscan")))
@@ -461,7 +461,8 @@ public final class SystemSSHSession: TerminalSession {
             if case .finished(let output, _) = result, Self.keyscanFoundNoHost(String(decoding: output, as: UTF8.self)) {
                 reason = " (host name not found)"
             }
-            finish(.failed(.connectionFailed("Could not reach \(host):\(plan.port)\(reason)")))
+            // No host key came back: the server couldn't be reached (or isn't an SSH server).
+            finish(.failed(.unreachable("Could not reach \(host):\(plan.port)\(reason)")))
             return nil
         }
         return candidate
@@ -983,9 +984,32 @@ public final class SystemSSHSession: TerminalSession {
         return String(bytes: bytes[4..<(4 + length)], encoding: .utf8)
     }
 
+    /// `ssh-keyscan`'s arguments: its timeout (`-T`, whole seconds) is 10 s, or the plan's reach limit
+    /// when that is shorter (a host with a backup address).
+    static func keyscanArguments(host: String, port: Int, plan: ConnectionPlan) -> [String] {
+        var seconds = 10
+        if let reach = plan.reachTimeout {
+            seconds = min(seconds, max(1, Int(reach.components.seconds)))
+        }
+        return ["-T", String(seconds), "-p", String(port), "-t", "ed25519,ecdsa,rsa", host]
+    }
+
+    /// ssh's `ConnectTimeout`: the plan's connect timeout, or its reach limit when that is shorter.
+    static func sshConnectTimeout(for plan: ConnectionPlan) -> Duration {
+        guard let reach = plan.reachTimeout else { return plan.connectTimeout }
+        return min(reach, plan.connectTimeout)
+    }
+
+    /// ssh's messages for a server it couldn't reach at all (before any connection was up).
+    static func isCantReachMessage(_ line: String) -> Bool {
+        line.hasPrefix("ssh: connect to host ") || line.hasPrefix("ssh: Could not resolve hostname ")
+    }
+
     /// Maps ssh's messages before the session started (exit status 255) to an error. The message is the
     /// last non-empty line without terminal control sequences; secrets are redacted as a last line of
     /// defence (ssh never prints them).
+    ///
+    /// ssh's own messages that the server couldn't be reached (`isCantReachMessage`) are `.unreachable`.
     ///
     /// For an `agent` attempt, any of ssh's messages that the agent couldn't be reached or refused to sign
     /// (`agentFailureMarkers`) is `.agentUnavailable`. There is no private key file then, so a "Load key"
@@ -1012,6 +1036,9 @@ public final class SystemSSHSession: TerminalSession {
         for secret in secrets where !secret.isEmpty {
             message = message.replacingOccurrences(of: secret, with: "<redacted>")
         }
+        // "ssh: connect to host … port …: Connection refused / timed out / No route to host …",
+        // "ssh: Could not resolve hostname …": nothing was reached.
+        if isCantReachMessage(last) { return .unreachable(message) }
         return .connectionFailed(message)
     }
 
