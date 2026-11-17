@@ -55,6 +55,11 @@ public final class TerminalTab: Identifiable {
     /// Whether this tab's terminal has ever been live (any attempt). Never reset by a new attempt, so
     /// a tab that dropped keeps its scrollback and banner instead of the connection screen.
     public fileprivate(set) var hadLiveSession = false
+    /// The address the current attempt connects to: the saved host's address, or its backup address once
+    /// the main one couldn't be reached. nil before an attempt was planned.
+    public fileprivate(set) var currentAddress: String?
+    /// Whether the current attempt moved on to the saved host's backup address.
+    public fileprivate(set) var isUsingBackupAddress = false
 
     /// The log as text for "Copy logs": a header (host label, user@host:port, engine, date) and one
     /// line per step with its time and status. Never contains secrets: only names, addresses, ports,
@@ -63,6 +68,9 @@ public final class TerminalTab: Identifiable {
         var text = "Connection log \u{2014} \(logContext?.label ?? title)\n"
         if let context = logContext {
             text += "SSH \(context.username)@\(context.host):\(context.port)\n"
+            if let backupReason = context.backupReason {
+                text += "Backup address used: \(backupReason)\n"
+            }
             text += "Engine: \(context.engine == .citadel ? "built-in (Citadel)" : "system ssh")\n"
             text += "Started: \(Self.headerDateFormatter.string(from: context.startedAt))\n"
         }
@@ -83,10 +91,13 @@ public final class TerminalTab: Identifiable {
     fileprivate struct LogContext {
         let label: String
         let username: String
-        let host: String
+        /// The address connected to (the backup address after a fallback).
+        var host: String
         let port: Int
         let engine: SSHEngine
         let startedAt: Date
+        /// After a fallback: "main address <address> unreachable (<reason>)".
+        var backupReason: String?
     }
 
     @ObservationIgnored fileprivate var logContext: LogContext?
@@ -112,6 +123,19 @@ public final class TerminalTab: Identifiable {
         connectionLog = []
         hasEverConnected = false
         logContext = context
+        currentAddress = context?.host
+        isUsingBackupAddress = false
+    }
+
+    /// The main address couldn't be reached: its step failed, `note` says so, and the log (header,
+    /// `currentAddress`) continues with the backup address.
+    fileprivate func switchToBackupAddress(_ backup: String, main: String, reason: String, note: String, at date: Date) {
+        finishCurrentStep(as: .failed)
+        appendLine(step: nil, text: note, status: .done, at: date)
+        logContext?.host = backup
+        logContext?.backupReason = "main address \(main) unreachable (\(reason))"
+        currentAddress = backup
+        isUsingBackupAddress = true
     }
 
     /// A new step: the step before it is done, this one is in progress.
@@ -268,6 +292,9 @@ fileprivate final class SessionAttempt {
     let enteredPassword: String?
     var logID: UUID?
     var eventLoop: Task<Void, Never>?
+    /// The server answered (TCP up or a later step reported, or `.connected`): a failure from here on
+    /// never moves on to the backup address.
+    var reachedServer = false
 
     var usedEnteredPassword: Bool { enteredPassword != nil }
 
@@ -289,8 +316,8 @@ fileprivate final class SessionAttempt {
 /// Drives terminal sessions for the UI: host key and password prompts, connection logs, OS
 /// detection, startup scripts, reconnect, auto-reconnect and close-all at quit.
 ///
-/// Auto-reconnect: when the session of a tab that had become ready ends with `.connectionFailed` or
-/// `.timedOut` (a dropped connection) and `autoReconnectEnabled()` is true, the tab counts down
+/// Auto-reconnect: when the session of a tab that had become ready ends with `.connectionFailed`,
+/// `.unreachable` or `.timedOut` (a dropped connection) and `autoReconnectEnabled()` is true, the tab counts down
 /// (`.waiting`) and then tries again (`.reconnecting`) the way `reconnect(tabID:)` does, on the
 /// `ReconnectSchedule`. A try that drops the same way, before or after it connected, leads to the next
 /// countdown, or to `.gaveUp` after the last; a try that becomes ready, fails any other way, or needs a
@@ -315,6 +342,15 @@ fileprivate final class SessionAttempt {
 /// `recordsHostUpdates: false` (iOS, which may hold a stale copy of a host that sync would then spread)
 /// none of these rewrite a synced record: the detected badge is kept in memory (`detectedBadge(hostID:)`)
 /// and shown on tabs; connection logs (new records) are still saved.
+///
+/// Backup address (`ConnectionPlan.fallbackHost`, from the saved host's `fallbackAddress`): every attempt
+/// (open, Reconnect, an automatic try, a workspace pane) goes to the main address first, with
+/// `reachTimeout` = `ConnectionFallback.reachTimeout`. When it ends `.timedOut` or `.unreachable` before
+/// the server was reached (`ConnectionFallback.shouldTryBackup`), the log notes it and a new attempt on
+/// the backup address starts at once in the same log, with the same credential (secrets aren't read
+/// again), the normal timeouts and a host key evaluator that accepts the key already trusted for the main
+/// address. Sign-in, host key and later failures, and the user closing or reconnecting, never fall back.
+/// The tab's `currentAddress` / `isUsingBackupAddress` and the log header say which address is in use.
 ///
 /// Imported keys (iOS): `hostPlanner` plans saved hosts (`ConnectionPlanner.plan(hostID:vault:platform:importedKeys:)`).
 /// When the server refuses every offered key (`.privateKeys`), the tab says so and suggests `.importKey`;
@@ -854,7 +890,7 @@ public final class SessionManager {
         var dropped: SessionError?
         if case .failed(let error) = reason {
             switch error {
-            case .connectionFailed, .timedOut: dropped = error
+            case .connectionFailed, .unreachable, .timedOut: dropped = error
             default: break
             }
         }
@@ -1100,6 +1136,8 @@ public final class SessionManager {
         plan.terminalType = terminalType() // the same for TERM
         // An automatic reconnect try gives up fast while the server is still down.
         if case .reconnecting = tab.autoReconnect { plan.connectTimeout = .seconds(5) }
+        // With a backup address, an unreachable main address gives way to it quickly.
+        plan.reachTimeout = plan.fallbackHost == nil ? nil : ConnectionFallback.reachTimeout
         tab.title = plan.label
         if let hostID = tab.hostID, vault.get(SavedHost.self, id: hostID) != nil { tab.badge = displayBadge(hostID: hostID) }
 
@@ -1213,10 +1251,12 @@ public final class SessionManager {
         }
     }
 
-    /// Makes the attempt's session and starts it.
-    private func startAttempt(_ tab: TerminalTab, plan: ConnectionPlan, enteredPassword: String?) {
+    /// Makes the attempt's session and starts it. `alsoTrusting` (an attempt on the backup address): the
+    /// main address's host:port, whose trusted key is accepted without a prompt.
+    private func startAttempt(_ tab: TerminalTab, plan: ConnectionPlan, enteredPassword: String?,
+                              alsoTrusting mainHostPort: String? = nil) {
         let generation = tab.generation
-        let evaluator = PromptingHostKeyEvaluator(store: knownHosts) { [weak self, weak tab] candidate, check in
+        let evaluator = PromptingHostKeyEvaluator(store: knownHosts, alsoTrusting: mainHostPort) { [weak self, weak tab] candidate, check in
             guard let self, let tab else { return .rejected }
             return await self.askHostKey(tab: tab, generation: generation, candidate, check)
         }
@@ -1308,8 +1348,10 @@ public final class SessionManager {
         let current = tab.flatMap { $0.attempt === attempt ? $0 : nil }
         switch event {
         case .progress(let step):
+            if ConnectionFallback.reachesServer(step) { attempt.reachedServer = true }
             current?.appendStep(step, at: now())
         case .connected:
+            attempt.reachedServer = true
             current?.state = .connected
             current?.finishCurrentStep(as: .done)
             current?.hasEverConnected = true
@@ -1336,6 +1378,12 @@ public final class SessionManager {
             current.attempt = nil
             current.generation += 1
             rejectPendingHostKey(of: current)
+            if let backup = attempt.plan.fallbackHost, isOpen(current),
+               ConnectionFallback.shouldTryBackup(after: reason, reachedServer: attempt.reachedServer),
+               case .failed(let error) = reason {
+                tryBackupAddress(backup, after: error, attempt: attempt, tab: current)
+                return
+            }
             if reason == .userClosed {
                 if isOpen(current) { close(tabID: current.id) }
                 return
@@ -1357,6 +1405,22 @@ public final class SessionManager {
                 diagnoseAgentFailure(of: current, socket: socket, pinnedPublicKey: pinned, plan: attempt.plan)
             }
         }
+    }
+
+    /// The main address of `attempt` couldn't be reached: notes it and starts the same plan on the backup
+    /// address (no further fallback, the normal timeouts, the main address's key trusted).
+    private func tryBackupAddress(_ backup: String, after error: SessionError, attempt: SessionAttempt, tab: TerminalTab) {
+        var plan = attempt.plan
+        let main = plan.host
+        let reason = ConnectionFallback.reason(of: error)
+        plan.host = backup
+        plan.fallbackHost = nil
+        plan.reachTimeout = nil
+        tab.switchToBackupAddress(backup, main: main, reason: reason,
+                                  note: ConnectionFallback.note(main: main, reason: reason, backup: backup), at: now())
+        tab.state = .connecting
+        startAttempt(tab, plan: plan, enteredPassword: attempt.enteredPassword,
+                     alsoTrusting: HostKeyFormat.hostPort(host: main, port: plan.port))
     }
 
     private func sessionBecameReady(_ attempt: SessionAttempt, tab: TerminalTab) {
