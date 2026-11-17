@@ -43,7 +43,7 @@ targets:
         INFOPLIST_FILE: Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: "SwiftSSH"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
-        MARKETING_VERSION: "1.1.0"
+        MARKETING_VERSION: "1.2.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CURRENT_PROJECT_VERSION: "1"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
